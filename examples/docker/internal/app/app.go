@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -86,19 +87,21 @@ func Run(ctx context.Context, c config.Config) error {
 		return fmt.Errorf("failed to close image pull: %w", err)
 	}
 
+	logger := c.Logger()
+
 	// Initialize and start the listener
 	listener, err := listener.New(scalesetClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
 		MinRunners: c.MinRunners,
-		Logger:     slog.Default(),
+		Logger:     logger.With("component", "listener"),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	listener.Run(ctx, &AppHandler{
-		logger: slog.Default(),
-		state: runnerState{
+	handler := &AppHandler{
+		logger: logger.With("component", "handler"),
+		runners: runnerState{
 			idle: make(map[string]string),
 			busy: make(map[string]string),
 		},
@@ -107,13 +110,18 @@ func Run(ctx context.Context, c config.Config) error {
 		dockerClient:   dockerClient,
 		scalesetClient: scalesetClient,
 		scaleSetID:     scaleSet.ID,
-	})
+	}
 
+	defer handler.shutdown(context.WithoutCancel(ctx))
+
+	if err := listener.Run(ctx, handler); !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("listener run failed: %w", err)
+	}
 	return nil
 }
 
 type AppHandler struct {
-	state          runnerState
+	runners        runnerState
 	runnerImage    string
 	scaleSetID     int
 	dockerClient   *dockerclient.Client
@@ -123,7 +131,7 @@ type AppHandler struct {
 }
 
 func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int, jobsCompleted int) (int, error) {
-	currentCount := a.state.totalCount()
+	currentCount := a.runners.count()
 	targetRunnerCount := min(a.minRunners + count)
 
 	switch {
@@ -149,23 +157,27 @@ func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int, jo
 			// TODO: should we return error?
 			a.logger.Error("Failed to start runner", slog.String("error", err.Error()))
 		}
-		return a.state.totalCount(), nil
+		return a.runners.count(), nil
 	default:
-		// no need to handle scale down scenario since the completed runners are removed before we handle desired count
+		// No need to handle scale down events, since:
+		// 1. JobCompleted events will first remove runners
+		// 2. If the count is still below the current runner count, the JobCompleted event will be delivered in the next batch.
+		// 3. Removal after JobCompleted events is handled synchronously.
+		// 4. If the job is cancelled, the JobCompleted event will still be delivered.
 	}
-	return currentCount, nil
+	return a.runners.count(), nil
 }
 
 func (a *AppHandler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error {
 	a.logger.Info("Job started", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
-	a.state.markBusy(jobInfo.RunnerName)
+	a.runners.markBusy(jobInfo.RunnerName)
 	return nil
 }
 
 func (a *AppHandler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error {
 	a.logger.Info("Job completed", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
 
-	containerID := a.state.markDone(jobInfo.RunnerName)
+	containerID := a.runners.markDone(jobInfo.RunnerName)
 	if err := a.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("failed to remove runner container: %w", err)
 	}
@@ -209,8 +221,28 @@ func (a *AppHandler) startRunner(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to start runner container: %w", err)
 	}
 
-	a.state.addIdle(name, c.ID)
+	a.runners.addIdle(name, c.ID)
 	return name, nil
+}
+
+func (a *AppHandler) shutdown(ctx context.Context) {
+	a.logger.Info("Shutting down runners")
+	a.runners.mu.Lock()
+	defer a.runners.mu.Unlock()
+
+	for name, containerID := range a.runners.idle {
+		a.logger.Info("Removing idle runner", slog.String("name", name), slog.String("containerID", containerID))
+		if err := a.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+			a.logger.Error("Failed to remove idle runner container", slog.String("name", name), slog.String("containerID", containerID), slog.String("error", err.Error()))
+		}
+	}
+
+	for name, containerID := range a.runners.busy {
+		a.logger.Info("Removing busy runner", slog.String("name", name), slog.String("containerID", containerID))
+		if err := a.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+			a.logger.Error("Failed to remove busy runner container", slog.String("name", name), slog.String("containerID", containerID), slog.String("error", err.Error()))
+		}
+	}
 }
 
 var _ listener.Handler = (*AppHandler)(nil)
@@ -221,7 +253,7 @@ type runnerState struct {
 	busy map[string]string
 }
 
-func (r *runnerState) totalCount() int {
+func (r *runnerState) count() int {
 	r.mu.Lock()
 	count := len(r.idle) + len(r.busy)
 	r.mu.Unlock()
@@ -247,11 +279,16 @@ func (r *runnerState) markDone(name string) string {
 
 func (r *runnerState) markDoneUnlocked(name string) string {
 	containerID, ok := r.busy[name]
-	if !ok {
-		panic("marking non-existent runner done")
+	if ok {
+		delete(r.busy, name)
+		return containerID
 	}
-	delete(r.busy, name)
-	return containerID
+	containerID, ok = r.idle[name]
+	if ok {
+		delete(r.idle, name)
+		return containerID
+	}
+	panic("marking non-existent runner done")
 }
 
 func (r *runnerState) addIdle(name, containerID string) {

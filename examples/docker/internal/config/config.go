@@ -3,7 +3,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
+	"os"
+	"strings"
 
 	"github.com/actions/scaleset"
 )
@@ -17,6 +20,8 @@ type Config struct {
 	GitHubApp    scaleset.GitHubAppAuth
 	Token        string
 	RunnerImage  string
+	LogLevel     string
+	LogFormat    string
 }
 
 func (c *Config) defaults() {
@@ -64,5 +69,36 @@ func (c *Config) ActionsAuth() *scaleset.ActionsAuth {
 
 	return &scaleset.ActionsAuth{
 		Token: c.Token,
+	}
+}
+
+func (c *Config) Logger() *slog.Logger {
+	var lvl slog.Level
+	switch strings.ToLower(c.LogLevel) {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "info":
+		lvl = slog.LevelInfo
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+
+	switch c.LogFormat {
+	case "json":
+		return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+			AddSource: true,
+			Level:     lvl,
+		}))
+	case "text":
+		return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			AddSource: true,
+			Level:     lvl,
+		}))
+	default:
+		return slog.New(slog.DiscardHandler)
 	}
 }

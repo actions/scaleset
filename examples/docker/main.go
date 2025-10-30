@@ -49,6 +49,8 @@ func init() {
 	flags.Int64Var(&cfg.GitHubApp.AppInstallationID, "app-installation-id", 0, "Application installation ID")
 	flags.StringVar(&cfg.GitHubApp.AppPrivateKey, "app-private-key", "", "Path to application private key")
 	flags.StringVar(&cfg.Token, "token", "", "Authentication token")
+	flags.StringVar(&cfg.LogLevel, "log-level", "info", "Logging level (debug, info, warn, error)")
+	flags.StringVar(&cfg.LogFormat, "log-format", "text", "Logging format (text, json). If invalid value is provided, defaults to no logs.")
 }
 
 func main() {
