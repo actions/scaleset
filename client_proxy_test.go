@@ -1,11 +1,10 @@
-package scaleset_test
+package scaleset
 
 import (
 	"net/http"
 	"net/url"
 	"testing"
 
-	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/testserver"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,13 +25,13 @@ func TestClientProxy(t *testing.T) {
 		return proxyConfig.ProxyFunc()(req.URL)
 	}
 
-	c, err := scaleset.NewClient("http://github.com/org/repo", nil, scaleset.WithProxy(proxyFunc))
+	c, err := NewClient("http://github.com/org/repo", nil, WithProxy(proxyFunc))
 	require.NoError(t, err)
 
 	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
 	require.NoError(t, err)
 
-	_, err = c.Do(req)
+	_, err = c.do(req)
 	require.NoError(t, err)
 
 	assert.True(t, serverCalled)

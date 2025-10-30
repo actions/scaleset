@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"errors"
@@ -7,14 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestActionsError(t *testing.T) {
 	t.Run("contains the status code, activity ID, and error", func(t *testing.T) {
-		err := &scaleset.ActionsError{
+		err := &ActionsError{
 			ActivityID: "activity-id",
 			StatusCode: 404,
 			Err:        errors.New("example error description"),
@@ -27,10 +26,10 @@ func TestActionsError(t *testing.T) {
 	})
 
 	t.Run("unwraps the error", func(t *testing.T) {
-		err := &scaleset.ActionsError{
+		err := &ActionsError{
 			ActivityID: "activity-id",
 			StatusCode: 404,
-			Err: &scaleset.ActionsExceptionError{
+			Err: &ActionsExceptionError{
 				ExceptionName: "exception-name",
 				Message:       "example error message",
 			},
@@ -40,23 +39,23 @@ func TestActionsError(t *testing.T) {
 	})
 
 	t.Run("is exception is ok", func(t *testing.T) {
-		err := &scaleset.ActionsError{
+		err := &ActionsError{
 			ActivityID: "activity-id",
 			StatusCode: 404,
-			Err: &scaleset.ActionsExceptionError{
+			Err: &ActionsExceptionError{
 				ExceptionName: "exception-name",
 				Message:       "example error message",
 			},
 		}
 
-		var exception *scaleset.ActionsExceptionError
+		var exception *ActionsExceptionError
 		assert.True(t, errors.As(err, &exception))
 
 		assert.True(t, err.IsException("exception-name"))
 	})
 
 	t.Run("is exception is not ok", func(t *testing.T) {
-		tt := map[string]*scaleset.ActionsError{
+		tt := map[string]*ActionsError{
 			"not an exception": {
 				ActivityID: "activity-id",
 				StatusCode: 404,
@@ -65,7 +64,7 @@ func TestActionsError(t *testing.T) {
 			"not target exception": {
 				ActivityID: "activity-id",
 				StatusCode: 404,
-				Err: &scaleset.ActionsExceptionError{
+				Err: &ActionsExceptionError{
 					ExceptionName: "exception-name",
 					Message:       "example error message",
 				},
@@ -83,7 +82,7 @@ func TestActionsError(t *testing.T) {
 
 func TestActionsExceptionError(t *testing.T) {
 	t.Run("contains the exception name and message", func(t *testing.T) {
-		err := &scaleset.ActionsExceptionError{
+		err := &ActionsExceptionError{
 			ExceptionName: "exception-name",
 			Message:       "example error message",
 		}
@@ -96,7 +95,7 @@ func TestActionsExceptionError(t *testing.T) {
 
 func TestGitHubAPIError(t *testing.T) {
 	t.Run("contains the status code, request ID, and error", func(t *testing.T) {
-		err := &scaleset.GitHubAPIError{
+		err := &GitHubAPIError{
 			StatusCode: 404,
 			RequestID:  "request-id",
 			Err:        errors.New("example error description"),
@@ -109,7 +108,7 @@ func TestGitHubAPIError(t *testing.T) {
 	})
 
 	t.Run("unwraps the error", func(t *testing.T) {
-		err := &scaleset.GitHubAPIError{
+		err := &GitHubAPIError{
 			StatusCode: 404,
 			RequestID:  "request-id",
 			Err:        errors.New("example error description"),
@@ -124,16 +123,16 @@ func ParseActionsErrorFromResponse(t *testing.T) {
 		response := &http.Response{
 			ContentLength: 0,
 			Header: http.Header{
-				scaleset.HeaderActionsActivityID: []string{"activity-id"},
+				headerActionsActivityID: []string{"activity-id"},
 			},
 			StatusCode: 404,
 		}
 
-		err := scaleset.ParseActionsErrorFromResponse(response)
+		err := parseActionsErrorFromResponse(response)
 		require.Error(t, err)
-		assert.Equal(t, err.(*scaleset.ActionsError).ActivityID, "activity-id")
-		assert.Equal(t, err.(*scaleset.ActionsError).StatusCode, 404)
-		assert.Equal(t, err.(*scaleset.ActionsError).Err.Error(), "unknown exception")
+		assert.Equal(t, err.(*ActionsError).ActivityID, "activity-id")
+		assert.Equal(t, err.(*ActionsError).StatusCode, 404)
+		assert.Equal(t, err.(*ActionsError).Err.Error(), "unknown exception")
 	})
 
 	t.Run("contains text plain error", func(t *testing.T) {
@@ -141,16 +140,16 @@ func ParseActionsErrorFromResponse(t *testing.T) {
 		response := &http.Response{
 			ContentLength: int64(len(errorMessage)),
 			Header: http.Header{
-				scaleset.HeaderActionsActivityID: []string{"activity-id"},
-				"Content-Type":                   []string{"text/plain"},
+				headerActionsActivityID: []string{"activity-id"},
+				"Content-Type":          []string{"text/plain"},
 			},
 			StatusCode: 404,
 			Body:       io.NopCloser(strings.NewReader(errorMessage)),
 		}
 
-		err := scaleset.ParseActionsErrorFromResponse(response)
+		err := parseActionsErrorFromResponse(response)
 		require.Error(t, err)
-		var actionsError *scaleset.ActionsError
+		var actionsError *ActionsError
 		assert.ErrorAs(t, err, &actionsError)
 		assert.Equal(t, actionsError.ActivityID, "activity-id")
 		assert.Equal(t, actionsError.StatusCode, 404)
@@ -162,21 +161,21 @@ func ParseActionsErrorFromResponse(t *testing.T) {
 		response := &http.Response{
 			ContentLength: int64(len(errorMessage)),
 			Header: http.Header{
-				scaleset.HeaderActionsActivityID: []string{"activity-id"},
-				"Content-Type":                   []string{"application/json"},
+				headerActionsActivityID: []string{"activity-id"},
+				"Content-Type":          []string{"application/json"},
 			},
 			StatusCode: 404,
 			Body:       io.NopCloser(strings.NewReader(errorMessage)),
 		}
 
-		err := scaleset.ParseActionsErrorFromResponse(response)
+		err := parseActionsErrorFromResponse(response)
 		require.Error(t, err)
-		var actionsError *scaleset.ActionsError
+		var actionsError *ActionsError
 		assert.ErrorAs(t, err, &actionsError)
 		assert.Equal(t, actionsError.ActivityID, "activity-id")
 		assert.Equal(t, actionsError.StatusCode, 404)
 
-		inner, ok := actionsError.Err.(*scaleset.ActionsExceptionError)
+		inner, ok := actionsError.Err.(*ActionsExceptionError)
 		require.True(t, ok)
 		assert.Equal(t, inner.ExceptionName, "exception-name")
 		assert.Equal(t, inner.Message, "example error message")
@@ -187,17 +186,17 @@ func ParseActionsErrorFromResponse(t *testing.T) {
 		response := &http.Response{
 			ContentLength: int64(len(errorMessage)),
 			Header: http.Header{
-				scaleset.HeaderActionsActivityID: []string{"activity-id"},
-				"Content-Type":                   []string{"application/json"},
+				headerActionsActivityID: []string{"activity-id"},
+				"Content-Type":          []string{"application/json"},
 			},
 			StatusCode: 404,
 			Body:       io.NopCloser(strings.NewReader(errorMessage)),
 		}
 
-		err := scaleset.ParseActionsErrorFromResponse(response)
+		err := parseActionsErrorFromResponse(response)
 		require.Error(t, err)
 
-		var actionsExceptionError *scaleset.ActionsExceptionError
+		var actionsExceptionError *ActionsExceptionError
 		assert.ErrorAs(t, err, &actionsExceptionError)
 
 		assert.Equal(t, actionsExceptionError.ExceptionName, "exception-name")

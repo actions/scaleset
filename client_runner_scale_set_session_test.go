@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,26 +16,26 @@ const exampleRequestID = "5ddf2050-dae0-013c-9159-04421ad31b68"
 
 func TestCreateMessageSession(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("CreateMessageSession unmarshals correctly", func(t *testing.T) {
 		owner := "foo"
-		runnerScaleSet := scaleset.RunnerScaleSet{
-			Id:            1,
+		runnerScaleSet := RunnerScaleSet{
+			ID:            1,
 			Name:          "ScaleSet",
 			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: scaleset.RunnerSetting{},
+			RunnerSetting: RunnerSetting{},
 		}
 
-		want := &scaleset.RunnerScaleSetSession{
+		want := &RunnerScaleSetSession{
 			OwnerName: "foo",
-			RunnerScaleSet: &scaleset.RunnerScaleSet{
-				Id:   1,
+			RunnerScaleSet: &RunnerScaleSet{
+				ID:   1,
 				Name: "ScaleSet",
 			},
-			MessageQueueUrl:         "http://fake.scaleset.github.com/123",
+			MessageQueueURL:         "http://fake.github.com/123",
 			MessageQueueAccessToken: "fake.jwt.here",
 		}
 
@@ -47,33 +46,33 @@ func TestCreateMessageSession(t *testing.T) {
 						"id": 1,
 						"name": "ScaleSet"
 					},
-					"messageQueueUrl": "http://fake.scaleset.github.com/123",
+					"messageQueueUrl": "http://fake.github.com/123",
 					"messageQueueAccessToken": "fake.jwt.here"
 				}`)
 			w.Write(resp)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
-		got, err := client.CreateMessageSession(ctx, runnerScaleSet.Id, owner)
+		got, err := client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
 	})
 
 	t.Run("CreateMessageSession unmarshals errors into ActionsError", func(t *testing.T) {
 		owner := "foo"
-		runnerScaleSet := scaleset.RunnerScaleSet{
-			Id:            1,
+		runnerScaleSet := RunnerScaleSet{
+			ID:            1,
 			Name:          "ScaleSet",
 			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: scaleset.RunnerSetting{},
+			RunnerSetting: RunnerSetting{},
 		}
 
-		want := &scaleset.ActionsError{
+		want := &ActionsError{
 			ActivityID: exampleRequestID,
 			StatusCode: http.StatusBadRequest,
-			Err: &scaleset.ActionsExceptionError{
+			Err: &ActionsExceptionError{
 				ExceptionName: "CSharpExceptionNameHere",
 				Message:       "could not do something",
 			},
@@ -81,19 +80,19 @@ func TestCreateMessageSession(t *testing.T) {
 
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(scaleset.HeaderActionsActivityID, exampleRequestID)
+			w.Header().Set(headerActionsActivityID, exampleRequestID)
 			w.WriteHeader(http.StatusBadRequest)
 			resp := []byte(`{"typeName": "CSharpExceptionNameHere","message": "could not do something"}`)
 			w.Write(resp)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
-		_, err = client.CreateMessageSession(ctx, runnerScaleSet.Id, owner)
+		_, err = client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
 		require.NotNil(t, err)
 
-		errorTypeForComparison := &scaleset.ActionsError{}
+		errorTypeForComparison := &ActionsError{}
 		assert.True(
 			t,
 			errors.As(err, &errorTypeForComparison),
@@ -106,11 +105,11 @@ func TestCreateMessageSession(t *testing.T) {
 
 	t.Run("CreateMessageSession call is retried the correct amount of times", func(t *testing.T) {
 		owner := "foo"
-		runnerScaleSet := scaleset.RunnerScaleSet{
-			Id:            1,
+		runnerScaleSet := RunnerScaleSet{
+			ID:            1,
 			Name:          "ScaleSet",
 			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: scaleset.RunnerSetting{},
+			RunnerSetting: RunnerSetting{},
 		}
 
 		gotRetries := 0
@@ -124,15 +123,15 @@ func TestCreateMessageSession(t *testing.T) {
 
 		wantRetries := retryMax + 1
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(retryWaitMax),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
 		)
 		require.NoError(t, err)
 
-		_, err = client.CreateMessageSession(ctx, runnerScaleSet.Id, owner)
+		_, err = client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
 		assert.NotNil(t, err)
 		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
 	})
@@ -140,16 +139,16 @@ func TestCreateMessageSession(t *testing.T) {
 
 func TestDeleteMessageSession(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("DeleteMessageSession call is retried the correct amount of times", func(t *testing.T) {
-		runnerScaleSet := scaleset.RunnerScaleSet{
-			Id:            1,
+		runnerScaleSet := RunnerScaleSet{
+			ID:            1,
 			Name:          "ScaleSet",
 			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: scaleset.RunnerSetting{},
+			RunnerSetting: RunnerSetting{},
 		}
 
 		gotRetries := 0
@@ -163,33 +162,33 @@ func TestDeleteMessageSession(t *testing.T) {
 
 		wantRetries := retryMax + 1
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(retryWaitMax),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
 		)
 		require.NoError(t, err)
 
-		sessionId := uuid.New()
+		sessionID := uuid.New()
 
-		err = client.DeleteMessageSession(ctx, runnerScaleSet.Id, &sessionId)
+		err = client.DeleteMessageSession(ctx, runnerScaleSet.ID, sessionID)
 		assert.NotNil(t, err)
 		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
 	})
 }
 
 func TestRefreshMessageSession(t *testing.T) {
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("RefreshMessageSession call is retried the correct amount of times", func(t *testing.T) {
-		runnerScaleSet := scaleset.RunnerScaleSet{
-			Id:            1,
+		runnerScaleSet := RunnerScaleSet{
+			ID:            1,
 			Name:          "ScaleSet",
 			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: scaleset.RunnerSetting{},
+			RunnerSetting: RunnerSetting{},
 		}
 
 		gotRetries := 0
@@ -203,17 +202,17 @@ func TestRefreshMessageSession(t *testing.T) {
 
 		wantRetries := retryMax + 1
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(retryWaitMax),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
 		)
 		require.NoError(t, err)
 
-		sessionId := uuid.New()
+		sessionID := uuid.New()
 
-		_, err = client.RefreshMessageSession(context.Background(), runnerScaleSet.Id, &sessionId)
+		_, err = client.RefreshMessageSession(context.Background(), runnerScaleSet.ID, sessionID)
 		assert.NotNil(t, err)
 		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
 	})
