@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"context"
@@ -10,13 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/testserver"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-var testUserAgent = scaleset.UserAgentInfo{
+var testUserAgent = UserAgentInfo{
 	Version:    "test",
 	CommitSHA:  "test",
 	ScaleSetID: 1,
@@ -59,32 +58,32 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 		}
 
 		for _, scenario := range scenarios {
-			client, err := scaleset.NewClient(scenario.configURL, nil)
+			client, err := NewClient(scenario.configURL, nil)
 			require.NoError(t, err)
 
-			req, err := client.NewGitHubAPIRequest(ctx, http.MethodGet, scenario.path, nil)
+			req, err := client.newGitHubAPIRequest(ctx, http.MethodGet, scenario.path, nil)
 			require.NoError(t, err)
 			assert.Equal(t, scenario.expected, req.URL.String())
 		}
 	})
 
 	t.Run("sets user agent header if present", func(t *testing.T) {
-		client, err := scaleset.NewClient("http://localhost/my-org", nil)
+		client, err := NewClient("http://localhost/my-org", nil)
 		require.NoError(t, err)
 
 		client.SetUserAgent(testUserAgent)
 
-		req, err := client.NewGitHubAPIRequest(ctx, http.MethodGet, "/app/installations/123/access_tokens", nil)
+		req, err := client.newGitHubAPIRequest(ctx, http.MethodGet, "/app/installations/123/access_tokens", nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, testUserAgent.String(), req.Header.Get("User-Agent"))
 	})
 
 	t.Run("sets the body we pass", func(t *testing.T) {
-		client, err := scaleset.NewClient("http://localhost/my-org", nil)
+		client, err := NewClient("http://localhost/my-org", nil)
 		require.NoError(t, err)
 
-		req, err := client.NewGitHubAPIRequest(
+		req, err := client.newGitHubAPIRequest(
 			ctx,
 			http.MethodGet,
 			"/app/installations/123/access_tokens",
@@ -100,17 +99,17 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 
 func TestNewActionsServiceRequest(t *testing.T) {
 	ctx := context.Background()
-	defaultCreds := &scaleset.ActionsAuth{Token: "token"}
+	defaultCreds := &ActionsAuth{Token: "token"}
 
 	t.Run("manages authentication", func(t *testing.T) {
 		t.Run("client is brand new", func(t *testing.T) {
 			token := defaultActionsToken(t)
 			server := testserver.New(t, nil, testserver.WithActionsToken(token))
 
-			client, err := scaleset.NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
 			require.NoError(t, err)
 
-			req, err := client.NewActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.NoError(t, err)
 
 			assert.Equal(t, "Bearer "+token, req.Header.Get("Authorization"))
@@ -120,12 +119,12 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			newToken := defaultActionsToken(t)
 			server := testserver.New(t, nil, testserver.WithActionsToken(newToken))
 
-			client, err := scaleset.NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
 			require.NoError(t, err)
-			client.ActionsServiceAdminToken = "expiring-token"
-			client.ActionsServiceAdminTokenExpiresAt = time.Now().Add(59 * time.Second)
+			client.actionsServiceAdminToken = "expiring-token"
+			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(59 * time.Second)
 
-			req, err := client.NewActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.NoError(t, err)
 
 			assert.Equal(t, "Bearer "+newToken, req.Header.Get("Authorization"))
@@ -146,17 +145,17 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				testserver.WithActionsToken(newToken),
 				testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler),
 			)
-			client, err := scaleset.NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
 			expiresAt := time.Now().Add(59 * time.Second)
-			client.ActionsServiceAdminToken = expiringToken
-			client.ActionsServiceAdminTokenExpiresAt = expiresAt
-			_, err = client.NewActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			client.actionsServiceAdminToken = expiringToken
+			client.actionsServiceAdminTokenExpiresAt = expiresAt
+			_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), errMessage)
-			assert.Equal(t, client.ActionsServiceAdminToken, expiringToken)
-			assert.Equal(t, client.ActionsServiceAdminTokenExpiresAt, expiresAt)
+			assert.Equal(t, client.actionsServiceAdminToken, expiringToken)
+			assert.Equal(t, client.actionsServiceAdminTokenExpiresAt, expiresAt)
 		})
 
 		t.Run("admin token refresh retry", func(t *testing.T) {
@@ -164,9 +163,9 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			errMessage := `{"message":"test"}`
 
 			srv := "http://github.com/my-org"
-			resp := &scaleset.ActionsServiceAdminConnection{
+			resp := &ActionsServiceAdminConnection{
 				AdminToken:        &newToken,
-				ActionsServiceUrl: &srv,
+				ActionsServiceURL: &srv,
 			}
 			failures := 0
 			unauthorizedHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -182,30 +181,30 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(resp)
 			}
 			server := testserver.New(t, nil, testserver.WithActionsToken("random-token"), testserver.WithActionsToken(newToken), testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler))
-			client, err := scaleset.NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
 			expiresAt := time.Now().Add(59 * time.Second)
-			client.ActionsServiceAdminToken = expiringToken
-			client.ActionsServiceAdminTokenExpiresAt = expiresAt
+			client.actionsServiceAdminToken = expiringToken
+			client.actionsServiceAdminTokenExpiresAt = expiresAt
 
-			_, err = client.NewActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.NoError(t, err)
-			assert.Equal(t, client.ActionsServiceAdminToken, newToken)
-			assert.Equal(t, client.ActionsServiceURL, srv)
-			assert.NotEqual(t, client.ActionsServiceAdminTokenExpiresAt, expiresAt)
+			assert.Equal(t, client.actionsServiceAdminToken, newToken)
+			assert.Equal(t, client.actionsServiceURL, srv)
+			assert.NotEqual(t, client.actionsServiceAdminTokenExpiresAt, expiresAt)
 		})
 
 		t.Run("token is currently valid", func(t *testing.T) {
 			tokenThatShouldNotBeFetched := defaultActionsToken(t)
 			server := testserver.New(t, nil, testserver.WithActionsToken(tokenThatShouldNotBeFetched))
 
-			client, err := scaleset.NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
 			require.NoError(t, err)
-			client.ActionsServiceAdminToken = "healthy-token"
-			client.ActionsServiceAdminTokenExpiresAt = time.Now().Add(1 * time.Hour)
+			client.actionsServiceAdminToken = "healthy-token"
+			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(1 * time.Hour)
 
-			req, err := client.NewActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.NoError(t, err)
 
 			assert.Equal(t, "Bearer healthy-token", req.Header.Get("Authorization"))
@@ -215,10 +214,10 @@ func TestNewActionsServiceRequest(t *testing.T) {
 	t.Run("builds the right URL including api version", func(t *testing.T) {
 		server := testserver.New(t, nil)
 
-		client, err := scaleset.NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+		client, err := NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
 		require.NoError(t, err)
 
-		req, err := client.NewActionsServiceRequest(ctx, http.MethodGet, "/my/path?name=banana", nil)
+		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path?name=banana", nil)
 		require.NoError(t, err)
 
 		serverURL, err := url.Parse(server.URL)
@@ -234,12 +233,12 @@ func TestNewActionsServiceRequest(t *testing.T) {
 	t.Run("populates header", func(t *testing.T) {
 		server := testserver.New(t, nil)
 
-		client, err := scaleset.NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+		client, err := NewClient(server.ConfigURLForOrg("my-org"), defaultCreds)
 		require.NoError(t, err)
 
 		client.SetUserAgent(testUserAgent)
 
-		req, err := client.NewActionsServiceRequest(ctx, http.MethodGet, "/my/path", nil)
+		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path", nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, testUserAgent.String(), req.Header.Get("User-Agent"))

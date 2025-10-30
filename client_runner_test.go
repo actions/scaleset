@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"context"
@@ -6,21 +6,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGetRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("Get Runner", func(t *testing.T) {
 		var runnerID int64 = 1
-		want := &scaleset.RunnerReference{
-			Id:   int(runnerID),
+		want := &RunnerReference{
+			ID:   int(runnerID),
 			Name: "self-hosted-ubuntu",
 		}
 		response := []byte(`{"id": 1, "name": "self-hosted-ubuntu"}`)
@@ -29,7 +28,7 @@ func TestGetRunner(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GetRunner(ctx, runnerID)
@@ -50,7 +49,7 @@ func TestGetRunner(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth, scaleset.WithRetryMax(retryMax), scaleset.WithRetryWaitMax(retryWaitMax))
+		client, err := NewClient(server.configURLForOrg("my-org"), auth, WithRetryMax(retryMax), WithRetryWaitMax(retryWaitMax))
 		require.NoError(t, err)
 
 		_, err = client.GetRunner(ctx, runnerID)
@@ -61,15 +60,15 @@ func TestGetRunner(t *testing.T) {
 
 func TestGetRunnerByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("Get Runner by Name", func(t *testing.T) {
 		var runnerID int64 = 1
 		var runnerName = "self-hosted-ubuntu"
-		want := &scaleset.RunnerReference{
-			Id:   int(runnerID),
+		want := &RunnerReference{
+			ID:   int(runnerID),
 			Name: runnerName,
 		}
 		response := []byte(`{"count": 1, "value": [{"id": 1, "name": "self-hosted-ubuntu"}]}`)
@@ -78,7 +77,7 @@ func TestGetRunnerByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerByName(ctx, runnerName)
@@ -94,7 +93,7 @@ func TestGetRunnerByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerByName(ctx, runnerName)
@@ -116,7 +115,7 @@ func TestGetRunnerByName(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth, scaleset.WithRetryMax(retryMax), scaleset.WithRetryWaitMax(retryWaitMax))
+		client, err := NewClient(server.configURLForOrg("my-org"), auth, WithRetryMax(retryMax), WithRetryWaitMax(retryWaitMax))
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerByName(ctx, runnerName)
@@ -127,7 +126,7 @@ func TestGetRunnerByName(t *testing.T) {
 
 func TestDeleteRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
@@ -138,7 +137,7 @@ func TestDeleteRunner(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		err = client.RemoveRunner(ctx, runnerID)
@@ -159,11 +158,11 @@ func TestDeleteRunner(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(retryWaitMax),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
 		)
 		require.NoError(t, err)
 
@@ -175,14 +174,14 @@ func TestDeleteRunner(t *testing.T) {
 
 func TestGetRunnerGroupByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("Get RunnerGroup by Name", func(t *testing.T) {
 		var runnerGroupID int64 = 1
 		var runnerGroupName = "test-runner-group"
-		want := &scaleset.RunnerGroup{
+		want := &RunnerGroup{
 			ID:   runnerGroupID,
 			Name: runnerGroupName,
 		}
@@ -192,7 +191,7 @@ func TestGetRunnerGroupByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerGroupByName(ctx, runnerGroupName)
@@ -208,7 +207,7 @@ func TestGetRunnerGroupByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerGroupByName(ctx, runnerGroupName)

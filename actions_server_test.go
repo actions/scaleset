@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"net/http"

@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"context"
@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,10 +61,10 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &scaleset.ActionsAuth{
+		auth := &ActionsAuth{
 			Token: "token",
 		}
-		client, err := scaleset.NewClient(configURL, auth)
+		client, err := NewClient(configURL, auth)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 
@@ -93,7 +92,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &scaleset.ActionsAuth{
+		auth := &ActionsAuth{
 			Token: "token",
 		}
 
@@ -103,10 +102,10 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		pool := x509.NewCertPool()
 		require.True(t, pool.AppendCertsFromPEM(cert))
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			configURL,
 			auth,
-			scaleset.WithRootCAs(pool),
+			WithRootCAs(pool),
 		)
 		require.NoError(t, err)
 		assert.NotNil(t, client)
@@ -125,7 +124,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &scaleset.ActionsAuth{
+		auth := &ActionsAuth{
 			Token: "token",
 		}
 
@@ -135,11 +134,11 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		pool := x509.NewCertPool()
 		require.True(t, pool.AppendCertsFromPEM(cert))
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			configURL,
 			auth,
-			scaleset.WithRootCAs(pool),
-			scaleset.WithRetryMax(0),
+			WithRootCAs(pool),
+			WithRetryMax(0),
 		)
 		require.NoError(t, err)
 		require.NotNil(t, client)
@@ -152,11 +151,11 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
 		configURL := server.URL + "/my-org"
 
-		auth := &scaleset.ActionsAuth{
+		auth := &ActionsAuth{
 			Token: "token",
 		}
 
-		client, err := scaleset.NewClient(configURL, auth, scaleset.WithoutTLSVerify())
+		client, err := NewClient(configURL, auth, WithoutTLSVerify())
 		require.NoError(t, err)
 		assert.NotNil(t, client)
 	})

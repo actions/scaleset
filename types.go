@@ -12,9 +12,9 @@ type AcquirableJobList struct {
 }
 
 type AcquirableJob struct {
-	AcquireJobUrl   string   `json:"acquireJobUrl"`
+	AcquireJobURL   string   `json:"acquireJobUrl"`
 	MessageType     string   `json:"messageType"`
-	RunnerRequestId int64    `json:"runnerRequestId"`
+	RunnerRequestID int64    `json:"runnerRequestId"`
 	RepositoryName  string   `json:"repositoryName"`
 	OwnerName       string   `json:"ownerName"`
 	JobWorkflowRef  string   `json:"jobWorkflowRef"`
@@ -28,7 +28,7 @@ type Int64List struct {
 }
 
 type JobAvailable struct {
-	AcquireJobUrl string `json:"acquireJobUrl"`
+	AcquireJobURL string `json:"acquireJobUrl"`
 	JobMessageBase
 }
 
@@ -44,7 +44,7 @@ type JobStarted struct {
 
 type JobCompleted struct {
 	Result     string `json:"result"`
-	RunnerId   int    `json:"runnerId"`
+	RunnerID   int    `json:"runnerId"`
 	RunnerName string `json:"runnerName"`
 	JobMessageBase
 }
@@ -88,14 +88,14 @@ type RunnerGroupList struct {
 }
 
 type RunnerScaleSet struct {
-	Id                 int                      `json:"id,omitempty"`
+	ID                 int                      `json:"id,omitempty"`
 	Name               string                   `json:"name,omitempty"`
-	RunnerGroupId      int                      `json:"runnerGroupId,omitempty"`
+	RunnerGroupID      int                      `json:"runnerGroupId,omitempty"`
 	RunnerGroupName    string                   `json:"runnerGroupName,omitempty"`
 	Labels             []Label                  `json:"labels,omitempty"`
 	RunnerSetting      RunnerSetting            `json:"RunnerSetting,omitempty"`
 	CreatedOn          time.Time                `json:"createdOn,omitempty"`
-	RunnerJitConfigUrl string                   `json:"runnerJitConfigUrl,omitempty"`
+	RunnerJitConfigURL string                   `json:"runnerJitConfigUrl,omitempty"`
 	Statistics         *RunnerScaleSetStatistic `json:"statistics,omitempty"`
 }
 
@@ -105,7 +105,7 @@ type RunnerScaleSetJitRunnerSetting struct {
 }
 
 type RunnerScaleSetMessage struct {
-	MessageId   int64                    `json:"messageId"`
+	MessageID   int64                    `json:"messageId"`
 	MessageType string                   `json:"messageType"`
 	Body        string                   `json:"body"`
 	Statistics  *RunnerScaleSetStatistic `json:"statistics"`
@@ -117,10 +117,10 @@ type runnerScaleSetsResponse struct {
 }
 
 type RunnerScaleSetSession struct {
-	SessionId               *uuid.UUID               `json:"sessionId,omitempty"`
+	SessionID               *uuid.UUID               `json:"sessionId,omitempty"`
 	OwnerName               string                   `json:"ownerName,omitempty"`
 	RunnerScaleSet          *RunnerScaleSet          `json:"runnerScaleSet,omitempty"`
-	MessageQueueUrl         string                   `json:"messageQueueUrl,omitempty"`
+	MessageQueueURL         string                   `json:"messageQueueUrl,omitempty"`
 	MessageQueueAccessToken string                   `json:"messageQueueAccessToken,omitempty"`
 	Statistics              *RunnerScaleSetStatistic `json:"statistics,omitempty"`
 }
@@ -147,9 +147,9 @@ type RunnerReferenceList struct {
 }
 
 type RunnerReference struct {
-	Id               int    `json:"id"`
+	ID               int    `json:"id"`
 	Name             string `json:"name"`
-	RunnerScaleSetId int    `json:"runnerScaleSetId"`
+	RunnerScaleSetID int    `json:"runnerScaleSetId"`
 }
 
 type RunnerScaleSetJitRunnerConfig struct {

@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"context"
@@ -9,20 +9,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGetMessage(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
-	runnerScaleSetMessage := &scaleset.RunnerScaleSetMessage{
-		MessageId:   1,
+	runnerScaleSetMessage := &RunnerScaleSetMessage{
+		MessageID:   1,
 		MessageType: "rssType",
 	}
 
@@ -33,7 +32,7 @@ func TestGetMessage(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(s.configURLForOrg("my-org"), auth)
+		client, err := NewClient(s.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GetMessage(ctx, s.URL, token, 0, 10)
@@ -50,7 +49,7 @@ func TestGetMessage(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(s.configURLForOrg("my-org"), auth)
+		client, err := NewClient(s.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GetMessage(ctx, s.URL, token, 1, 10)
@@ -69,11 +68,11 @@ func TestGetMessage(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(1*time.Millisecond),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Millisecond),
 		)
 		require.NoError(t, err)
 
@@ -87,18 +86,18 @@ func TestGetMessage(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
 		require.NotNil(t, err)
 
-		var expectedErr *scaleset.MessageQueueTokenExpiredError
+		var expectedErr *MessageQueueTokenExpiredError
 		require.True(t, errors.As(err, &expectedErr))
 	})
 
 	t.Run("Status code not found", func(t *testing.T) {
-		want := scaleset.ActionsError{
+		want := ActionsError{
 			Err:        errors.New("unknown exception"),
 			StatusCode: 404,
 		}
@@ -106,7 +105,7 @@ func TestGetMessage(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
@@ -120,7 +119,7 @@ func TestGetMessage(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
@@ -129,7 +128,7 @@ func TestGetMessage(t *testing.T) {
 
 	t.Run("Capacity error handling", func(t *testing.T) {
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			hc := r.Header.Get(scaleset.HeaderScaleSetMaxCapacity)
+			hc := r.Header.Get(HeaderScaleSetMaxCapacity)
 			c, err := strconv.Atoi(hc)
 			require.NoError(t, err)
 			assert.GreaterOrEqual(t, c, 0)
@@ -138,17 +137,17 @@ func TestGetMessage(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, -1)
 		require.Error(t, err)
 		// Ensure we don't send requests with negative capacity
-		assert.False(t, errors.Is(err, &scaleset.ActionsError{}))
+		assert.False(t, errors.Is(err, &ActionsError{}))
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 0)
 		assert.Error(t, err)
-		var expectedErr *scaleset.ActionsError
+		var expectedErr *ActionsError
 		assert.ErrorAs(t, err, &expectedErr)
 		assert.Equal(t, http.StatusBadRequest, expectedErr.StatusCode)
 	})
@@ -156,13 +155,13 @@ func TestGetMessage(t *testing.T) {
 
 func TestDeleteMessage(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
-	runnerScaleSetMessage := &scaleset.RunnerScaleSetMessage{
-		MessageId:   1,
+	runnerScaleSetMessage := &RunnerScaleSetMessage{
+		MessageID:   1,
 		MessageType: "rssType",
 	}
 
@@ -171,10 +170,10 @@ func TestDeleteMessage(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageId)
+		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
 		assert.Nil(t, err)
 	})
 
@@ -183,12 +182,12 @@ func TestDeleteMessage(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		err = client.DeleteMessage(ctx, server.URL, token, 0)
 		require.NotNil(t, err)
-		var expectedErr *scaleset.MessageQueueTokenExpiredError
+		var expectedErr *MessageQueueTokenExpiredError
 		assert.True(t, errors.As(err, &expectedErr))
 	})
 
@@ -198,12 +197,12 @@ func TestDeleteMessage(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageId)
+		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
 		require.NotNil(t, err)
-		var expectedErr *scaleset.ActionsError
+		var expectedErr *ActionsError
 		assert.True(t, errors.As(err, &expectedErr))
 	},
 	)
@@ -216,21 +215,21 @@ func TestDeleteMessage(t *testing.T) {
 		}))
 
 		retryMax := 1
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(1*time.Nanosecond),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Nanosecond),
 		)
 		require.NoError(t, err)
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageId)
+		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
 		assert.NotNil(t, err)
 		expectedRetry := retryMax + 1
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
 	})
 
 	t.Run("No message found", func(t *testing.T) {
-		want := (*scaleset.RunnerScaleSetMessage)(nil)
+		want := (*RunnerScaleSetMessage)(nil)
 		rsl, err := json.Marshal(want)
 		require.NoError(t, err)
 
@@ -238,11 +237,11 @@ func TestDeleteMessage(t *testing.T) {
 			w.Write(rsl)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageId+1)
-		var expectedErr *scaleset.ActionsError
+		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID+1)
+		var expectedErr *ActionsError
 		require.True(t, errors.As(err, &expectedErr))
 	})
 }

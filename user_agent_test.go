@@ -1,14 +1,14 @@
-package scaleset_test
+package scaleset
 
 import (
 	"testing"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestUserAgentInfoString(t *testing.T) {
-	userAgentInfo := scaleset.UserAgentInfo{
+	userAgentInfo := UserAgentInfo{
+		System:     "actions-runner-controller",
 		Version:    "0.1.0",
 		CommitSHA:  "1234567890abcdef",
 		ScaleSetID: 10,

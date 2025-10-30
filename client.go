@@ -1,25 +1,25 @@
-// Package scaleset provides a client for GitHub Actions Runner Scale Set API.
+// Package scaleset package provides a client to interact with GitHub Scale Set APIs.
 package scaleset
 
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"github.com/hashicorp/go-retryablehttp"
@@ -30,27 +30,45 @@ const (
 	scaleSetEndpoint = "_apis/runtime/runnerscalesets"
 )
 
-// Header used to propagate capacity information to the back-end
+type atomicValue[T any] struct {
+	v atomic.Value
+}
+
+func (v *atomicValue[T]) CompareAndSwap(old, new T) (swapped bool) {
+	return v.v.CompareAndSwap(old, new)
+}
+
+func (v *atomicValue[T]) Load() T {
+	return v.v.Load().(T)
+}
+
+func (v *atomicValue[T]) Store(val T) {
+	v.v.Store(val)
+}
+
+func (v *atomicValue[T]) Swap(new T) (old T) {
+	return v.v.Swap(new).(T)
+}
+
+// HeaderScaleSetMaxCapacity used to propagate capacity information to the back-end
 const HeaderScaleSetMaxCapacity = "X-ScaleSetMaxCapacity"
 
 type Client struct {
-	*http.Client
+	httpClient *http.Client
 
-	// lock for refreshing the ActionsServiceAdminToken and ActionsServiceAdminTokenExpiresAt
-	mu sync.Mutex
-
-	// TODO: Convert to unexported fields once refactor of Listener is complete
-	ActionsServiceAdminToken          string
-	ActionsServiceAdminTokenExpiresAt time.Time
-	ActionsServiceURL                 string
+	actionsMu                         sync.Mutex // guards actionsService fields
+	actionsServiceAdminToken          string
+	actionsServiceAdminTokenExpiresAt time.Time
+	actionsServiceURL                 string
 
 	retryMax     int
 	retryWaitMax time.Duration
 
-	creds     *ActionsAuth
-	config    *GitHubConfig
-	logger    logr.Logger
-	userAgent UserAgentInfo
+	creds  *ActionsAuth
+	config *GitHubConfig
+	logger *slog.Logger
+
+	userAgent atomicValue[string]
 
 	rootCAs               *x509.CertPool
 	tlsInsecureSkipVerify bool
@@ -60,24 +78,27 @@ type Client struct {
 
 type GitHubAppAuth struct {
 	// AppID is the ID or the Client ID of the application
-	AppID             string
+	AppID string
+	// AppInstallationID is the installation ID of the GitHub App
 	AppInstallationID int64
-	AppPrivateKey     string
+	// AppPrivateKey is the private key of the GitHub App in PEM format
+	AppPrivateKey string
 }
 
 type ActionsAuth struct {
-	// GitHub App
-	AppCreds *GitHubAppAuth
-
+	// AppCreds is the GitHub App credentials
+	App *GitHubAppAuth
 	// GitHub PAT
 	Token string
 }
 
 type ProxyFunc func(req *http.Request) (*url.URL, error)
 
-type ClientOption func(*Client)
+type Option func(*Client)
 
 type UserAgentInfo struct {
+	// System is the name of the scale set implementation
+	System string
 	// Version is the version of the controller
 	Version string
 	// CommitSHA is the git commit SHA of the controller
@@ -102,46 +123,46 @@ func (u UserAgentInfo) String() string {
 		proxy = "Proxy/enabled"
 	}
 
-	return fmt.Sprintf("actions-runner-controller/%s (%s; %s) ScaleSetID/%s (%s)", u.Version, u.CommitSHA, u.Subsystem, scaleSetID, proxy)
+	return fmt.Sprintf("%s/%s (%s; %s) ScaleSetID/%s (%s)", u.System, u.Version, u.CommitSHA, u.Subsystem, scaleSetID, proxy)
 }
 
-func WithLogger(logger logr.Logger) ClientOption {
+func WithLogger(logger slog.Logger) Option {
 	return func(c *Client) {
-		c.logger = logger
+		c.logger = &logger
 	}
 }
 
-func WithRetryMax(retryMax int) ClientOption {
+func WithRetryMax(retryMax int) Option {
 	return func(c *Client) {
 		c.retryMax = retryMax
 	}
 }
 
-func WithRetryWaitMax(retryWaitMax time.Duration) ClientOption {
+func WithRetryWaitMax(retryWaitMax time.Duration) Option {
 	return func(c *Client) {
 		c.retryWaitMax = retryWaitMax
 	}
 }
 
-func WithRootCAs(rootCAs *x509.CertPool) ClientOption {
+func WithRootCAs(rootCAs *x509.CertPool) Option {
 	return func(c *Client) {
 		c.rootCAs = rootCAs
 	}
 }
 
-func WithoutTLSVerify() ClientOption {
+func WithoutTLSVerify() Option {
 	return func(c *Client) {
 		c.tlsInsecureSkipVerify = true
 	}
 }
 
-func WithProxy(proxyFunc ProxyFunc) ClientOption {
+func WithProxy(proxyFunc ProxyFunc) Option {
 	return func(c *Client) {
 		c.proxyFunc = proxyFunc
 	}
 }
 
-func NewClient(githubConfigURL string, creds *ActionsAuth, options ...ClientOption) (*Client, error) {
+func NewClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*Client, error) {
 	config, err := ParseGitHubConfigFromURL(githubConfigURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse githubConfigURL: %w", err)
@@ -150,23 +171,26 @@ func NewClient(githubConfigURL string, creds *ActionsAuth, options ...ClientOpti
 	ac := &Client{
 		creds:  creds,
 		config: config,
-		logger: logr.Discard(),
+		logger: slog.New(slog.DiscardHandler),
 
 		// retryablehttp defaults
 		retryMax:     4,
 		retryWaitMax: 30 * time.Second,
-		userAgent: UserAgentInfo{
-			Version:    "NA",
-			CommitSHA:  "NA",
-			ScaleSetID: 0,
-		},
 	}
+
+	ac.userAgent.Store(
+		UserAgentInfo{
+			Version:    "N/A",
+			CommitSHA:  "N/A",
+			ScaleSetID: 0,
+		}.String())
 
 	for _, option := range options {
 		option(ac)
 	}
 
 	retryClient := retryablehttp.NewClient()
+	retryClient.Logger = ac.logger
 
 	retryClient.RetryMax = ac.retryMax
 	retryClient.RetryWaitMax = ac.retryWaitMax
@@ -194,46 +218,18 @@ func NewClient(githubConfigURL string, creds *ActionsAuth, options ...ClientOpti
 	transport.Proxy = ac.proxyFunc
 
 	retryClient.HTTPClient.Transport = transport
-	ac.Client = retryClient.StandardClient()
+	ac.httpClient = retryClient.StandardClient()
 
 	return ac, nil
 }
 
+// SetUserAgent updates the user agent
 func (c *Client) SetUserAgent(info UserAgentInfo) {
-	c.userAgent = info
+	c.userAgent.Store(info.String())
 }
 
-// Identifier returns a string to help identify a client uniquely.
-// This is used for caching client instances and understanding when a config
-// change warrants creating a new client. Any changes to Client that would
-// require a new client should be reflected here.
-func (c *Client) Identifier() string {
-	identifier := fmt.Sprintf("configURL:%q,", c.config.ConfigURL.String())
-
-	if c.creds.Token != "" {
-		identifier += fmt.Sprintf("token:%q,", c.creds.Token)
-	}
-
-	if c.creds.AppCreds != nil {
-		identifier += fmt.Sprintf(
-			"appID:%q,installationID:%q,key:%q",
-			c.creds.AppCreds.AppID,
-			c.creds.AppCreds.AppInstallationID,
-			c.creds.AppCreds.AppPrivateKey,
-		)
-	}
-
-	if c.rootCAs != nil {
-		// ignoring because this cert pool is intended not to come from SystemCertPool
-		// nolint:staticcheck
-		identifier += fmt.Sprintf("rootCAs:%q", c.rootCAs.Subjects())
-	}
-
-	return uuid.NewHash(sha256.New(), uuid.NameSpaceOID, []byte(identifier), 6).String()
-}
-
-func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	resp, err := c.Client.Do(req)
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("client request failed: %w", err)
 	}
@@ -252,19 +248,19 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c *Client) NewGitHubAPIRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+func (c *Client) newGitHubAPIRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	u := c.config.GitHubAPIURL(path)
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", c.userAgent.String())
+	req.Header.Set("User-Agent", c.userAgent.Load())
 
 	return req, nil
 }
 
-func (c *Client) NewActionsServiceRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+func (c *Client) newActionsServiceRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	err := c.updateTokenIfNeeded(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue update token if needed: %w", err)
@@ -275,9 +271,9 @@ func (c *Client) NewActionsServiceRequest(ctx context.Context, method, path stri
 		return nil, fmt.Errorf("failed to parse path %q: %w", path, err)
 	}
 
-	urlString, err := url.JoinPath(c.ActionsServiceURL, parsedPath.Path)
+	urlString, err := url.JoinPath(c.actionsServiceURL, parsedPath.Path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to join path (actions_service_url=%q, parsedPath=%q): %w", c.ActionsServiceURL, parsedPath.Path, err)
+		return nil, fmt.Errorf("failed to join path (actions_service_url=%q, parsedPath=%q): %w", c.actionsServiceURL, parsedPath.Path, err)
 	}
 
 	u, err := url.Parse(urlString)
@@ -299,43 +295,45 @@ func (c *Client) NewActionsServiceRequest(ctx context.Context, method, path stri
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.ActionsServiceAdminToken))
-	req.Header.Set("User-Agent", c.userAgent.String())
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.actionsServiceAdminToken))
+	req.Header.Set("User-Agent", c.userAgent.Load())
 
 	return req, nil
 }
 
-func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupId int, runnerScaleSetName string) (*RunnerScaleSet, error) {
-	path := fmt.Sprintf("/%s?runnerGroupId=%d&name=%s", scaleSetEndpoint, runnerGroupId, runnerScaleSetName)
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodGet, path, nil)
+func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runnerScaleSetName string) (*RunnerScaleSet, error) {
+	path := fmt.Sprintf("/%s?runnerGroupId=%d&name=%s", scaleSetEndpoint, runnerGroupID, runnerScaleSetName)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 
 	var runnerScaleSetList *runnerScaleSetsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&runnerScaleSetList); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
 	if runnerScaleSetList.Count == 0 {
 		return nil, nil
 	}
+
 	if runnerScaleSetList.Count > 1 {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        fmt.Errorf("multiple runner scale sets found with name %q", runnerScaleSetName),
 		}
 	}
@@ -343,27 +341,28 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupId int, runne
 	return &runnerScaleSetList.RunnerScaleSets[0], nil
 }
 
-func (c *Client) GetRunnerScaleSetById(ctx context.Context, runnerScaleSetId int) (*RunnerScaleSet, error) {
-	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetId)
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodGet, path, nil)
+func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int) (*RunnerScaleSet, error) {
+	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 
 	var runnerScaleSet *RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&runnerScaleSet); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
@@ -372,12 +371,12 @@ func (c *Client) GetRunnerScaleSetById(ctx context.Context, runnerScaleSetId int
 
 func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (*RunnerGroup, error) {
 	path := fmt.Sprintf("/_apis/runtime/runnergroups/?groupName=%s", runnerGroup)
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
@@ -387,13 +386,13 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 		if err != nil {
 			return nil, &ActionsError{
 				StatusCode: resp.StatusCode,
-				ActivityID: resp.Header.Get(HeaderActionsActivityID),
+				ActivityID: resp.Header.Get(headerActionsActivityID),
 				Err:        err,
 			}
 		}
 		return nil, fmt.Errorf("unexpected status code: %w", &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        errors.New(string(body)),
 		})
 	}
@@ -403,7 +402,7 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	if err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
@@ -411,7 +410,7 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	if runnerGroupList.Count == 0 {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        fmt.Errorf("no runner group found with name %q", runnerGroup),
 		}
 	}
@@ -419,7 +418,7 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	if runnerGroupList.Count > 1 {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        fmt.Errorf("multiple runner group found with name %q", runnerGroup),
 		}
 	}
@@ -433,92 +432,93 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 		return nil, fmt.Errorf("failed to marshal runner scale set: %w", err)
 	}
 
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodPost, scaleSetEndpoint, bytes.NewReader(body))
+	req, err := c.newActionsServiceRequest(ctx, http.MethodPost, scaleSetEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 	var createdRunnerScaleSet *RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&createdRunnerScaleSet); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
 	return createdRunnerScaleSet, nil
 }
 
-func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetId int, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
-	path := fmt.Sprintf("%s/%d", scaleSetEndpoint, runnerScaleSetId)
+func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
+	path := fmt.Sprintf("%s/%d", scaleSetEndpoint, runnerScaleSetID)
 
 	body, err := json.Marshal(runnerScaleSet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal runner scale set: %w", err)
 	}
 
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodPatch, path, bytes.NewReader(body))
+	req, err := c.newActionsServiceRequest(ctx, http.MethodPatch, path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 
 	var updatedRunnerScaleSet *RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&updatedRunnerScaleSet); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
 	return updatedRunnerScaleSet, nil
 }
 
-func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetId int) error {
-	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetId)
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodDelete, path, nil)
+func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int) error {
+	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return ParseActionsErrorFromResponse(resp)
+		return parseActionsErrorFromResponse(resp)
 	}
 
-	defer resp.Body.Close()
 	return nil
 }
 
-func (c *Client) GetMessage(ctx context.Context, messageQueueUrl, messageQueueAccessToken string, lastMessageId int64, maxCapacity int) (*RunnerScaleSetMessage, error) {
-	u, err := url.Parse(messageQueueUrl)
+// GetMessage fetches a message from the runner scale set message queue.
+func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int64, maxCapacity int) (*RunnerScaleSetMessage, error) {
+	u, err := url.Parse(messageQueueURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse message queue url: %w", err)
 	}
 
-	if lastMessageId > 0 {
+	if lastMessageID > 0 {
 		q := u.Query()
-		q.Set("lastMessageId", strconv.FormatInt(lastMessageId, 10))
+		q.Set("lastMessageId", strconv.FormatInt(lastMessageID, 10))
 		u.RawQuery = q.Encode()
 	}
 
@@ -533,36 +533,35 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueUrl, messageQueueAc
 
 	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
-	req.Header.Set("User-Agent", c.userAgent.String())
+	req.Header.Set("User-Agent", c.userAgent.Load())
 	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusAccepted {
-		defer resp.Body.Close()
 		return nil, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode != http.StatusUnauthorized {
-			return nil, ParseActionsErrorFromResponse(resp)
+			return nil, parseActionsErrorFromResponse(resp)
 		}
 
-		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)
 		body = trimByteOrderMark(body)
 		if err != nil {
 			return nil, &ActionsError{
-				ActivityID: resp.Header.Get(HeaderActionsActivityID),
+				ActivityID: resp.Header.Get(headerActionsActivityID),
 				StatusCode: resp.StatusCode,
 				Err:        err,
 			}
 		}
 		return nil, &MessageQueueTokenExpiredError{
-			activityID: resp.Header.Get(HeaderActionsActivityID),
+			activityID: resp.Header.Get(headerActionsActivityID),
 			statusCode: resp.StatusCode,
 			msg:        string(body),
 		}
@@ -572,20 +571,20 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueUrl, messageQueueAc
 	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
 	return message, nil
 }
 
-func (c *Client) DeleteMessage(ctx context.Context, messageQueueUrl, messageQueueAccessToken string, messageId int64) error {
-	u, err := url.Parse(messageQueueUrl)
+func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID int64) error {
+	u, err := url.Parse(messageQueueURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse message queue url: %w", err)
 	}
 
-	u.Path = fmt.Sprintf("%s/%d", u.Path, messageId)
+	u.Path = fmt.Sprintf("%s/%d", u.Path, messageID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
 	if err != nil {
@@ -594,39 +593,40 @@ func (c *Client) DeleteMessage(ctx context.Context, messageQueueUrl, messageQueu
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
-	req.Header.Set("User-Agent", c.userAgent.String())
+	req.Header.Set("User-Agent", c.userAgent.Load())
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNoContent {
-		if resp.StatusCode != http.StatusUnauthorized {
-			return ParseActionsErrorFromResponse(resp)
-		}
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
 
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		body = trimByteOrderMark(body)
-		if err != nil {
-			return &ActionsError{
-				ActivityID: resp.Header.Get(HeaderActionsActivityID),
-				StatusCode: resp.StatusCode,
-				Err:        err,
-			}
-		}
-		return &MessageQueueTokenExpiredError{
-			activityID: resp.Header.Get(HeaderActionsActivityID),
-			statusCode: resp.StatusCode,
-			msg:        string(body),
+	if resp.StatusCode != http.StatusUnauthorized {
+		return parseActionsErrorFromResponse(resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	body = trimByteOrderMark(body)
+	if err != nil {
+		return &ActionsError{
+			ActivityID: resp.Header.Get(headerActionsActivityID),
+			StatusCode: resp.StatusCode,
+			Err:        err,
 		}
 	}
-	return nil
+	return &MessageQueueTokenExpiredError{
+		activityID: resp.Header.Get(headerActionsActivityID),
+		statusCode: resp.StatusCode,
+		msg:        string(body),
+	}
 }
 
-func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetId int, owner string) (*RunnerScaleSetSession, error) {
-	path := fmt.Sprintf("/%s/%d/sessions", scaleSetEndpoint, runnerScaleSetId)
+func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*RunnerScaleSetSession, error) {
+	path := fmt.Sprintf("/%s/%d/sessions", scaleSetEndpoint, runnerScaleSetID)
 
 	newSession := &RunnerScaleSetSession{
 		OwnerName: owner,
@@ -646,13 +646,13 @@ func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetId int,
 	return createdSession, nil
 }
 
-func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetId int, sessionId *uuid.UUID) error {
-	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetId, sessionId.String())
+func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error {
+	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	return c.doSessionRequest(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
-func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetId int, sessionId *uuid.UUID) (*RunnerScaleSetSession, error) {
-	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetId, sessionId.String())
+func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*RunnerScaleSetSession, error) {
+	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	refreshedSession := &RunnerScaleSetSession{}
 	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {
 		return nil, fmt.Errorf("failed to do the session request: %w", err)
@@ -661,15 +661,16 @@ func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetId int
 }
 
 func (c *Client) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
-	req, err := c.NewActionsServiceRequest(ctx, method, path, requestData)
+	req, err := c.newActionsServiceRequest(ctx, method, path, requestData)
 	if err != nil {
 		return fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode == expectedResponseStatusCode {
 		if responseUnmarshalTarget == nil {
@@ -679,7 +680,7 @@ func (c *Client) doSessionRequest(ctx context.Context, method, path string, requ
 		if err := json.NewDecoder(resp.Body).Decode(responseUnmarshalTarget); err != nil {
 			return &ActionsError{
 				StatusCode: resp.StatusCode,
-				ActivityID: resp.Header.Get(HeaderActionsActivityID),
+				ActivityID: resp.Header.Get(headerActionsActivityID),
 				Err:        err,
 			}
 		}
@@ -688,31 +689,30 @@ func (c *Client) doSessionRequest(ctx context.Context, method, path string, requ
 	}
 
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return ParseActionsErrorFromResponse(resp)
+		return parseActionsErrorFromResponse(resp)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	body = trimByteOrderMark(body)
 	if err != nil {
 		return &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
 
 	return fmt.Errorf("unexpected status code: %w", &ActionsError{
 		StatusCode: resp.StatusCode,
-		ActivityID: resp.Header.Get(HeaderActionsActivityID),
+		ActivityID: resp.Header.Get(headerActionsActivityID),
 		Err:        errors.New(string(body)),
 	})
 }
 
-func (c *Client) AcquireJobs(ctx context.Context, runnerScaleSetId int, messageQueueAccessToken string, requestIds []int64) ([]int64, error) {
-	u := fmt.Sprintf("%s/%s/%d/acquirejobs?api-version=6.0-preview", c.ActionsServiceURL, scaleSetEndpoint, runnerScaleSetId)
+func (c *Client) AcquireJobs(ctx context.Context, runnerScaleSetID int, messageQueueAccessToken string, requestIDs []int64) ([]int64, error) {
+	u := fmt.Sprintf("%s/%s/%d/acquirejobs?api-version=6.0-preview", c.actionsServiceURL, scaleSetEndpoint, runnerScaleSetID)
 
-	body, err := json.Marshal(requestIds)
+	body, err := json.Marshal(requestIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request ids: %w", err)
 	}
@@ -724,77 +724,75 @@ func (c *Client) AcquireJobs(ctx context.Context, runnerScaleSetId int, messageQ
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
-	req.Header.Set("User-Agent", c.userAgent.String())
+	req.Header.Set("User-Agent", c.userAgent.Load())
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode != http.StatusUnauthorized {
-			return nil, ParseActionsErrorFromResponse(resp)
-		}
-
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		body = trimByteOrderMark(body)
-		if err != nil {
+	if resp.StatusCode == http.StatusOK {
+		var acquiredJobs *Int64List
+		if err := json.NewDecoder(resp.Body).Decode(&acquiredJobs); err != nil {
 			return nil, &ActionsError{
-				ActivityID: resp.Header.Get(HeaderActionsActivityID),
+				ActivityID: resp.Header.Get(headerActionsActivityID),
 				StatusCode: resp.StatusCode,
 				Err:        err,
 			}
 		}
 
-		return nil, &MessageQueueTokenExpiredError{
-			activityID: resp.Header.Get(HeaderActionsActivityID),
-			statusCode: resp.StatusCode,
-			msg:        string(body),
-		}
+		return acquiredJobs.Value, nil
 	}
 
-	var acquiredJobs *Int64List
-	err = json.NewDecoder(resp.Body).Decode(&acquiredJobs)
+	if resp.StatusCode != http.StatusUnauthorized {
+		return nil, parseActionsErrorFromResponse(resp)
+	}
+
+	body, err = io.ReadAll(resp.Body)
+	body = trimByteOrderMark(body)
 	if err != nil {
 		return nil, &ActionsError{
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			StatusCode: resp.StatusCode,
 			Err:        err,
 		}
 	}
 
-	return acquiredJobs.Value, nil
+	return nil, &MessageQueueTokenExpiredError{
+		activityID: resp.Header.Get(headerActionsActivityID),
+		statusCode: resp.StatusCode,
+		msg:        string(body),
+	}
 }
 
-func (c *Client) GetAcquirableJobs(ctx context.Context, runnerScaleSetId int) (*AcquirableJobList, error) {
-	path := fmt.Sprintf("/%s/%d/acquirablejobs", scaleSetEndpoint, runnerScaleSetId)
+func (c *Client) GetAcquirableJobs(ctx context.Context, runnerScaleSetID int) (*AcquirableJobList, error) {
+	path := fmt.Sprintf("/%s/%d/acquirablejobs", scaleSetEndpoint, runnerScaleSetID)
 
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		defer resp.Body.Close()
 		return &AcquirableJobList{Count: 0, Jobs: []AcquirableJob{}}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 
 	var acquirableJobList *AcquirableJobList
-	err = json.NewDecoder(resp.Body).Decode(&acquirableJobList)
-	if err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&acquirableJobList); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
@@ -802,61 +800,63 @@ func (c *Client) GetAcquirableJobs(ctx context.Context, runnerScaleSetId int) (*
 	return acquirableJobList, nil
 }
 
-func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *RunnerScaleSetJitRunnerSetting, scaleSetId int) (*RunnerScaleSetJitRunnerConfig, error) {
-	path := fmt.Sprintf("/%s/%d/generatejitconfig", scaleSetEndpoint, scaleSetId)
+func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *RunnerScaleSetJitRunnerSetting, scaleSetID int) (*RunnerScaleSetJitRunnerConfig, error) {
+	path := fmt.Sprintf("/%s/%d/generatejitconfig", scaleSetEndpoint, scaleSetID)
 
 	body, err := json.Marshal(jitRunnerSetting)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal runner settings: %w", err)
 	}
 
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodPost, path, bytes.NewBuffer(body))
+	req, err := c.newActionsServiceRequest(ctx, http.MethodPost, path, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 
 	var runnerJitConfig *RunnerScaleSetJitRunnerConfig
 	if err := json.NewDecoder(resp.Body).Decode(&runnerJitConfig); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
 	return runnerJitConfig, nil
 }
 
-func (c *Client) GetRunner(ctx context.Context, runnerId int64) (*RunnerReference, error) {
-	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerId)
+func (c *Client) GetRunner(ctx context.Context, runnerID int64) (*RunnerReference, error) {
+	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 
 	var runnerReference *RunnerReference
 	if err := json.NewDecoder(resp.Body).Decode(&runnerReference); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
@@ -867,25 +867,26 @@ func (c *Client) GetRunner(ctx context.Context, runnerId int64) (*RunnerReferenc
 func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*RunnerReference, error) {
 	path := fmt.Sprintf("/%s?agentName=%s", runnerEndpoint, runnerName)
 
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, parseActionsErrorFromResponse(resp)
 	}
 
 	var runnerList *RunnerReferenceList
 	if err := json.NewDecoder(resp.Body).Decode(&runnerList); err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
@@ -897,7 +898,7 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 	if runnerList.Count > 1 {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(HeaderActionsActivityID),
+			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        fmt.Errorf("multiple runner found with name %s", runnerName),
 		}
 	}
@@ -905,24 +906,24 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 	return &runnerList.RunnerReferences[0], nil
 }
 
-func (c *Client) RemoveRunner(ctx context.Context, runnerId int64) error {
-	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerId)
+func (c *Client) RemoveRunner(ctx context.Context, runnerID int64) error {
+	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
-	req, err := c.NewActionsServiceRequest(ctx, http.MethodDelete, path, nil)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("failed to issue the request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return ParseActionsErrorFromResponse(resp)
+		return parseActionsErrorFromResponse(resp)
 	}
 
-	defer resp.Body.Close()
 	return nil
 }
 
@@ -938,7 +939,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	}
 
 	var buf bytes.Buffer
-	req, err := c.NewGitHubAPIRequest(ctx, http.MethodPost, path, &buf)
+	req, err := c.newGitHubAPIRequest(ctx, http.MethodPost, path, &buf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
 	}
@@ -948,7 +949,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	if c.creds.Token != "" {
 		bearerToken = fmt.Sprintf("Bearer %v", c.creds.Token)
 	} else {
-		accessToken, err := c.fetchAccessToken(ctx, c.config.ConfigURL.String(), c.creds.AppCreds)
+		accessToken, err := c.fetchAccessToken(ctx, c.creds.App)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch access token: %w", err)
 		}
@@ -961,7 +962,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 
 	c.logger.Info("getting runner registration token", "registrationTokenURL", req.URL.String())
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
@@ -974,7 +975,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 		}
 		return nil, &GitHubAPIError{
 			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(HeaderGitHubRequestID),
+			RequestID:  resp.Header.Get(headerGitHubRequestID),
 			Err:        errors.New(string(body)),
 		}
 	}
@@ -983,7 +984,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	if err := json.NewDecoder(resp.Body).Decode(&registrationToken); err != nil {
 		return nil, &GitHubAPIError{
 			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(HeaderGitHubRequestID),
+			RequestID:  resp.Header.Get(headerGitHubRequestID),
 			Err:        err,
 		}
 	}
@@ -997,14 +998,14 @@ type accessToken struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func (c *Client) fetchAccessToken(ctx context.Context, gitHubConfigURL string, creds *GitHubAppAuth) (*accessToken, error) {
+func (c *Client) fetchAccessToken(ctx context.Context, creds *GitHubAppAuth) (*accessToken, error) {
 	accessTokenJWT, err := createJWTForGitHubApp(creds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT for GitHub app: %w", err)
 	}
 
 	path := fmt.Sprintf("/app/installations/%v/access_tokens", creds.AppInstallationID)
-	req, err := c.NewGitHubAPIRequest(ctx, http.MethodPost, path, nil)
+	req, err := c.newGitHubAPIRequest(ctx, http.MethodPost, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
 	}
@@ -1014,7 +1015,7 @@ func (c *Client) fetchAccessToken(ctx context.Context, gitHubConfigURL string, c
 
 	c.logger.Info("getting access token for GitHub App auth", "accessTokenURL", req.URL.String())
 
-	resp, err := c.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
@@ -1028,7 +1029,7 @@ func (c *Client) fetchAccessToken(ctx context.Context, gitHubConfigURL string, c
 
 		return nil, &GitHubAPIError{
 			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(HeaderGitHubRequestID),
+			RequestID:  resp.Header.Get(headerGitHubRequestID),
 			Err:        errors.New(errMsg),
 		}
 	}
@@ -1038,7 +1039,7 @@ func (c *Client) fetchAccessToken(ctx context.Context, gitHubConfigURL string, c
 	if err = json.NewDecoder(resp.Body).Decode(&accessToken); err != nil {
 		return nil, &GitHubAPIError{
 			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(HeaderGitHubRequestID),
+			RequestID:  resp.Header.Get(headerGitHubRequestID),
 			Err:        err,
 		}
 	}
@@ -1046,7 +1047,7 @@ func (c *Client) fetchAccessToken(ctx context.Context, gitHubConfigURL string, c
 }
 
 type ActionsServiceAdminConnection struct {
-	ActionsServiceUrl *string `json:"url,omitempty"`
+	ActionsServiceURL *string `json:"url,omitempty"`
 	AdminToken        *string `json:"token,omitempty"`
 }
 
@@ -1054,22 +1055,22 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 	path := "/actions/runner-registration"
 
 	body := struct {
-		Url         string `json:"url"`
+		URL         string `json:"url"`
 		RunnerEvent string `json:"runner_event"`
 	}{
-		Url:         c.config.ConfigURL.String(),
+		URL:         c.config.ConfigURL.String(),
 		RunnerEvent: "register",
 	}
 
-	buf := &bytes.Buffer{}
-	enc := json.NewEncoder(buf)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 
 	if err := enc.Encode(body); err != nil {
 		return nil, fmt.Errorf("failed to encode body: %w", err)
 	}
 
-	req, err := c.NewGitHubAPIRequest(ctx, http.MethodPost, path, buf)
+	req, err := c.newGitHubAPIRequest(ctx, http.MethodPost, path, &buf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
 	}
@@ -1079,44 +1080,29 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 
 	c.logger.Info("getting Actions tenant URL and JWT", "registrationURL", req.URL.String())
 
-	var resp *http.Response
 	retry := 0
 	for {
-		var err error
-		resp, err = c.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to issue the request: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
-			break
-		}
-
-		var innerErr error
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			innerErr = err
-		} else {
-			innerErr = errors.New(string(body))
-		}
-
-		if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
-			return nil, &GitHubAPIError{
-				StatusCode: resp.StatusCode,
-				RequestID:  resp.Header.Get(HeaderGitHubRequestID),
-				Err:        innerErr,
-			}
+		adminConnection, err := c.getActionsServiceAdminConnectionRequest(req)
+		if err == nil {
+			return adminConnection, nil
 		}
 
 		retry++
 		if retry > 5 {
-			return nil, fmt.Errorf("unable to register runner after 3 retries: %w", &GitHubAPIError{
-				StatusCode: resp.StatusCode,
-				RequestID:  resp.Header.Get(HeaderGitHubRequestID),
-				Err:        innerErr,
-			})
+			return nil, fmt.Errorf("unable to register runner after 5 retries: %w", err)
 		}
+
+		var ghErr *GitHubAPIError
+		if !errors.As(err, &ghErr) {
+			return nil, fmt.Errorf("failed to get actions service admin connection: %w", err)
+		}
+
+		if ghErr.StatusCode != http.StatusUnauthorized && ghErr.StatusCode != http.StatusForbidden {
+			return nil, fmt.Errorf("failed to get actions service admin connection: %w", ghErr)
+		}
+
+		c.logger.Debug("received unauthorized or forbidden response, retrying", "retryAttempt", retry, "statusCode", ghErr.StatusCode)
+
 		// Add exponential backoff + jitter to avoid thundering herd
 		// This will generate a backoff schedule:
 		// 1: 1s
@@ -1127,25 +1113,50 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 		baseDelay := 500 * time.Millisecond
 		jitter := time.Duration(rand.Intn(1000))
 		maxDelay := 20 * time.Second
-		delay := baseDelay*(1<<retry) + jitter
+		delay := min(baseDelay*(1<<retry)+jitter, maxDelay)
 
-		if delay > maxDelay {
-			delay = maxDelay
-		}
-
-		time.Sleep(delay)
-	}
-
-	var actionsServiceAdminConnection *ActionsServiceAdminConnection
-	if err := json.NewDecoder(resp.Body).Decode(&actionsServiceAdminConnection); err != nil {
-		return nil, &GitHubAPIError{
-			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(HeaderGitHubRequestID),
-			Err:        err,
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("context cancelled while waiting to retry: %w", ctx.Err())
+		case <-time.After(delay):
+			// continue to next retry
 		}
 	}
+}
 
-	return actionsServiceAdminConnection, nil
+func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*ActionsServiceAdminConnection, error) {
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to issue the request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		var actionsServiceAdminConnection *ActionsServiceAdminConnection
+		if err := json.NewDecoder(resp.Body).Decode(&actionsServiceAdminConnection); err != nil {
+			return nil, &GitHubAPIError{
+				StatusCode: resp.StatusCode,
+				RequestID:  resp.Header.Get(headerGitHubRequestID),
+				Err:        err,
+			}
+		}
+
+		return actionsServiceAdminConnection, nil
+	}
+
+	var innerErr error
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		innerErr = err
+	} else {
+		innerErr = errors.New(string(body))
+	}
+
+	return nil, &GitHubAPIError{
+		StatusCode: resp.StatusCode,
+		RequestID:  resp.Header.Get(headerGitHubRequestID),
+		Err:        innerErr,
+	}
 }
 
 func createRegistrationTokenPath(config *GitHubConfig) (string, error) {
@@ -1214,11 +1225,11 @@ func actionsServiceAdminTokenExpiresAt(jwtToken string) (time.Time, error) {
 }
 
 func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.actionsMu.Lock()
+	defer c.actionsMu.Unlock()
 
-	aboutToExpire := time.Now().Add(60 * time.Second).After(c.ActionsServiceAdminTokenExpiresAt)
-	if !aboutToExpire && !c.ActionsServiceAdminTokenExpiresAt.IsZero() {
+	aboutToExpire := time.Now().Add(60 * time.Second).After(c.actionsServiceAdminTokenExpiresAt)
+	if !aboutToExpire && !c.actionsServiceAdminTokenExpiresAt.IsZero() {
 		return nil
 	}
 
@@ -1233,9 +1244,9 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 		return fmt.Errorf("failed to get actions service admin connection on refresh: %w", err)
 	}
 
-	c.ActionsServiceURL = *adminConnInfo.ActionsServiceUrl
-	c.ActionsServiceAdminToken = *adminConnInfo.AdminToken
-	c.ActionsServiceAdminTokenExpiresAt, err = actionsServiceAdminTokenExpiresAt(*adminConnInfo.AdminToken)
+	c.actionsServiceURL = *adminConnInfo.ActionsServiceURL
+	c.actionsServiceAdminToken = *adminConnInfo.AdminToken
+	c.actionsServiceAdminTokenExpiresAt, err = actionsServiceAdminTokenExpiresAt(*adminConnInfo.AdminToken)
 	if err != nil {
 		return fmt.Errorf("failed to get admin token expire at on refresh: %w", err)
 	}

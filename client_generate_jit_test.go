@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"context"
@@ -6,27 +6,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGenerateJitRunnerConfig(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("Get JIT Config for Runner", func(t *testing.T) {
-		want := &scaleset.RunnerScaleSetJitRunnerConfig{}
+		want := &RunnerScaleSetJitRunnerConfig{}
 		response := []byte(`{"count":1,"value":[{"id":1,"name":"scale-set-name"}]}`)
 
-		runnerSettings := &scaleset.RunnerScaleSetJitRunnerSetting{}
+		runnerSettings := &RunnerScaleSetJitRunnerSetting{}
 
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Write(response)
 		}))
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		got, err := client.GenerateJitRunnerConfig(ctx, runnerSettings, 1)
@@ -35,7 +34,7 @@ func TestGenerateJitRunnerConfig(t *testing.T) {
 	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {
-		runnerSettings := &scaleset.RunnerScaleSetJitRunnerSetting{}
+		runnerSettings := &RunnerScaleSetJitRunnerSetting{}
 
 		retryMax := 1
 		actualRetry := 0
@@ -46,11 +45,11 @@ func TestGenerateJitRunnerConfig(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(1),
-			scaleset.WithRetryWaitMax(1*time.Millisecond),
+			WithRetryMax(1),
+			WithRetryWaitMax(1*time.Millisecond),
 		)
 		require.NoError(t, err)
 

@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"context"
@@ -8,14 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestAcquireJobs(t *testing.T) {
 	ctx := context.Background()
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
@@ -23,8 +22,8 @@ func TestAcquireJobs(t *testing.T) {
 		want := []int64{1}
 		response := []byte(`{"value": [1]}`)
 
-		session := &scaleset.RunnerScaleSetSession{
-			RunnerScaleSet:          &scaleset.RunnerScaleSet{Id: 1},
+		session := &RunnerScaleSetSession{
+			RunnerScaleSet:          &RunnerScaleSet{ID: 1},
 			MessageQueueAccessToken: "abc",
 		}
 		requestIDs := want
@@ -38,23 +37,23 @@ func TestAcquireJobs(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		_, err = client.GetAcquirableJobs(ctx, 1)
 		require.NoError(t, err)
 
-		got, err := client.AcquireJobs(ctx, session.RunnerScaleSet.Id, session.MessageQueueAccessToken, requestIDs)
+		got, err := client.AcquireJobs(ctx, session.RunnerScaleSet.ID, session.MessageQueueAccessToken, requestIDs)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
 	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {
-		session := &scaleset.RunnerScaleSetSession{
-			RunnerScaleSet:          &scaleset.RunnerScaleSet{Id: 1},
+		session := &RunnerScaleSetSession{
+			RunnerScaleSet:          &RunnerScaleSet{ID: 1},
 			MessageQueueAccessToken: "abc",
 		}
-		var requestIDs = []int64{1}
+		requestIDs := []int64{1}
 
 		retryMax := 1
 		actualRetry := 0
@@ -70,18 +69,18 @@ func TestAcquireJobs(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(1*time.Millisecond),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Millisecond),
 		)
 		require.NoError(t, err)
 
 		_, err = client.GetAcquirableJobs(ctx, 1)
 		require.NoError(t, err)
 
-		_, err = client.AcquireJobs(context.Background(), session.RunnerScaleSet.Id, session.MessageQueueAccessToken, requestIDs)
+		_, err = client.AcquireJobs(context.Background(), session.RunnerScaleSet.ID, session.MessageQueueAccessToken, requestIDs)
 		assert.NotNil(t, err)
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
 	})
@@ -89,8 +88,8 @@ func TestAcquireJobs(t *testing.T) {
 	t.Run("Should return MessageQueueTokenExpiredError when http error is not Unauthorized", func(t *testing.T) {
 		want := []int64{1}
 
-		session := &scaleset.RunnerScaleSetSession{
-			RunnerScaleSet:          &scaleset.RunnerScaleSet{Id: 1},
+		session := &RunnerScaleSetSession{
+			RunnerScaleSet:          &RunnerScaleSet{ID: 1},
 			MessageQueueAccessToken: "abc",
 		}
 		requestIDs := want
@@ -106,45 +105,45 @@ func TestAcquireJobs(t *testing.T) {
 			}
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
 		_, err = client.GetAcquirableJobs(ctx, 1)
 		require.NoError(t, err)
 
-		got, err := client.AcquireJobs(ctx, session.RunnerScaleSet.Id, session.MessageQueueAccessToken, requestIDs)
+		got, err := client.AcquireJobs(ctx, session.RunnerScaleSet.ID, session.MessageQueueAccessToken, requestIDs)
 		require.Error(t, err)
 		assert.Nil(t, got)
-		var expectedErr *scaleset.MessageQueueTokenExpiredError
+		var expectedErr *MessageQueueTokenExpiredError
 		assert.True(t, errors.As(err, &expectedErr))
 	})
 }
 
 func TestGetAcquirableJobs(t *testing.T) {
-	auth := &scaleset.ActionsAuth{
+	auth := &ActionsAuth{
 		Token: "token",
 	}
 
 	t.Run("Acquire Job", func(t *testing.T) {
-		want := &scaleset.AcquirableJobList{}
+		want := &AcquirableJobList{}
 		response := []byte(`{"count": 0}`)
 
-		runnerScaleSet := &scaleset.RunnerScaleSet{Id: 1}
+		runnerScaleSet := &RunnerScaleSet{ID: 1}
 
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Write(response)
 		}))
 
-		client, err := scaleset.NewClient(server.configURLForOrg("my-org"), auth)
+		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
 
-		got, err := client.GetAcquirableJobs(context.Background(), runnerScaleSet.Id)
+		got, err := client.GetAcquirableJobs(context.Background(), runnerScaleSet.ID)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
 	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {
-		runnerScaleSet := &scaleset.RunnerScaleSet{Id: 1}
+		runnerScaleSet := &RunnerScaleSet{ID: 1}
 
 		retryMax := 1
 
@@ -156,15 +155,15 @@ func TestGetAcquirableJobs(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := scaleset.NewClient(
+		client, err := NewClient(
 			server.configURLForOrg("my-org"),
 			auth,
-			scaleset.WithRetryMax(retryMax),
-			scaleset.WithRetryWaitMax(1*time.Millisecond),
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Millisecond),
 		)
 		require.NoError(t, err)
 
-		_, err = client.GetAcquirableJobs(context.Background(), runnerScaleSet.Id)
+		_, err = client.GetAcquirableJobs(context.Background(), runnerScaleSet.ID)
 		require.Error(t, err)
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
 	})

@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"io"
@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,13 +17,13 @@ func TestClient_Do(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, err := scaleset.NewClient("https://localhost/org/repo", &scaleset.ActionsAuth{Token: "token"})
+			client, err := NewClient("https://localhost/org/repo", &ActionsAuth{Token: "token"})
 			require.NoError(t, err)
 
 			req, err := http.NewRequest("GET", server.URL, nil)
 			require.NoError(t, err)
 
-			resp, err := client.Do(req)
+			resp, err := client.do(req)
 			require.NoError(t, err)
 
 			body, err := io.ReadAll(resp.Body)
@@ -44,13 +43,13 @@ func TestClient_Do(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, err := scaleset.NewClient("https://localhost/org/repo", &scaleset.ActionsAuth{Token: "token"})
+			client, err := NewClient("https://localhost/org/repo", &ActionsAuth{Token: "token"})
 			require.NoError(t, err)
 
 			req, err := http.NewRequest("GET", server.URL, nil)
 			require.NoError(t, err)
 
-			resp, err := client.Do(req)
+			resp, err := client.do(req)
 			require.NoError(t, err)
 
 			body, err := io.ReadAll(resp.Body)

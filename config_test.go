@@ -1,4 +1,4 @@
-package scaleset_test
+package scaleset
 
 import (
 	"errors"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/actions/scaleset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,12 +15,12 @@ func TestGitHubConfig(t *testing.T) {
 	t.Run("when given a valid URL", func(t *testing.T) {
 		tests := []struct {
 			configURL string
-			expected  *scaleset.GitHubConfig
+			expected  *GitHubConfig
 		}{
 			{
 				configURL: "https://github.com/org/repo",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeRepository,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeRepository,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "repo",
@@ -30,8 +29,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://github.com/org/repo/",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeRepository,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeRepository,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "repo",
@@ -40,8 +39,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://github.com/org",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeOrganization,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeOrganization,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "",
@@ -50,8 +49,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://github.com/enterprises/my-enterprise",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeEnterprise,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeEnterprise,
 					Enterprise:   "my-enterprise",
 					Organization: "",
 					Repository:   "",
@@ -60,8 +59,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://github.com/enterprises/my-enterprise/",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeEnterprise,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeEnterprise,
 					Enterprise:   "my-enterprise",
 					Organization: "",
 					Repository:   "",
@@ -70,8 +69,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://www.github.com/org",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeOrganization,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeOrganization,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "",
@@ -80,8 +79,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://www.github.com/org/",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeOrganization,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeOrganization,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "",
@@ -90,8 +89,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://github.localhost/org",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeOrganization,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeOrganization,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "",
@@ -100,8 +99,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://my-ghes.com/org",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeOrganization,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeOrganization,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "",
@@ -110,8 +109,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://my-ghes.com/org/",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeOrganization,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeOrganization,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "",
@@ -120,8 +119,8 @@ func TestGitHubConfig(t *testing.T) {
 			},
 			{
 				configURL: "https://my-ghes.ghe.com/org/",
-				expected: &scaleset.GitHubConfig{
-					Scope:        scaleset.GitHubScopeOrganization,
+				expected: &GitHubConfig{
+					Scope:        GitHubScopeOrganization,
 					Enterprise:   "",
 					Organization: "org",
 					Repository:   "",
@@ -136,7 +135,7 @@ func TestGitHubConfig(t *testing.T) {
 				require.NoError(t, err)
 				test.expected.ConfigURL = parsedURL
 
-				cfg, err := scaleset.ParseGitHubConfigFromURL(test.configURL)
+				cfg, err := ParseGitHubConfigFromURL(test.configURL)
 				require.NoError(t, err)
 				assert.Equal(t, test.expected, cfg)
 			})
@@ -151,16 +150,16 @@ func TestGitHubConfig(t *testing.T) {
 		}
 
 		for _, u := range invalidURLs {
-			_, err := scaleset.ParseGitHubConfigFromURL(u)
+			_, err := ParseGitHubConfigFromURL(u)
 			require.Error(t, err)
-			assert.True(t, errors.Is(err, scaleset.ErrInvalidGitHubConfigURL))
+			assert.True(t, errors.Is(err, ErrInvalidGitHubConfigURL))
 		}
 	})
 }
 
 func TestGitHubConfig_GitHubAPIURL(t *testing.T) {
 	t.Run("when hosted", func(t *testing.T) {
-		config, err := scaleset.ParseGitHubConfigFromURL("https://github.com/org/repo")
+		config, err := ParseGitHubConfigFromURL("https://github.com/org/repo")
 		require.NoError(t, err)
 		assert.True(t, config.IsHosted)
 
@@ -168,7 +167,7 @@ func TestGitHubConfig_GitHubAPIURL(t *testing.T) {
 		assert.Equal(t, "https://api.github.com/some/path", result.String())
 	})
 	t.Run("when hosted with ghe.com", func(t *testing.T) {
-		config, err := scaleset.ParseGitHubConfigFromURL("https://github.ghe.com/org/repo")
+		config, err := ParseGitHubConfigFromURL("https://github.ghe.com/org/repo")
 		require.NoError(t, err)
 		assert.True(t, config.IsHosted)
 
@@ -176,7 +175,7 @@ func TestGitHubConfig_GitHubAPIURL(t *testing.T) {
 		assert.Equal(t, "https://api.github.ghe.com/some/path", result.String())
 	})
 	t.Run("when not hosted", func(t *testing.T) {
-		config, err := scaleset.ParseGitHubConfigFromURL("https://ghes.com/org/repo")
+		config, err := ParseGitHubConfigFromURL("https://ghes.com/org/repo")
 		require.NoError(t, err)
 		assert.False(t, config.IsHosted)
 
@@ -186,7 +185,7 @@ func TestGitHubConfig_GitHubAPIURL(t *testing.T) {
 	t.Run("when not hosted with ghe.com", func(t *testing.T) {
 		os.Setenv("GITHUB_ACTIONS_FORCE_GHES", "1")
 		defer os.Unsetenv("GITHUB_ACTIONS_FORCE_GHES")
-		config, err := scaleset.ParseGitHubConfigFromURL("https://test.ghe.com/org/repo")
+		config, err := ParseGitHubConfigFromURL("https://test.ghe.com/org/repo")
 		require.NoError(t, err)
 		assert.False(t, config.IsHosted)
 

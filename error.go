@@ -11,8 +11,8 @@ import (
 
 // Header names for request IDs
 const (
-	HeaderActionsActivityID = "ActivityId"
-	HeaderGitHubRequestID   = "X-GitHub-Request-Id"
+	headerActionsActivityID = "ActivityId"
+	headerGitHubRequestID   = "X-GitHub-Request-Id"
 )
 
 type GitHubAPIError struct {
@@ -59,20 +59,19 @@ func (e *ActionsExceptionError) Error() string {
 	return fmt.Sprintf("%s: %s", e.ExceptionName, e.Message)
 }
 
-func ParseActionsErrorFromResponse(response *http.Response) error {
+func parseActionsErrorFromResponse(response *http.Response) error {
 	if response.ContentLength == 0 {
 		return &ActionsError{
-			ActivityID: response.Header.Get(HeaderActionsActivityID),
+			ActivityID: response.Header.Get(headerActionsActivityID),
 			StatusCode: response.StatusCode,
 			Err:        errors.New("unknown exception"),
 		}
 	}
 
-	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return &ActionsError{
-			ActivityID: response.Header.Get(HeaderActionsActivityID),
+			ActivityID: response.Header.Get(headerActionsActivityID),
 			StatusCode: response.StatusCode,
 			Err:        err,
 		}
@@ -83,7 +82,7 @@ func ParseActionsErrorFromResponse(response *http.Response) error {
 	if ok && len(contentType) > 0 && strings.Contains(contentType[0], "text/plain") {
 		message := string(body)
 		return &ActionsError{
-			ActivityID: response.Header.Get(HeaderActionsActivityID),
+			ActivityID: response.Header.Get(headerActionsActivityID),
 			StatusCode: response.StatusCode,
 			Err:        errors.New(message),
 		}
@@ -92,14 +91,14 @@ func ParseActionsErrorFromResponse(response *http.Response) error {
 	var exception ActionsExceptionError
 	if err := json.Unmarshal(body, &exception); err != nil {
 		return &ActionsError{
-			ActivityID: response.Header.Get(HeaderActionsActivityID),
+			ActivityID: response.Header.Get(headerActionsActivityID),
 			StatusCode: response.StatusCode,
 			Err:        err,
 		}
 	}
 
 	return &ActionsError{
-		ActivityID: response.Header.Get(HeaderActionsActivityID),
+		ActivityID: response.Header.Get(headerActionsActivityID),
 		StatusCode: response.StatusCode,
 		Err:        &exception,
 	}
