@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/signal"
 
 	"github.com/actions/scaleset/examples/docker/app"
 	"github.com/actions/scaleset/examples/docker/config"
@@ -25,6 +26,9 @@ var cmd = &cobra.Command{
 runners using Docker. It provides commands to manage and scale
 Docker containers effectively.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
+		defer cancel()
+
 		if configPath != "" {
 			viper.SetConfigFile(configPath)
 			if err := viper.ReadInConfig(); err != nil {
@@ -40,7 +44,7 @@ Docker containers effectively.`,
 			return fmt.Errorf("invalid configuration: %w", err)
 		}
 
-		return app.Run(cmd.Context(), cfg)
+		return app.Run(ctx, cfg)
 	},
 }
 
