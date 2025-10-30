@@ -299,7 +299,6 @@ func (l *Listener) deleteLastMessage(ctx context.Context) error {
 type parsedMessage struct {
 	statistics    *scaleset.RunnerScaleSetStatistic
 	jobsStarted   []*scaleset.JobStarted
-	jobsAvailable []*scaleset.JobAvailable
 	jobsCompleted []*scaleset.JobCompleted
 }
 
