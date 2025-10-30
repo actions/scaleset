@@ -518,7 +518,7 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 
 	if lastMessageID > 0 {
 		q := u.Query()
-		q.Set("lastMessageID", strconv.FormatInt(lastMessageID, 10))
+		q.Set("lastMessageId", strconv.FormatInt(lastMessageID, 10))
 		u.RawQuery = q.Encode()
 	}
 
