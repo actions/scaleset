@@ -6,22 +6,6 @@ import (
 	"github.com/google/uuid"
 )
 
-type AcquirableJobList struct {
-	Count int             `json:"count"`
-	Jobs  []AcquirableJob `json:"value"`
-}
-
-type AcquirableJob struct {
-	AcquireJobURL   string   `json:"acquireJobUrl"`
-	MessageType     string   `json:"messageType"`
-	RunnerRequestID int64    `json:"runnerRequestId"`
-	RepositoryName  string   `json:"repositoryName"`
-	OwnerName       string   `json:"ownerName"`
-	JobWorkflowRef  string   `json:"jobWorkflowRef"`
-	EventName       string   `json:"eventName"`
-	RequestLabels   []string `json:"requestLabels"`
-}
-
 type Int64List struct {
 	Count int     `json:"count"`
 	Value []int64 `json:"value"`
