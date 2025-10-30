@@ -45,7 +45,7 @@ func TestGetMessage(t *testing.T) {
 		response := []byte(`{"messageId":1,"messageType":"rssType"}`)
 		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
-			assert.Equal(t, "1", q.Get("lastMessageID"))
+			assert.Equal(t, "1", q.Get("lastMessageId"))
 			w.Write(response)
 		}))
 
