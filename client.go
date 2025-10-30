@@ -85,6 +85,19 @@ type GitHubAppAuth struct {
 	AppPrivateKey string
 }
 
+func (a *GitHubAppAuth) Validate() error {
+	if a.AppID == "" {
+		return fmt.Errorf("app ID is required")
+	}
+	if a.AppInstallationID == 0 {
+		return fmt.Errorf("app installation ID is required")
+	}
+	if a.AppPrivateKey == "" {
+		return fmt.Errorf("app private key is required")
+	}
+	return nil
+}
+
 type ActionsAuth struct {
 	// AppCreds is the GitHub App credentials
 	App *GitHubAppAuth

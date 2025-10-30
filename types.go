@@ -6,6 +6,15 @@ import (
 	"github.com/google/uuid"
 )
 
+type MessageType string
+
+// message types
+const (
+	MessageTypeJobAssigned  MessageType = "JobAssigned"
+	MessageTypeJobStarted   MessageType = "JobStarted"
+	MessageTypeJobCompleted MessageType = "JobCompleted"
+)
+
 type Int64List struct {
 	Count int     `json:"count"`
 	Value []int64 `json:"value"`
@@ -34,7 +43,7 @@ type JobCompleted struct {
 }
 
 type JobMessageType struct {
-	MessageType string `json:"messageType"`
+	MessageType MessageType `json:"messageType"`
 }
 
 type JobMessageBase struct {
@@ -60,7 +69,7 @@ type Label struct {
 }
 
 type RunnerGroup struct {
-	ID        int64  `json:"id"`
+	ID        int    `json:"id"`
 	Name      string `json:"name"`
 	Size      int64  `json:"size"`
 	IsDefault bool   `json:"isDefaultGroup"`
@@ -101,7 +110,7 @@ type runnerScaleSetsResponse struct {
 }
 
 type RunnerScaleSetSession struct {
-	SessionID               *uuid.UUID               `json:"sessionId,omitempty"`
+	SessionID               uuid.UUID                `json:"sessionId,omitempty"`
 	OwnerName               string                   `json:"ownerName,omitempty"`
 	RunnerScaleSet          *RunnerScaleSet          `json:"runnerScaleSet,omitempty"`
 	MessageQueueURL         string                   `json:"messageQueueUrl,omitempty"`
