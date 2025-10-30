@@ -26,41 +26,12 @@ import (
 )
 
 const (
-	runnerEndpoint       = "_apis/distributedtask/pools/0/agents"
-	scaleSetEndpoint     = "_apis/runtime/runnerscalesets"
-	apiVersionQueryParam = "api-version=6.0-preview"
+	runnerEndpoint   = "_apis/distributedtask/pools/0/agents"
+	scaleSetEndpoint = "_apis/runtime/runnerscalesets"
 )
 
 // Header used to propagate capacity information to the back-end
 const HeaderScaleSetMaxCapacity = "X-ScaleSetMaxCapacity"
-
-//go:generate mockery --inpackage --name=ActionsService
-type ActionsService interface {
-	GetRunnerScaleSet(ctx context.Context, runnerGroupId int, runnerScaleSetName string) (*RunnerScaleSet, error)
-	GetRunnerScaleSetById(ctx context.Context, runnerScaleSetId int) (*RunnerScaleSet, error)
-	GetRunnerGroupByName(ctx context.Context, runnerGroup string) (*RunnerGroup, error)
-	CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error)
-	UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetId int, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error)
-	DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetId int) error
-
-	CreateMessageSession(ctx context.Context, runnerScaleSetId int, owner string) (*RunnerScaleSetSession, error)
-	DeleteMessageSession(ctx context.Context, runnerScaleSetId int, sessionId *uuid.UUID) error
-	RefreshMessageSession(ctx context.Context, runnerScaleSetId int, sessionId *uuid.UUID) (*RunnerScaleSetSession, error)
-
-	AcquireJobs(ctx context.Context, runnerScaleSetId int, messageQueueAccessToken string, requestIds []int64) ([]int64, error)
-	GetAcquirableJobs(ctx context.Context, runnerScaleSetId int) (*AcquirableJobList, error)
-
-	GetMessage(ctx context.Context, messageQueueUrl, messageQueueAccessToken string, lastMessageId int64, maxCapacity int) (*RunnerScaleSetMessage, error)
-	DeleteMessage(ctx context.Context, messageQueueUrl, messageQueueAccessToken string, messageId int64) error
-
-	GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *RunnerScaleSetJitRunnerSetting, scaleSetId int) (*RunnerScaleSetJitRunnerConfig, error)
-
-	GetRunner(ctx context.Context, runnerId int64) (*RunnerReference, error)
-	GetRunnerByName(ctx context.Context, runnerName string) (*RunnerReference, error)
-	RemoveRunner(ctx context.Context, runnerId int64) error
-
-	SetUserAgent(info UserAgentInfo)
-}
 
 type Client struct {
 	*http.Client
@@ -101,8 +72,6 @@ type ActionsAuth struct {
 	// GitHub PAT
 	Token string
 }
-
-var _ ActionsService = &Client{}
 
 type ProxyFunc func(req *http.Request) (*url.URL, error)
 
