@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,16 +17,13 @@ import (
 // /actions/runner-registration endpoints will be handled by the provided
 // handler. The returned server is started and will be automatically closed
 // when the test ends.
-//
-// TODO: this uses ginkgo interface _only_ to support our current controller tests
-func New(t ginkgo.GinkgoTInterface, handler http.Handler, options ...actionsServerOption) *actionsServer {
+func New(t testing.TB, handler http.Handler, options ...actionsServerOption) *actionsServer {
 	s := NewUnstarted(t, handler, options...)
 	s.Start()
 	return s
 }
 
-// TODO: this uses ginkgo interface _only_ to support our current controller tests
-func NewUnstarted(t ginkgo.GinkgoTInterface, handler http.Handler, options ...actionsServerOption) *actionsServer {
+func NewUnstarted(t testing.TB, handler http.Handler, options ...actionsServerOption) *actionsServer {
 	s := httptest.NewUnstartedServer(handler)
 	server := &actionsServer{
 		Server: s,
@@ -90,7 +87,7 @@ type actionsServer struct {
 	actionRegistrationTokenHandler http.HandlerFunc
 }
 
-func (s *actionsServer) setDefaults(t ginkgo.GinkgoTInterface) {
+func (s *actionsServer) setDefaults(t testing.TB) {
 	if s.runnerRegistrationTokenHandler == nil {
 		s.runnerRegistrationTokenHandler = func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusCreated)
@@ -114,7 +111,7 @@ func (s *actionsServer) ConfigURLForOrg(org string) string {
 	return s.URL + "/" + org
 }
 
-func DefaultActionsToken(t ginkgo.GinkgoTInterface) string {
+func DefaultActionsToken(t testing.TB) string {
 	claims := &jwt.RegisteredClaims{
 		IssuedAt:  jwt.NewNumericDate(time.Now().Add(-10 * time.Minute)),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
