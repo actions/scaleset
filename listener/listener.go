@@ -1,3 +1,4 @@
+// Package listener provides a listener for GitHub Actions runner scale set messages.
 package listener
 
 import (
@@ -98,15 +99,17 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 type Handler interface {
 	HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error
 	HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error
-	HandleDesiredRunnerCount(ctx context.Context, count, jobsCompleted int) (int, error)
+	HandleDesiredRunnerCount(ctx context.Context, count int) (int, error)
 }
 
 func (l *Listener) Run(ctx context.Context, handler Handler) error {
+	l.logger.Info("Creating message session")
 	if err := l.createSession(ctx); err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
 	defer func() {
+		l.logger.Debug("Deleting message session")
 		if err := l.deleteMessageSession(); err != nil {
 			l.logger.Error("failed to delete message session", "error", err.Error())
 		}
@@ -116,8 +119,10 @@ func (l *Listener) Run(ctx context.Context, handler Handler) error {
 		return fmt.Errorf("session statistics is nil")
 	}
 
+	l.logger.Info("Message session created; listening for messages", "sessionID", l.session.SessionID)
+
 	// Handle initial statistics
-	if _, err := handler.HandleDesiredRunnerCount(ctx, l.session.Statistics.TotalAssignedJobs, 0); err != nil {
+	if _, err := handler.HandleDesiredRunnerCount(ctx, l.session.Statistics.TotalAssignedJobs); err != nil {
 		return fmt.Errorf("handling initial message failed: %w", err)
 	}
 
@@ -134,7 +139,7 @@ func (l *Listener) Run(ctx context.Context, handler Handler) error {
 		}
 
 		if msg == nil {
-			_, err := handler.HandleDesiredRunnerCount(ctx, 0, 0)
+			_, err := handler.HandleDesiredRunnerCount(ctx, 0)
 			if err != nil {
 				return fmt.Errorf("handling nil message failed: %w", err)
 			}
@@ -172,7 +177,7 @@ func (l *Listener) handleMessage(ctx context.Context, handler Handler, msg *scal
 		}
 	}
 
-	if _, err := handler.HandleDesiredRunnerCount(ctx, parsedMsg.statistics.TotalAssignedJobs, len(parsedMsg.jobsCompleted)); err != nil {
+	if _, err := handler.HandleDesiredRunnerCount(ctx, parsedMsg.statistics.TotalAssignedJobs); err != nil {
 		return fmt.Errorf("failed to handle desired runner count: %w", err)
 	}
 

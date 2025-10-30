@@ -24,10 +24,12 @@ func Run(ctx context.Context, c config.Config) error {
 		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 
+	logger := c.Logger()
+
 	// Create a new scaleset scalesetClient
 	scalesetClient, err := scaleset.NewClient(c.ConfigureURL, c.ActionsAuth())
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create scaleset client: %w", err)
 	}
 
 	// Get the runner group ID
@@ -63,8 +65,16 @@ func Run(ctx context.Context, c config.Config) error {
 	}
 
 	defer func() {
+		logger.Info(
+			"Deleting runner scale set",
+			slog.Int("scaleSetID", scaleSet.ID),
+		)
 		if err := scalesetClient.DeleteRunnerScaleSet(context.WithoutCancel(ctx), scaleSet.ID); err != nil {
-			slog.Error("Failed to delete runner scale set", slog.Int("scaleSetID", scaleSet.ID), slog.String("error", err.Error()))
+			slog.Error(
+				"Failed to delete runner scale set",
+				slog.Int("scaleSetID", scaleSet.ID),
+				slog.String("error", err.Error()),
+			)
 		}
 	}()
 
@@ -73,6 +83,10 @@ func Run(ctx context.Context, c config.Config) error {
 		return fmt.Errorf("failed to create docker client: %w", err)
 	}
 
+	logger.Info(
+		"Pulling runner image",
+		slog.String("image", c.RunnerImage),
+	)
 	// Pull the runner image
 	pull, err := dockerClient.ImagePull(ctx, c.RunnerImage, image.PullOptions{})
 	if err != nil {
@@ -87,20 +101,19 @@ func Run(ctx context.Context, c config.Config) error {
 		return fmt.Errorf("failed to close image pull: %w", err)
 	}
 
-	logger := c.Logger()
-
+	logger.Info("Initializing listener")
 	// Initialize and start the listener
 	listener, err := listener.New(scalesetClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
 		MinRunners: c.MinRunners,
-		Logger:     logger.With("component", "listener"),
+		Logger:     logger.WithGroup("listener"),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
 	handler := &AppHandler{
-		logger: logger.With("component", "handler"),
+		logger: logger.WithGroup("handler"),
 		runners: runnerState{
 			idle: make(map[string]string),
 			busy: make(map[string]string),
@@ -114,6 +127,7 @@ func Run(ctx context.Context, c config.Config) error {
 
 	defer handler.shutdown(context.WithoutCancel(ctx))
 
+	logger.Info("Starting listener")
 	if err := listener.Run(ctx, handler); !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("listener run failed: %w", err)
 	}
@@ -130,20 +144,22 @@ type AppHandler struct {
 	logger         *slog.Logger
 }
 
-func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int, jobsCompleted int) (int, error) {
+func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
 	currentCount := a.runners.count()
 	targetRunnerCount := min(a.minRunners + count)
 
 	switch {
 	case targetRunnerCount == currentCount:
+		// No scaling needed
 		return currentCount, nil
 	case targetRunnerCount > currentCount:
+		// Scale up
 		scaleUp := targetRunnerCount - currentCount
 		a.logger.Info(
-			"Scaling down runners",
+			"Scaling up runners",
 			slog.Int("currentCount", currentCount),
-			slog.Int("desiredChange", scaleUp),
-			slog.Int("newDesiredCount", targetRunnerCount),
+			slog.Int("desiredCount", targetRunnerCount),
+			slog.Int("scaleUp", scaleUp),
 		)
 
 		var errs []error
@@ -169,7 +185,11 @@ func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int, jo
 }
 
 func (a *AppHandler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error {
-	a.logger.Info("Job started", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
+	a.logger.Info(
+		"Job started",
+		slog.Int64("runnerRequestId", jobInfo.RunnerRequestID),
+		slog.String("jobId", jobInfo.JobID),
+	)
 	a.runners.markBusy(jobInfo.RunnerName)
 	return nil
 }
@@ -236,6 +256,7 @@ func (a *AppHandler) shutdown(ctx context.Context) {
 			a.logger.Error("Failed to remove idle runner container", slog.String("name", name), slog.String("containerID", containerID), slog.String("error", err.Error()))
 		}
 	}
+	clear(a.runners.idle)
 
 	for name, containerID := range a.runners.busy {
 		a.logger.Info("Removing busy runner", slog.String("name", name), slog.String("containerID", containerID))
@@ -243,6 +264,7 @@ func (a *AppHandler) shutdown(ctx context.Context) {
 			a.logger.Error("Failed to remove busy runner container", slog.String("name", name), slog.String("containerID", containerID), slog.String("error", err.Error()))
 		}
 	}
+	clear(a.runners.busy)
 }
 
 var _ listener.Handler = (*AppHandler)(nil)
