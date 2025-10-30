@@ -1089,7 +1089,7 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 
 		retry++
 		if retry > 5 {
-			return nil, fmt.Errorf("unable to register runner after 3 retries: %w", err)
+			return nil, fmt.Errorf("unable to register runner after 5 retries: %w", err)
 		}
 
 		var ghErr *GitHubAPIError
