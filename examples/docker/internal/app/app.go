@@ -1,14 +1,18 @@
+// Package app contains the main application logic for managing GitHub Actions self-hosted runners using Docker containers.
 package app
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"sync"
 
 	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/examples/docker/config"
+	"github.com/actions/scaleset/examples/docker/internal/config"
 	"github.com/actions/scaleset/listener"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/google/uuid"
 	dockerclient "github.com/moby/moby/client"
 )
@@ -28,7 +32,7 @@ func Run(ctx context.Context, c config.Config) error {
 	// Get the runner group ID
 	var runnerGroupID int
 	switch c.RunnerGroup {
-	case "default":
+	case scaleset.DefaultRunnerGroup:
 		runnerGroupID = 1
 	default:
 		runnerGroup, err := scalesetClient.GetRunnerGroupByName(ctx, c.RunnerGroup)
@@ -63,26 +67,43 @@ func Run(ctx context.Context, c config.Config) error {
 		}
 	}()
 
+	dockerClient, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("failed to create docker client: %w", err)
+	}
+
+	// Pull the runner image
+	pull, err := dockerClient.ImagePull(ctx, c.RunnerImage, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to pull runner image: %w", err)
+	}
+
+	if _, err := io.ReadAll(pull); err != nil {
+		return fmt.Errorf("failed to read image pull response: %w", err)
+	}
+
+	if err := pull.Close(); err != nil {
+		return fmt.Errorf("failed to close image pull: %w", err)
+	}
+
 	// Initialize and start the listener
 	listener, err := listener.New(scalesetClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
 		MinRunners: c.MinRunners,
-		MaxRunners: c.MaxRunners,
 		Logger:     slog.Default(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	dockerClient, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
-	if err != nil {
-		return fmt.Errorf("failed to create docker client: %w", err)
-	}
-
 	listener.Run(ctx, &AppHandler{
-		logger:         slog.Default(),
-		containers:     make(map[string]*containerMeta),
+		logger: slog.Default(),
+		state: runnerState{
+			idle: make(map[string]string),
+			busy: make(map[string]string),
+		},
 		runnerImage:    c.RunnerImage,
+		minRunners:     c.MinRunners,
 		dockerClient:   dockerClient,
 		scalesetClient: scalesetClient,
 		scaleSetID:     scaleSet.ID,
@@ -92,26 +113,29 @@ func Run(ctx context.Context, c config.Config) error {
 }
 
 type AppHandler struct {
-	containers     map[string]*containerMeta
+	state          runnerState
 	runnerImage    string
 	scaleSetID     int
 	dockerClient   *dockerclient.Client
 	scalesetClient *scaleset.Client
+	minRunners     int
 	logger         *slog.Logger
 }
 
 func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int, jobsCompleted int) (int, error) {
-	currentCount := len(a.containers)
+	currentCount := a.state.totalCount()
+	targetRunnerCount := min(a.minRunners + count)
+
 	switch {
-	case count == currentCount:
+	case targetRunnerCount == currentCount:
 		return currentCount, nil
-	case count > currentCount:
-		scaleUp := count - currentCount
+	case targetRunnerCount > currentCount:
+		scaleUp := targetRunnerCount - currentCount
 		a.logger.Info(
 			"Scaling down runners",
 			slog.Int("currentCount", currentCount),
 			slog.Int("desiredChange", scaleUp),
-			slog.Int("newDesiredCount", count),
+			slog.Int("newDesiredCount", targetRunnerCount),
 		)
 
 		var errs []error
@@ -125,33 +149,26 @@ func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int, jo
 			// TODO: should we return error?
 			a.logger.Error("Failed to start runner", slog.String("error", err.Error()))
 		}
-		return len(a.containers), nil
-	default: // scale down
-		desired := currentCount - count
-		a.logger.Info("Scaling up runners", slog.Int("currentCount", currentCount), slog.Int("desiredChange", desired), slog.Int("newDesiredCount", count))
-		// ignore for now
-		return len(a.containers), nil
+		return a.state.totalCount(), nil
+	default:
+		// no need to handle scale down scenario since the completed runners are removed before we handle desired count
 	}
+	return currentCount, nil
 }
 
 func (a *AppHandler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error {
 	a.logger.Info("Job started", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
-	meta, ok := a.containers[jobInfo.RunnerName]
-	if !ok {
-		return fmt.Errorf("runner container not found: %s", jobInfo.RunnerName)
-	}
-	meta.state = stateBusy
+	a.state.markBusy(jobInfo.RunnerName)
 	return nil
 }
 
 func (a *AppHandler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error {
 	a.logger.Info("Job completed", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
 
-	meta := a.containers[jobInfo.RunnerName]
-	if err := a.dockerClient.ContainerRemove(ctx, meta.id, container.RemoveOptions{Force: true}); err != nil {
+	containerID := a.state.markDone(jobInfo.RunnerName)
+	if err := a.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("failed to remove runner container: %w", err)
 	}
-	delete(a.containers, jobInfo.RunnerName)
 
 	return nil
 }
@@ -192,23 +209,53 @@ func (a *AppHandler) startRunner(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to start runner container: %w", err)
 	}
 
-	a.containers[name] = &containerMeta{
-		id:    c.ID,
-		state: stateIdle,
-	}
+	a.state.addIdle(name, c.ID)
 	return name, nil
 }
 
 var _ listener.Handler = (*AppHandler)(nil)
 
-type state int
+type runnerState struct {
+	mu   sync.Mutex
+	idle map[string]string
+	busy map[string]string
+}
 
-const (
-	stateIdle state = iota
-	stateBusy
-)
+func (r *runnerState) totalCount() int {
+	r.mu.Lock()
+	count := len(r.idle) + len(r.busy)
+	r.mu.Unlock()
+	return count
+}
 
-type containerMeta struct {
-	id    string
-	state state
+func (r *runnerState) markBusy(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state, ok := r.idle[name]
+	if !ok {
+		panic("marking non-existent runner busy")
+	}
+	delete(r.idle, name)
+	r.busy[name] = state
+}
+
+func (r *runnerState) markDone(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.markDoneUnlocked(name)
+}
+
+func (r *runnerState) markDoneUnlocked(name string) string {
+	containerID, ok := r.busy[name]
+	if !ok {
+		panic("marking non-existent runner done")
+	}
+	delete(r.busy, name)
+	return containerID
+}
+
+func (r *runnerState) addIdle(name, containerID string) {
+	r.mu.Lock()
+	r.idle[name] = containerID
+	r.mu.Unlock()
 }

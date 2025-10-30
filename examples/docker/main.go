@@ -9,10 +9,10 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/actions/scaleset/examples/docker/app"
-	"github.com/actions/scaleset/examples/docker/config"
+	"github.com/actions/scaleset"
+	"github.com/actions/scaleset/examples/docker/internal/app"
+	"github.com/actions/scaleset/examples/docker/internal/config"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var configPath string
@@ -29,17 +29,6 @@ Docker containers effectively.`,
 		ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
 		defer cancel()
 
-		if configPath != "" {
-			viper.SetConfigFile(configPath)
-			if err := viper.ReadInConfig(); err != nil {
-				return fmt.Errorf("failed to read config file %q: %w", configPath, err)
-			}
-		}
-
-		if err := viper.Unmarshal(&cfg); err != nil {
-			return fmt.Errorf("failed to unmarshal config: %w", err)
-		}
-
 		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("invalid configuration: %w", err)
 		}
@@ -55,15 +44,11 @@ func init() {
 	flags.IntVar(&cfg.MaxRunners, "max-runners", math.MaxInt32, "Maximum number of runners")
 	flags.IntVar(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
 	flags.StringVar(&cfg.ScaleSetName, "scale-set-name", "", "Name of the scale set")
-	flags.StringVar(&cfg.RunnerGroup, "runner-group", "default", "Runner group name")
+	flags.StringVar(&cfg.RunnerGroup, "runner-group", scaleset.DefaultRunnerGroup, "Runner group name")
 	flags.StringVar(&cfg.GitHubApp.AppID, "app-id", "", "Application ID")
 	flags.Int64Var(&cfg.GitHubApp.AppInstallationID, "app-installation-id", 0, "Application installation ID")
 	flags.StringVar(&cfg.GitHubApp.AppPrivateKey, "app-private-key", "", "Path to application private key")
 	flags.StringVar(&cfg.Token, "token", "", "Authentication token")
-
-	if err := viper.BindPFlags(flags); err != nil {
-		panic(fmt.Errorf("failed to bind flags: %w", err))
-	}
 }
 
 func main() {

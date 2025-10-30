@@ -61,7 +61,6 @@ type Listener struct {
 	// lastMessageID keeps track of the last processed message ID
 	lastMessageID int64
 	// maxCapacity is the maximum number of runners allowed
-	maxCapacity int
 	// hostname of the current machine
 	hostname string
 	// session represents the current message session
@@ -87,13 +86,12 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 	}
 
 	return &Listener{
-		client:      client,
-		scaleSetID:  config.ScaleSetID,
-		minRunners:  config.MinRunners,
-		maxRunners:  config.MaxRunners,
-		maxCapacity: config.MaxRunners,
-		hostname:    hostname,
-		logger:      config.Logger,
+		client:     client,
+		scaleSetID: config.ScaleSetID,
+		minRunners: config.MinRunners,
+		maxRunners: config.MaxRunners,
+		hostname:   hostname,
+		logger:     config.Logger,
 	}, nil
 }
 
@@ -233,7 +231,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		l.session.MessageQueueURL,
 		l.session.MessageQueueAccessToken,
 		l.lastMessageID,
-		l.maxCapacity,
+		l.maxRunners,
 	)
 	if err == nil { // if NO error
 		return msg, nil
@@ -255,7 +253,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		l.session.MessageQueueURL,
 		l.session.MessageQueueAccessToken,
 		l.lastMessageID,
-		l.maxCapacity,
+		l.maxRunners,
 	)
 	if err != nil { // if NO error
 		return nil, fmt.Errorf("failed to get next message after message session refresh: %w", err)

@@ -21,7 +21,7 @@ type Config struct {
 
 func (c *Config) defaults() {
 	if c.RunnerGroup == "" {
-		c.RunnerGroup = "default"
+		c.RunnerGroup = scaleset.DefaultRunnerGroup
 	}
 	if c.RunnerImage == "" {
 		c.RunnerImage = "ghcr.io/actions/actions-runner:latest"

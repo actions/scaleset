@@ -6,6 +6,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const DefaultRunnerGroup = "default"
+
 type MessageType string
 
 // message types
