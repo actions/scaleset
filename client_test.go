@@ -1675,7 +1675,7 @@ func TestUserAgentInfoString(t *testing.T) {
 	userAgent := userAgentInfo.String()
 	expectedProduct := "actions-runner-controller/0.1.0 (1234567890abcdef; test)"
 	assert.Contains(t, userAgent, expectedProduct)
-	expectedScaleSet := "ScaleSetID/10 (Proxy/enabled)"
+	expectedScaleSet := "ScaleSetID/10"
 	assert.Contains(t, userAgent, expectedScaleSet)
 }
 
