@@ -11,7 +11,7 @@ You do *not* need to adopt the full controller (and Kubernetes) to take advantag
 ## High-Level Flow
 
 1. Create a `Client` with either a GitHub App credential (recommended) or a PAT.
-2. Create a Runner Scale Set specifying labels & settings.
+2. Create a Runner Scale Set specifying name & settings.
 3. Start a message session to receive scale / job events: the `listener` package in this repo can give you a headstart with this.
 4. What you need to bring is what it means **to your infrastructure** to provision/tear down a runner:
    - Call `GenerateJitRunnerConfig` to obtain an encoded JIT config for a new runner belonging to your scale set.
@@ -75,6 +75,6 @@ Scaling logic uses the statistics & job events to decide how many new JIT config
 ## Security Notes
 
 - Always prefer GitHub App credentials; rotate PATs if you must use them.
-- Treat JIT config blobs as secrets until consumed.
+- Treat JIT configs as secrets until consumed.
 
 ---
