@@ -118,8 +118,6 @@ type UserAgentInfo struct {
 	CommitSHA string
 	// ScaleSetID is the ID of the scale set
 	ScaleSetID int
-	// HasProxy is true if the controller is running behind a proxy
-	HasProxy bool
 	// Subsystem is the subsystem such as listener, controller, etc.
 	// Each system may pick its own subsystem name.
 	Subsystem string
@@ -131,12 +129,7 @@ func (u UserAgentInfo) String() string {
 		scaleSetID = strconv.Itoa(u.ScaleSetID)
 	}
 
-	proxy := "Proxy/disabled"
-	if u.HasProxy {
-		proxy = "Proxy/enabled"
-	}
-
-	return fmt.Sprintf("%s/%s (%s; %s) ScaleSetID/%s (%s)", u.System, u.Version, u.CommitSHA, u.Subsystem, scaleSetID, proxy)
+	return fmt.Sprintf("%s/%s (%s; %s) ScaleSetID/%s", u.System, u.Version, u.CommitSHA, u.Subsystem, scaleSetID)
 }
 
 func WithLogger(logger slog.Logger) Option {
@@ -193,8 +186,10 @@ func NewClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*
 
 	ac.userAgent.Store(
 		UserAgentInfo{
-			Version:    "N/A",
-			CommitSHA:  "N/A",
+			System:     "scaleset-client",
+			Version:    "NA",
+			CommitSHA:  "NA",
+			Subsystem:  "NA",
 			ScaleSetID: 0,
 		}.String())
 
