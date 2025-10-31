@@ -3,7 +3,7 @@ module github.com/actions/scaleset/examples/docker
 go 1.25.3
 
 require (
-	github.com/actions/scaleset v0.0.0-20240605120000-abcdef123456
+	github.com/actions/scaleset v0.0.0-20251031131602-83fb2e283757
 	github.com/docker/docker v28.5.1+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/moby/moby v28.5.1+incompatible
@@ -43,5 +43,3 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
-
-replace github.com/actions/scaleset => ../..
