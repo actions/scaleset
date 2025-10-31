@@ -1672,11 +1672,13 @@ func TestUserAgentInfoString(t *testing.T) {
 		Subsystem:  "test",
 	}
 
+	version, sha := detectModuleVersionAndCommit()
+
 	userAgent := userAgentInfo.String()
 	expectedProduct := fmt.Sprintf(
 		"actions-runner-controller/0.1.0 (1234567890abcdef; test) ScaleSetID/10; client (%s; %s)",
-		packageVersion,
-		commitSHA,
+		version,
+		sha,
 	)
 	assert.Contains(t, userAgent, expectedProduct)
 }

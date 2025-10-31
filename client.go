@@ -1,8 +1,6 @@
 // Package scaleset package provides a client to interact with GitHub Scale Set APIs.
 package scaleset
 
-//go:generate go run internal/tools/build.go
-
 import (
 	"bytes"
 	"context"
@@ -17,7 +15,9 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -131,6 +131,8 @@ func (u UserAgentInfo) String() string {
 		scaleSetID = strconv.Itoa(u.ScaleSetID)
 	}
 
+	version, sha := detectModuleVersionAndCommit()
+
 	return fmt.Sprintf(
 		"%s/%s (%s; %s) ScaleSetID/%s; client (%s; %s)",
 		u.System,
@@ -138,8 +140,8 @@ func (u UserAgentInfo) String() string {
 		u.CommitSHA,
 		u.Subsystem,
 		scaleSetID,
-		packageVersion,
-		commitSHA,
+		version,
+		sha,
 	)
 }
 
@@ -195,11 +197,13 @@ func NewClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*
 		retryWaitMax: 30 * time.Second,
 	}
 
+	version, sha := detectModuleVersionAndCommit()
+
 	ac.userAgent.Store(
 		UserAgentInfo{
 			System:     "scaleset-client",
-			Version:    packageVersion,
-			CommitSHA:  commitSHA,
+			Version:    version,
+			CommitSHA:  sha,
 			Subsystem:  "NA",
 			ScaleSetID: 0,
 		}.String())
@@ -1180,4 +1184,85 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func userAgentVersionAndSHA() (string, string) {
+	version := "unknown"
+	sha := "unknown"
+
+	v, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version, sha
+	}
+
+	for _, setting := range v.Settings {
+		if setting.Key == "vcs.revision" {
+			sha = setting.Value
+		} else if setting.Key == "vcs.modified" && setting.Value == "true" {
+			sha += "-modified"
+		} else if setting.Key == "vcs.version" {
+			version = setting.Value
+		}
+	}
+
+	return version, sha
+}
+
+func detectModuleVersionAndCommit() (version string, commit string) {
+	const modulePath = "github.com/actions/scaleset"
+
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown", "unknown"
+	}
+
+	// If we are the main module (built from source in this repo), use vcs settings.
+	if bi.Main.Path == modulePath {
+		version = bi.Main.Version
+		commit = "unknown"
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				commit = s.Value
+			case "vcs.modified":
+				// Optionally append a marker if the tree was dirty.
+				if s.Value == "true" && commit != "unknown" {
+					commit = commit + "-dirty"
+				}
+			}
+		}
+		if version == "" || version == "(devel)" {
+			version = "devel"
+		}
+		if commit == "" {
+			commit = "unknown"
+		}
+		return version, commit
+	}
+
+	// Otherwise search dependency list for our module.
+	for _, dep := range bi.Deps {
+		if dep.Path == modulePath {
+			version = dep.Version
+			commit = extractCommitFromVersion(version)
+			return version, commit
+		}
+	}
+
+	return "unknown", "unknown"
+}
+
+// new: parse commit from a pseudo-version (e.g. v0.0.0-20251031142550-8104f571eba7)
+func extractCommitFromVersion(v string) string {
+	// Semantic versions without pseudo part can't yield commit; return v directly.
+	// Pseudo format: <base>-<timestamp>-<commit>
+	parts := strings.Split(v, "-")
+	if len(parts) < 3 {
+		return v
+	}
+	commit := parts[len(parts)-1]
+	if len(commit) >= 7 {
+		return commit
+	}
+	return v
 }
