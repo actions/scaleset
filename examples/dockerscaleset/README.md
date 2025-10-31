@@ -2,7 +2,7 @@
 
 This example showcases a Docker implementation of GitHub Actions runner scale sets, using the `github.com/actions/scaleset` client to provision ephemeral GitHub Actions runners as Docker containers.
 
-The goal of this example to show how simple and powerful when you only need to focus on the core logic of scaling runners up and down, while the client handles all the API interactions.
+The goal of this example is to show how simple and powerful it is when you only need to focus on the core logic of scaling runners up and down, while the client handles all the API interactions.
 
 > [!WARNING]
 > This is a simplified example meant for demonstration and learning purposes. It is not intended for production use.
