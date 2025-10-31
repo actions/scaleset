@@ -29,6 +29,19 @@ jobs:
       - name: Check diff
         run: git diff --exit-code
 
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache: false
+      - name: go generate
+        run: go generate ./...
+      - name: Check diff
+        run: git diff --exit-code
+
   lint:
     runs-on: ubuntu-latest
     steps:

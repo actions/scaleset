@@ -1,6 +1,8 @@
 // Package scaleset package provides a client to interact with GitHub Scale Set APIs.
 package scaleset
 
+//go:generate go run internal/tools/build.go
+
 import (
 	"bytes"
 	"context"
@@ -129,7 +131,16 @@ func (u UserAgentInfo) String() string {
 		scaleSetID = strconv.Itoa(u.ScaleSetID)
 	}
 
-	return fmt.Sprintf("%s/%s (%s; %s) ScaleSetID/%s", u.System, u.Version, u.CommitSHA, u.Subsystem, scaleSetID)
+	return fmt.Sprintf(
+		"%s/%s (%s; %s) ScaleSetID/%s; client (%s; %s)",
+		u.System,
+		u.Version,
+		u.CommitSHA,
+		u.Subsystem,
+		scaleSetID,
+		packageVersion,
+		commitSHA,
+	)
 }
 
 func WithLogger(logger slog.Logger) Option {
@@ -187,8 +198,8 @@ func NewClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*
 	ac.userAgent.Store(
 		UserAgentInfo{
 			System:     "scaleset-client",
-			Version:    "NA",
-			CommitSHA:  "NA",
+			Version:    packageVersion,
+			CommitSHA:  commitSHA,
 			Subsystem:  "NA",
 			ScaleSetID: 0,
 		}.String())
