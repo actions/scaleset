@@ -41,7 +41,7 @@ func (c *Config) Validate() error {
 
 	appError := c.GitHubApp.Validate()
 	if c.Token == "" && appError != nil {
-		return fmt.Errorf("no credentials provided: either GitHub App (app id, installation id and private key) (recommended) or a Personal Access Token are required")
+		return fmt.Errorf("no credentials provided: either GitHub App (client id, installation id and private key) (recommended) or a Personal Access Token are required")
 	}
 
 	if c.ScaleSetName == "" {
