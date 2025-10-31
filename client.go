@@ -1186,28 +1186,6 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 	return nil
 }
 
-func userAgentVersionAndSHA() (string, string) {
-	version := "unknown"
-	sha := "unknown"
-
-	v, ok := debug.ReadBuildInfo()
-	if !ok {
-		return version, sha
-	}
-
-	for _, setting := range v.Settings {
-		if setting.Key == "vcs.revision" {
-			sha = setting.Value
-		} else if setting.Key == "vcs.modified" && setting.Value == "true" {
-			sha += "-modified"
-		} else if setting.Key == "vcs.version" {
-			version = setting.Value
-		}
-	}
-
-	return version, sha
-}
-
 func detectModuleVersionAndCommit() (version string, commit string) {
 	const modulePath = "github.com/actions/scaleset"
 
