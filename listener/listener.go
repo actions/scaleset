@@ -51,7 +51,7 @@ func (c *Config) Validate() error {
 }
 
 type Listener struct {
-	// The main clinet responsible for communicating with the scaleset service
+	// The main client responsible for communicating with the scaleset service
 	client *scaleset.Client
 
 	// Configuration for the listener
@@ -260,7 +260,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		l.lastMessageID,
 		l.maxRunners,
 	)
-	if err != nil { // if NO error
+	if err != nil { // if error
 		return nil, fmt.Errorf("failed to get next message after message session refresh: %w", err)
 	}
 
