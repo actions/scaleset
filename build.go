@@ -3,6 +3,6 @@
 package scaleset
 
 const (
-	commitSHA = "83fb2e283757f4538462c655006971b37053a7e9"
-	packageVersion   = "NA"
+	commitSHA      = "34ac50e64a5f46670443e7db758580bfed467669"
+	packageVersion = "NA"
 )
