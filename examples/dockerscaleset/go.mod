@@ -1,4 +1,4 @@
-module github.com/actions/scaleset/examples/docker
+module github.com/actions/scaleset/examples/dockerscaleset
 
 go 1.25.3
 
