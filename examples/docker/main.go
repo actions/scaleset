@@ -5,7 +5,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"os/signal"
 
@@ -41,7 +40,7 @@ func init() {
 	flags := cmd.PersistentFlags()
 	flags.StringVarP(&configPath, "config", "c", "", "Path to the configuration file")
 	flags.StringVar(&cfg.ConfigureURL, "url", "", "URL for configuration")
-	flags.IntVar(&cfg.MaxRunners, "max-runners", math.MaxInt32, "Maximum number of runners")
+	flags.IntVar(&cfg.MaxRunners, "max-runners", 10, "Maximum number of runners")
 	flags.IntVar(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
 	flags.StringVar(&cfg.ScaleSetName, "scale-set-name", "", "Name of the scale set")
 	flags.StringVar(&cfg.RunnerGroup, "runner-group", scaleset.DefaultRunnerGroup, "Runner group name")

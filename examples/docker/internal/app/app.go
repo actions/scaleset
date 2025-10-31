@@ -106,6 +106,7 @@ func Run(ctx context.Context, c config.Config) error {
 	listener, err := listener.New(scalesetClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
 		MinRunners: c.MinRunners,
+		MaxRunners: c.MaxRunners,
 		Logger:     logger.WithGroup("listener"),
 	})
 	if err != nil {
