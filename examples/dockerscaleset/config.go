@@ -1,5 +1,4 @@
-// Package config provides configuration structure and validation for the scaleset runner manager.
-package config
+package main
 
 import (
 	"fmt"
@@ -12,16 +11,16 @@ import (
 )
 
 type Config struct {
-	ConfigureURL string
-	MaxRunners   int
-	MinRunners   int
-	ScaleSetName string
-	RunnerGroup  string
-	GitHubApp    scaleset.GitHubAppAuth
-	Token        string
-	RunnerImage  string
-	LogLevel     string
-	LogFormat    string
+	RegistrationURL string
+	MaxRunners      int
+	MinRunners      int
+	ScaleSetName    string
+	RunnerGroup     string
+	GitHubApp       scaleset.GitHubAppAuth
+	Token           string
+	RunnerImage     string
+	LogLevel        string
+	LogFormat       string
 }
 
 func (c *Config) defaults() {
@@ -36,26 +35,26 @@ func (c *Config) defaults() {
 func (c *Config) Validate() error {
 	c.defaults()
 
-	if _, err := url.ParseRequestURI(c.ConfigureURL); err != nil {
-		return fmt.Errorf("invalid configure-url: %w", err)
+	if _, err := url.ParseRequestURI(c.RegistrationURL); err != nil {
+		return fmt.Errorf("invalid registration URL: %w, it should be the full URL of where you want to register your scale set, e.g. 'https://github.com/org/repo'", err)
 	}
 
 	appError := c.GitHubApp.Validate()
 	if c.Token == "" && appError != nil {
-		return fmt.Errorf("either token or app-id, app-installation-id, and app-private-key must be provided")
+		return fmt.Errorf("no credentials provided: either GitHub App (app id, installation id and private key) (recommended) or a Personal Access Token are required")
 	}
 
 	if c.ScaleSetName == "" {
-		return fmt.Errorf("scale-set-name is required")
+		return fmt.Errorf("scale set name is required")
 	}
 	if c.MaxRunners < c.MinRunners {
-		return fmt.Errorf("max-runners cannot be less than min-runners")
+		return fmt.Errorf("max runners cannot be less than min-runners")
 	}
 	if c.RunnerGroup == "" {
-		return fmt.Errorf("runner-group is required")
+		return fmt.Errorf("runner group is required")
 	}
 	if c.RunnerImage == "" {
-		return fmt.Errorf("runner-image is required")
+		return fmt.Errorf("runner image is required")
 	}
 	return nil
 }

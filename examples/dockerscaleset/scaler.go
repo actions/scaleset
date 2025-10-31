@@ -1,141 +1,19 @@
-// Package app contains the main application logic for managing GitHub Actions self-hosted runners using Docker containers.
-package app
+package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"sync"
 
 	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/examples/docker/internal/config"
 	"github.com/actions/scaleset/listener"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
 	"github.com/google/uuid"
 	dockerclient "github.com/moby/moby/client"
 )
 
-func Run(ctx context.Context, c config.Config) error {
-	// Ensure that the config is valid
-	if err := c.Validate(); err != nil {
-		return fmt.Errorf("configuration validation failed: %w", err)
-	}
-
-	logger := c.Logger()
-
-	// Create a new scaleset scalesetClient
-	scalesetClient, err := scaleset.NewClient(c.ConfigureURL, c.ActionsAuth())
-	if err != nil {
-		return fmt.Errorf("failed to create scaleset client: %w", err)
-	}
-
-	// Get the runner group ID
-	var runnerGroupID int
-	switch c.RunnerGroup {
-	case scaleset.DefaultRunnerGroup:
-		runnerGroupID = 1
-	default:
-		runnerGroup, err := scalesetClient.GetRunnerGroupByName(ctx, c.RunnerGroup)
-		if err != nil {
-			return fmt.Errorf("failed to get runner group ID: %w", err)
-		}
-		runnerGroupID = runnerGroup.ID
-	}
-
-	// Create the runner scale set
-	scaleSet, err := scalesetClient.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
-		Name:          c.ScaleSetName,
-		RunnerGroupID: runnerGroupID,
-		Labels: []scaleset.Label{
-			{
-				Name: c.ScaleSetName,
-				Type: "System",
-			},
-		},
-		RunnerSetting: scaleset.RunnerSetting{
-			Ephemeral:     true,
-			DisableUpdate: true,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create runner scale set: %w", err)
-	}
-
-	defer func() {
-		logger.Info(
-			"Deleting runner scale set",
-			slog.Int("scaleSetID", scaleSet.ID),
-		)
-		if err := scalesetClient.DeleteRunnerScaleSet(context.WithoutCancel(ctx), scaleSet.ID); err != nil {
-			slog.Error(
-				"Failed to delete runner scale set",
-				slog.Int("scaleSetID", scaleSet.ID),
-				slog.String("error", err.Error()),
-			)
-		}
-	}()
-
-	dockerClient, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
-	if err != nil {
-		return fmt.Errorf("failed to create docker client: %w", err)
-	}
-
-	logger.Info(
-		"Pulling runner image",
-		slog.String("image", c.RunnerImage),
-	)
-	// Pull the runner image
-	pull, err := dockerClient.ImagePull(ctx, c.RunnerImage, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to pull runner image: %w", err)
-	}
-
-	if _, err := io.ReadAll(pull); err != nil {
-		return fmt.Errorf("failed to read image pull response: %w", err)
-	}
-
-	if err := pull.Close(); err != nil {
-		return fmt.Errorf("failed to close image pull: %w", err)
-	}
-
-	logger.Info("Initializing listener")
-	// Initialize and start the listener
-	listener, err := listener.New(scalesetClient, listener.Config{
-		ScaleSetID: scaleSet.ID,
-		MinRunners: c.MinRunners,
-		MaxRunners: c.MaxRunners,
-		Logger:     logger.WithGroup("listener"),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create listener: %w", err)
-	}
-
-	handler := &AppHandler{
-		logger: logger.WithGroup("handler"),
-		runners: runnerState{
-			idle: make(map[string]string),
-			busy: make(map[string]string),
-		},
-		runnerImage:    c.RunnerImage,
-		minRunners:     c.MinRunners,
-		dockerClient:   dockerClient,
-		scalesetClient: scalesetClient,
-		scaleSetID:     scaleSet.ID,
-	}
-
-	defer handler.shutdown(context.WithoutCancel(ctx))
-
-	logger.Info("Starting listener")
-	if err := listener.Run(ctx, handler); !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("listener run failed: %w", err)
-	}
-	return nil
-}
-
-type AppHandler struct {
+type Scaler struct {
 	runners        runnerState
 	runnerImage    string
 	scaleSetID     int
@@ -145,7 +23,7 @@ type AppHandler struct {
 	logger         *slog.Logger
 }
 
-func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
+func (a *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
 	currentCount := a.runners.count()
 	targetRunnerCount := min(a.minRunners + count)
 
@@ -185,7 +63,7 @@ func (a *AppHandler) HandleDesiredRunnerCount(ctx context.Context, count int) (i
 	return a.runners.count(), nil
 }
 
-func (a *AppHandler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error {
+func (a *Scaler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error {
 	a.logger.Info(
 		"Job started",
 		slog.Int64("runnerRequestId", jobInfo.RunnerRequestID),
@@ -195,7 +73,7 @@ func (a *AppHandler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.Job
 	return nil
 }
 
-func (a *AppHandler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error {
+func (a *Scaler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error {
 	a.logger.Info("Job completed", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
 
 	containerID := a.runners.markDone(jobInfo.RunnerName)
@@ -206,7 +84,7 @@ func (a *AppHandler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.J
 	return nil
 }
 
-func (a *AppHandler) startRunner(ctx context.Context) (string, error) {
+func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	name := fmt.Sprintf("runner-%s", uuid.NewString()[:8])
 
 	jit, err := a.scalesetClient.GenerateJitRunnerConfig(
@@ -246,7 +124,7 @@ func (a *AppHandler) startRunner(ctx context.Context) (string, error) {
 	return name, nil
 }
 
-func (a *AppHandler) shutdown(ctx context.Context) {
+func (a *Scaler) shutdown(ctx context.Context) {
 	a.logger.Info("Shutting down runners")
 	a.runners.mu.Lock()
 	defer a.runners.mu.Unlock()
@@ -268,7 +146,7 @@ func (a *AppHandler) shutdown(ctx context.Context) {
 	clear(a.runners.busy)
 }
 
-var _ listener.Handler = (*AppHandler)(nil)
+var _ listener.Handler = (*Scaler)(nil)
 
 type runnerState struct {
 	mu   sync.Mutex
