@@ -95,13 +95,13 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 	}, nil
 }
 
-type Handler interface {
+type Scaler interface {
 	HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error
 	HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error
 	HandleDesiredRunnerCount(ctx context.Context, count int) (int, error)
 }
 
-func (l *Listener) Run(ctx context.Context, handler Handler) error {
+func (l *Listener) Run(ctx context.Context, handler Scaler) error {
 	l.logger.Info("Creating message session")
 	if err := l.createSession(ctx); err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
@@ -153,7 +153,7 @@ func (l *Listener) Run(ctx context.Context, handler Handler) error {
 	}
 }
 
-func (l *Listener) handleMessage(ctx context.Context, handler Handler, msg *scaleset.RunnerScaleSetMessage) error {
+func (l *Listener) handleMessage(ctx context.Context, handler Scaler, msg *scaleset.RunnerScaleSetMessage) error {
 	parsedMsg, err := l.parseMessage(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("failed to parse message: %w", err)
