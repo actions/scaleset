@@ -1669,7 +1669,6 @@ func TestUserAgentInfoString(t *testing.T) {
 		Version:    "0.1.0",
 		CommitSHA:  "1234567890abcdef",
 		ScaleSetID: 10,
-		HasProxy:   true,
 		Subsystem:  "test",
 	}
 

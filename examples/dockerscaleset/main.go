@@ -91,6 +91,15 @@ func run(ctx context.Context, c Config) error {
 		return fmt.Errorf("failed to create runner scale set: %w", err)
 	}
 
+	// Set the user agent for the scaleset client now that we have the scale set ID
+	scalesetClient.SetUserAgent(scaleset.UserAgentInfo{
+		System:     "dockerscaleset",
+		Version:    "0.1.0",
+		CommitSHA:  "unknown",
+		ScaleSetID: scaleSet.ID,
+		Subsystem:  scaleSet.Name,
+	})
+
 	defer func() {
 		logger.Info(
 			"Deleting runner scale set",
