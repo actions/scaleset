@@ -66,7 +66,7 @@ func TestGetRunnerByName(t *testing.T) {
 
 	t.Run("Get Runner by Name", func(t *testing.T) {
 		var runnerID int64 = 1
-		var runnerName = "self-hosted-ubuntu"
+		runnerName := "self-hosted-ubuntu"
 		want := &RunnerReference{
 			ID:   int(runnerID),
 			Name: runnerName,
@@ -86,7 +86,7 @@ func TestGetRunnerByName(t *testing.T) {
 	})
 
 	t.Run("Get Runner by name with not exist runner", func(t *testing.T) {
-		var runnerName = "self-hosted-ubuntu"
+		runnerName := "self-hosted-ubuntu"
 		response := []byte(`{"count": 0, "value": []}`)
 
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +102,7 @@ func TestGetRunnerByName(t *testing.T) {
 	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {
-		var runnerName = "self-hosted-ubuntu"
+		runnerName := "self-hosted-ubuntu"
 
 		retryWaitMax := 1 * time.Millisecond
 		retryMax := 1
@@ -179,8 +179,8 @@ func TestGetRunnerGroupByName(t *testing.T) {
 	}
 
 	t.Run("Get RunnerGroup by Name", func(t *testing.T) {
-		var runnerGroupID int64 = 1
-		var runnerGroupName = "test-runner-group"
+		runnerGroupID := 1
+		runnerGroupName := "test-runner-group"
 		want := &RunnerGroup{
 			ID:   runnerGroupID,
 			Name: runnerGroupName,
@@ -200,7 +200,7 @@ func TestGetRunnerGroupByName(t *testing.T) {
 	})
 
 	t.Run("Get RunnerGroup by name with not exist runner group", func(t *testing.T) {
-		var runnerGroupName = "test-runner-group"
+		runnerGroupName := "test-runner-group"
 		response := []byte(`{"count": 0, "value": []}`)
 
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

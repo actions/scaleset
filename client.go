@@ -77,12 +77,25 @@ type Client struct {
 }
 
 type GitHubAppAuth struct {
-	// AppID is the ID or the Client ID of the application
-	AppID string
-	// AppInstallationID is the installation ID of the GitHub App
-	AppInstallationID int64
-	// AppPrivateKey is the private key of the GitHub App in PEM format
-	AppPrivateKey string
+	// ClientID is the Client ID of the application (app id also works)
+	ClientID string
+	// InstallationID is the installation ID of the GitHub App
+	InstallationID int64
+	// PrivateKey is the private key of the GitHub App in PEM format
+	PrivateKey string
+}
+
+func (a *GitHubAppAuth) Validate() error {
+	if a.ClientID == "" {
+		return fmt.Errorf("client ID is required")
+	}
+	if a.InstallationID == 0 {
+		return fmt.Errorf("app installation ID is required")
+	}
+	if a.PrivateKey == "" {
+		return fmt.Errorf("app private key is required")
+	}
+	return nil
 }
 
 type ActionsAuth struct {
@@ -913,7 +926,7 @@ func (c *Client) fetchAccessToken(ctx context.Context, creds *GitHubAppAuth) (*a
 		return nil, fmt.Errorf("failed to create JWT for GitHub app: %w", err)
 	}
 
-	path := fmt.Sprintf("/app/installations/%v/access_tokens", creds.AppInstallationID)
+	path := fmt.Sprintf("/app/installations/%v/access_tokens", creds.InstallationID)
 	req, err := c.newGitHubAPIRequest(ctx, http.MethodPost, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
@@ -1098,12 +1111,12 @@ func createJWTForGitHubApp(appAuth *GitHubAppAuth) (string, error) {
 	claims := &jwt.RegisteredClaims{
 		IssuedAt:  jwt.NewNumericDate(issuedAt),
 		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		Issuer:    appAuth.AppID,
+		Issuer:    appAuth.ClientID,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 
-	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(appAuth.AppPrivateKey))
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(appAuth.PrivateKey))
 	if err != nil {
 		return "", fmt.Errorf("failed to parse RSA private key from PEM: %w", err)
 	}
