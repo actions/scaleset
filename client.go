@@ -32,6 +32,15 @@ const (
 	scaleSetEndpoint = "_apis/runtime/runnerscalesets"
 )
 
+var (
+	packageVersion string
+	commitSHA      string
+)
+
+func init() {
+	packageVersion, commitSHA = detectModuleVersionAndCommit()
+}
+
 type atomicValue[T any] struct {
 	v atomic.Value
 }
@@ -131,8 +140,6 @@ func (u UserAgentInfo) String() string {
 		scaleSetID = strconv.Itoa(u.ScaleSetID)
 	}
 
-	version, sha := detectModuleVersionAndCommit()
-
 	return fmt.Sprintf(
 		"%s/%s (%s; %s) ScaleSetID/%s; client (%s; %s)",
 		u.System,
@@ -140,8 +147,8 @@ func (u UserAgentInfo) String() string {
 		u.CommitSHA,
 		u.Subsystem,
 		scaleSetID,
-		version,
-		sha,
+		packageVersion,
+		commitSHA,
 	)
 }
 
