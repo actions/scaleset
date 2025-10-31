@@ -61,7 +61,6 @@ type Listener struct {
 
 	// lastMessageID keeps track of the last processed message ID
 	lastMessageID int64
-	// maxCapacity is the maximum number of runners allowed
 	// hostname of the current machine
 	hostname string
 	// session represents the current message session
