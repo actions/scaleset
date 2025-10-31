@@ -18,6 +18,13 @@ You can install the example with:
 go install github.com/actions/scaleset/examples/dockerscaleset@latest
 ```
 
+If this fails you should also try running the command with
+
+```bash
+GONOSUMDB=github.com/actions/scaleset GOPRIVATE=github.com/actions/scaleset go
+install github.com/actions/scaleset/examples/dockerscaleset@latest
+```
+
 You'll then need:
 
 - Docker installed and running on your machine.
