@@ -247,7 +247,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 	}
 
 	if err := l.refreshSession(ctx); err != nil {
-		return nil, fmt.Errorf("failed to refresh the session: %w", err)
+		return nil, fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
 	l.logger.Info("Getting next message", "lastMessageID", l.lastMessageID)
@@ -284,7 +284,7 @@ func (l *Listener) deleteLastMessage(ctx context.Context) error {
 	}
 
 	if err := l.refreshSession(ctx); err != nil {
-		return fmt.Errorf("failed to refresh the session: %w", err)
+		return fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
 	err = l.client.DeleteMessage(
