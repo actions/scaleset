@@ -76,7 +76,7 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 	}
 
 	if err := config.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	hostname, err := os.Hostname()
@@ -247,7 +247,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 	}
 
 	if err := l.refreshSession(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to refresh the session: %w", err)
 	}
 
 	l.logger.Info("Getting next message", "lastMessageID", l.lastMessageID)
@@ -284,7 +284,7 @@ func (l *Listener) deleteLastMessage(ctx context.Context) error {
 	}
 
 	if err := l.refreshSession(ctx); err != nil {
-		return err
+		return fmt.Errorf("failed to refresh the session: %w", err)
 	}
 
 	err = l.client.DeleteMessage(

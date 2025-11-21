@@ -32,7 +32,7 @@ type GitHubConfig struct {
 func ParseGitHubConfigFromURL(in string) (*GitHubConfig, error) {
 	u, err := url.Parse(strings.Trim(in, "/"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse URL: %w", err)
 	}
 
 	isHosted := isHostedGitHubURL(u)
