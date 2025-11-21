@@ -15,7 +15,9 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +31,15 @@ const (
 	runnerEndpoint   = "_apis/distributedtask/pools/0/agents"
 	scaleSetEndpoint = "_apis/runtime/runnerscalesets"
 )
+
+var (
+	packageVersion string
+	commitSHA      string
+)
+
+func init() {
+	packageVersion, commitSHA = detectModuleVersionAndCommit()
+}
 
 type atomicValue[T any] struct {
 	v atomic.Value
@@ -129,7 +140,16 @@ func (u UserAgentInfo) String() string {
 		scaleSetID = strconv.Itoa(u.ScaleSetID)
 	}
 
-	return fmt.Sprintf("%s/%s (%s; %s) ScaleSetID/%s", u.System, u.Version, u.CommitSHA, u.Subsystem, scaleSetID)
+	return fmt.Sprintf(
+		"%s/%s (%s; %s) ScaleSetID/%s; client (%s; %s)",
+		u.System,
+		u.Version,
+		u.CommitSHA,
+		u.Subsystem,
+		scaleSetID,
+		packageVersion,
+		commitSHA,
+	)
 }
 
 func WithLogger(logger slog.Logger) Option {
@@ -184,11 +204,13 @@ func NewClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*
 		retryWaitMax: 30 * time.Second,
 	}
 
+	version, sha := detectModuleVersionAndCommit()
+
 	ac.userAgent.Store(
 		UserAgentInfo{
 			System:     "scaleset-client",
-			Version:    "NA",
-			CommitSHA:  "NA",
+			Version:    version,
+			CommitSHA:  sha,
 			Subsystem:  "NA",
 			ScaleSetID: 0,
 		}.String())
@@ -1169,4 +1191,63 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func detectModuleVersionAndCommit() (version string, commit string) {
+	const modulePath = "github.com/actions/scaleset"
+
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown", "unknown"
+	}
+
+	// If we are the main module (built from source in this repo), use vcs settings.
+	if bi.Main.Path == modulePath {
+		version = bi.Main.Version
+		commit = "unknown"
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				commit = s.Value
+			case "vcs.modified":
+				// Optionally append a marker if the tree was dirty.
+				if s.Value == "true" && commit != "unknown" {
+					commit = commit + "-dirty"
+				}
+			}
+		}
+		if version == "" || version == "(devel)" {
+			version = "devel"
+		}
+		if commit == "" {
+			commit = "unknown"
+		}
+		return version, commit
+	}
+
+	// Otherwise search dependency list for our module.
+	for _, dep := range bi.Deps {
+		if dep.Path == modulePath {
+			version = dep.Version
+			commit = extractCommitFromVersion(version)
+			return version, commit
+		}
+	}
+
+	return "unknown", "unknown"
+}
+
+// new: parse commit from a pseudo-version (e.g. v0.0.0-20251031142550-8104f571eba7)
+func extractCommitFromVersion(v string) string {
+	// Semantic versions without pseudo part can't yield commit; return v directly.
+	// Pseudo format: <base>-<timestamp>-<commit>
+	parts := strings.Split(v, "-")
+	if len(parts) < 3 {
+		return v
+	}
+	commit := parts[len(parts)-1]
+	if len(commit) >= 7 {
+		return commit
+	}
+	return v
 }
