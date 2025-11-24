@@ -41,17 +41,12 @@ func (a *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, 
 			slog.Int("scaleUp", scaleUp),
 		)
 
-		var errs []error
 		for range scaleUp {
 			if _, err := a.startRunner(ctx); err != nil {
-				errs = append(errs, err)
+				return 0, fmt.Errorf("failed to start runner: %w", err)
 			}
 		}
 
-		for _, err := range errs {
-			// TODO: should we return error?
-			a.logger.Error("Failed to start runner", slog.String("error", err.Error()))
-		}
 		return a.runners.count(), nil
 	default:
 		// No need to handle scale down events, since:
