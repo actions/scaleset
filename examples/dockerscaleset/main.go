@@ -96,7 +96,7 @@ func run(ctx context.Context, c Config) error {
 		System:     "dockerscaleset",
 		Version:    "0.1.0",
 		CommitSHA:  "unknown",
-		ScaleSetID: scaleSet.ID,
+		ScaleSetID: int(scaleSet.ID),
 		Subsystem:  scaleSet.Name,
 	})
 
@@ -105,7 +105,7 @@ func run(ctx context.Context, c Config) error {
 			"Deleting runner scale set",
 			slog.Int("scaleSetID", scaleSet.ID),
 		)
-		if err := scalesetClient.DeleteRunnerScaleSet(context.WithoutCancel(ctx), scaleSet.ID); err != nil {
+		if err := scalesetClient.DeleteRunnerScaleSet(context.WithoutCancel(ctx), int(scaleSet.ID)); err != nil {
 			slog.Error(
 				"Failed to delete runner scale set",
 				slog.Int("scaleSetID", scaleSet.ID),

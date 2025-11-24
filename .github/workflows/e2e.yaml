@@ -1,0 +1,58 @@
+name: E2E
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  # This will make sure we only apply the concurrency limits on pull requests
+  # but not pushes to master branch by making the concurrency group name unique
+  # for pushes
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  E2E_WORKFLOW_TARGET_ORG: "scaleset-canary"
+  E2E_WORKFLOW_TARGET_REPO: "e2e"
+
+jobs:
+  basic-e2e:
+    name: Basic E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      E2E_WORKFLOW_TARGET_FILE: "basic.yaml"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: true
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+      - name: Get configure token
+        id: config-token
+        uses: peter-murray/workflow-application-token-action@d17e3a9a36850ea89f35db16c1067dd2b68ee343
+        with:
+          application_id: ${{ secrets.E2E_TESTS_ACCESS_CLIENT_ID }}
+          application_private_key: ${{ secrets.E2E_TESTS_ACCESS_PK }}
+          organization: ${{ env.E2E_WORKFLOW_TARGET_ORG }}
+      - name: Run simple test
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/actions/scaleset".insteadOf "https://github.com/actions/scaleset"
+          E2E_SCALESET_NAME="basic-$(date +'%M%S')$(((RANDOM + 100) % 100 + 1))" go test
+        working-directory: examples/dockerscaleset
+        env:
+          GOPRIVATE: github.com/actions/scaleset
+          GONOSUMDB: github.com/actions/scaleset
+          E2E_SCALESET_GITHUB_TOKEN: "${{steps.config-token.outputs.token}}"
+          E2E_WORKFLOW_GITHUB_TOKEN: "${{steps.config-token.outputs.token}}"
+          E2E_SCALESET_URL: "https://github.com/scaleset-canary/e2e"
+          E2E_WORKFLOW_TARGET_FILE: "basic.yaml"
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
