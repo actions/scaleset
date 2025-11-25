@@ -12,8 +12,8 @@ import (
 
 type Config struct {
 	RegistrationURL string
-	MaxRunners      int
-	MinRunners      int
+	MaxRunners      uint32
+	MinRunners      uint32
 	ScaleSetName    string
 	RunnerGroup     string
 	GitHubApp       scaleset.GitHubAppAuth

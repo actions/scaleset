@@ -371,7 +371,7 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 	return &runnerScaleSetList.RunnerScaleSets[0], nil
 }
 
-func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int) (*RunnerScaleSet, error) {
+func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID uint64) (*RunnerScaleSet, error) {
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -540,7 +540,7 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 }
 
 // GetMessage fetches a message from the runner scale set message queue.
-func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int64, maxCapacity int) (*RunnerScaleSetMessage, error) {
+func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID uint64, maxCapacity uint32) (*RunnerScaleSetMessage, error) {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse message queue url: %w", err)
@@ -548,12 +548,8 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 
 	if lastMessageID > 0 {
 		q := u.Query()
-		q.Set("lastMessageId", strconv.FormatInt(lastMessageID, 10))
+		q.Set("lastMessageId", strconv.FormatUint(lastMessageID, 10))
 		u.RawQuery = q.Encode()
-	}
-
-	if maxCapacity < 0 {
-		return nil, fmt.Errorf("maxCapacity must be greater than or equal to 0")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -564,7 +560,7 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
 	req.Header.Set("User-Agent", c.userAgent.Load())
-	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
+	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(int(maxCapacity)))
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -608,7 +604,7 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 	return message, nil
 }
 
-func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID int64) error {
+func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID uint64) error {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse message queue url: %w", err)
@@ -655,7 +651,7 @@ func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueu
 	}
 }
 
-func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*RunnerScaleSetSession, error) {
+func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID uint64, owner string) (*RunnerScaleSetSession, error) {
 	path := fmt.Sprintf("/%s/%d/sessions", scaleSetEndpoint, runnerScaleSetID)
 
 	newSession := &RunnerScaleSetSession{
@@ -676,12 +672,12 @@ func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID int,
 	return createdSession, nil
 }
 
-func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error {
+func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetID uint64, sessionID uuid.UUID) error {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	return c.doSessionRequest(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
-func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*RunnerScaleSetSession, error) {
+func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetID uint64, sessionID uuid.UUID) (*RunnerScaleSetSession, error) {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	refreshedSession := &RunnerScaleSetSession{}
 	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {

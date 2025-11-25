@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/actions/scaleset"
@@ -20,9 +21,9 @@ const (
 )
 
 type Config struct {
-	ScaleSetID int
-	MinRunners int
-	MaxRunners int
+	ScaleSetID uint64
+	MinRunners uint32
+	MaxRunners uint32
 	Logger     *slog.Logger
 }
 
@@ -38,12 +39,6 @@ func (c *Config) Validate() error {
 	if c.ScaleSetID == 0 {
 		return errors.New("scaleSetID is required")
 	}
-	if c.MinRunners < 0 {
-		return errors.New("minRunners must be greater than or equal to 0")
-	}
-	if c.MaxRunners < 0 {
-		return errors.New("maxRunners must be greater than or equal to 0")
-	}
 	if c.MaxRunners > 0 && c.MinRunners > c.MaxRunners {
 		return errors.New("minRunners must be less than or equal to maxRunners")
 	}
@@ -55,12 +50,11 @@ type Listener struct {
 	client *scaleset.Client
 
 	// Configuration for the listener
-	scaleSetID int
-	minRunners int
-	maxRunners int
+	scaleSetID uint64
+	maxRunners atomic.Uint32
 
 	// lastMessageID keeps track of the last processed message ID
-	lastMessageID int64
+	lastMessageID uint64
 	// hostname of the current machine
 	hostname string
 	// session represents the current message session
@@ -68,6 +62,10 @@ type Listener struct {
 
 	// configuration for the listener
 	logger *slog.Logger
+}
+
+func (l *Listener) SetMaxRunners(count int) {
+	l.maxRunners.Store(uint32(count))
 }
 
 func New(client *scaleset.Client, config Config) (*Listener, error) {
@@ -85,14 +83,15 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 		config.Logger.Info("Failed to get hostname, fallback to uuid", "uuid", hostname, "error", err)
 	}
 
-	return &Listener{
+	listener := &Listener{
 		client:     client,
 		scaleSetID: config.ScaleSetID,
-		minRunners: config.MinRunners,
-		maxRunners: config.MaxRunners,
 		hostname:   hostname,
 		logger:     config.Logger,
-	}, nil
+	}
+	listener.maxRunners.Store(uint32(config.MaxRunners))
+
+	return listener, nil
 }
 
 type Scaler interface {
@@ -235,7 +234,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		l.session.MessageQueueURL,
 		l.session.MessageQueueAccessToken,
 		l.lastMessageID,
-		l.maxRunners,
+		l.maxRunners.Load(),
 	)
 	if err == nil { // if NO error
 		return msg, nil
@@ -257,7 +256,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		l.session.MessageQueueURL,
 		l.session.MessageQueueAccessToken,
 		l.lastMessageID,
-		l.maxRunners,
+		l.maxRunners.Load(),
 	)
 	if err != nil { // if error
 		return nil, fmt.Errorf("failed to get next message after message session refresh: %w", err)

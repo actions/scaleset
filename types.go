@@ -71,9 +71,9 @@ type Label struct {
 }
 
 type RunnerGroup struct {
-	ID        int    `json:"id"`
+	ID        uint64 `json:"id"`
 	Name      string `json:"name"`
-	Size      int64  `json:"size"`
+	Size      uint64 `json:"size"`
 	IsDefault bool   `json:"isDefaultGroup"`
 }
 
@@ -83,9 +83,9 @@ type RunnerGroupList struct {
 }
 
 type RunnerScaleSet struct {
-	ID                 int                      `json:"id,omitempty"`
+	ID                 uint64                   `json:"id,omitempty"`
 	Name               string                   `json:"name,omitempty"`
-	RunnerGroupID      int                      `json:"runnerGroupId,omitempty"`
+	RunnerGroupID      uint64                   `json:"runnerGroupId,omitempty"`
 	RunnerGroupName    string                   `json:"runnerGroupName,omitempty"`
 	Labels             []Label                  `json:"labels,omitempty"`
 	RunnerSetting      RunnerSetting            `json:"RunnerSetting,omitempty"`
@@ -100,7 +100,7 @@ type RunnerScaleSetJitRunnerSetting struct {
 }
 
 type RunnerScaleSetMessage struct {
-	MessageID   int64                    `json:"messageId"`
+	MessageID   uint64                   `json:"messageId"`
 	MessageType string                   `json:"messageType"`
 	Body        string                   `json:"body"`
 	Statistics  *RunnerScaleSetStatistic `json:"statistics"`
