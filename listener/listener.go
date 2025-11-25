@@ -64,8 +64,8 @@ type Listener struct {
 	logger *slog.Logger
 }
 
-func (l *Listener) SetMaxRunners(count int) {
-	l.maxRunners.Store(uint32(count))
+func (l *Listener) SetMaxRunners(count uint32) {
+	l.maxRunners.Store(count)
 }
 
 func New(client *scaleset.Client, config Config) (*Listener, error) {
@@ -97,7 +97,7 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 type Scaler interface {
 	HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error
 	HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error
-	HandleDesiredRunnerCount(ctx context.Context, count int) (int, error)
+	HandleDesiredRunnerCount(ctx context.Context, count uint64) (int, error)
 }
 
 func (l *Listener) Run(ctx context.Context, handler Scaler) error {

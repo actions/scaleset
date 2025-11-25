@@ -16,7 +16,7 @@ import (
 type Scaler struct {
 	runners        runnerState
 	runnerImage    string
-	scaleSetID     int
+	scaleSetID     uint64
 	dockerClient   *dockerclient.Client
 	scalesetClient *scaleset.Client
 	minRunners     uint32
