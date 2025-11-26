@@ -5,6 +5,7 @@
   "features": {
     "ghcr.io/devcontainers/features/sshd:1": "latest",
     "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Node is here only to support Copilot extension
     "ghcr.io/devcontainers/features/node:1": {}
   },
   "hostRequirements": {
