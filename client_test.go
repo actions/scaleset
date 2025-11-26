@@ -1085,13 +1085,12 @@ func TestGetMessage(t *testing.T) {
 
 	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
 	runnerScaleSetMessage := &RunnerScaleSetMessage{
-		MessageID:   1,
-		MessageType: "rssType",
+		MessageID: 1,
 	}
 
 	t.Run("Get Runner Scale Set Message", func(t *testing.T) {
 		want := runnerScaleSetMessage
-		response := []byte(`{"messageId":1,"messageType":"rssType"}`)
+		response := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
 		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Write(response)
 		}))
@@ -1106,7 +1105,7 @@ func TestGetMessage(t *testing.T) {
 
 	t.Run("GetMessage sets the last message id if not 0", func(t *testing.T) {
 		want := runnerScaleSetMessage
-		response := []byte(`{"messageId":1,"messageType":"rssType"}`)
+		response := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
 		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
 			assert.Equal(t, "1", q.Get("lastMessageId"))
@@ -1220,8 +1219,7 @@ func TestDeleteMessage(t *testing.T) {
 
 	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
 	runnerScaleSetMessage := &RunnerScaleSetMessage{
-		MessageID:   1,
-		MessageType: "rssType",
+		MessageID: 1,
 	}
 
 	t.Run("Delete existing message", func(t *testing.T) {
