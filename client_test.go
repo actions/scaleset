@@ -429,7 +429,7 @@ func TestGetRunnerGroupByName(t *testing.T) {
 	}
 
 	t.Run("Get RunnerGroup by Name", func(t *testing.T) {
-		runnerGroupID := 1
+		var runnerGroupID uint64 = 1
 		runnerGroupName := "test-runner-group"
 		want := &RunnerGroup{
 			ID:   runnerGroupID,
@@ -1203,11 +1203,6 @@ func TestGetMessage(t *testing.T) {
 
 		client, err := NewClient(server.configURLForOrg("my-org"), auth)
 		require.NoError(t, err)
-
-		_, err = client.GetMessage(ctx, server.URL, token, 0, -1)
-		require.Error(t, err)
-		// Ensure we don't send requests with negative capacity
-		assert.False(t, errors.Is(err, &ActionsError{}))
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 0)
 		assert.Error(t, err)

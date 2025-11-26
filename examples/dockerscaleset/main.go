@@ -19,8 +19,8 @@ import (
 func init() {
 	flags := cmd.Flags()
 	flags.StringVar(&cfg.RegistrationURL, "url", "", "REQUIRED: URL where to register your scale set (e.g. https://github.com/org/repo)")
-	flags.IntVar(&cfg.MaxRunners, "max-runners", 10, "Maximum number of runners")
-	flags.IntVar(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
+	flags.Uint32Var(&cfg.MaxRunners, "max-runners", 10, "Maximum number of runners")
+	flags.Uint32Var(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
 	flags.StringVar(&cfg.ScaleSetName, "name", "", "REQUIRED: Name of your scale set")
 	flags.StringVar(&cfg.RunnerGroup, "runner-group", scaleset.DefaultRunnerGroup, "Name of the runner group your scale set should belong to")
 	flags.StringVar(&cfg.GitHubApp.ClientID, "app-client-id", "", "GitHub App client id")
@@ -140,8 +140,8 @@ func run(ctx context.Context, c Config) error {
 	logger.Info("Initializing listener")
 	listener, err := listener.New(scalesetClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
-		MinRunners: c.MinRunners,
-		MaxRunners: c.MaxRunners,
+		MinRunners: int(c.MinRunners),
+		MaxRunners: int(c.MaxRunners),
 		Logger:     logger.WithGroup("listener"),
 	})
 	if err != nil {
@@ -158,7 +158,7 @@ func run(ctx context.Context, c Config) error {
 		minRunners:     c.MinRunners,
 		dockerClient:   dockerClient,
 		scalesetClient: scalesetClient,
-		scaleSetID:     scaleSet.ID,
+		scaleSetID:     uint64(scaleSet.ID),
 	}
 
 	defer scaler.shutdown(context.WithoutCancel(ctx))

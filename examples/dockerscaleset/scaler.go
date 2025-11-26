@@ -16,16 +16,16 @@ import (
 type Scaler struct {
 	runners        runnerState
 	runnerImage    string
-	scaleSetID     int
+	scaleSetID     uint64
 	dockerClient   *dockerclient.Client
 	scalesetClient *scaleset.Client
-	minRunners     int
+	minRunners     uint32
 	logger         *slog.Logger
 }
 
 func (a *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
 	currentCount := a.runners.count()
-	targetRunnerCount := min(a.minRunners + count)
+	targetRunnerCount := min(int(a.minRunners) + count)
 
 	switch {
 	case targetRunnerCount == currentCount:
