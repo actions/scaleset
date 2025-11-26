@@ -631,14 +631,75 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 		}
 	}
 
-	var message *RunnerScaleSetMessage
-	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil {
+	message, err := c.parseRunnerScaleSetMessageResponse(resp.Body)
+	if err != nil {
 		return nil, &ActionsError{
 			StatusCode: resp.StatusCode,
 			ActivityID: resp.Header.Get(headerActionsActivityID),
 			Err:        err,
 		}
 	}
+
+	return message, nil
+}
+
+func (c *Client) parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMessage, error) {
+	var messageResponse runnerScaleSetMessageResponse
+	if err := json.NewDecoder(respBody).Decode(&messageResponse); err != nil {
+		return nil, fmt.Errorf("failed to decode runner scale set message response: %w", err)
+	}
+
+	if messageResponse.MessageType != "RunnerScaleSetJobMessages" {
+		return nil, fmt.Errorf("unsupported message type: %s", messageResponse.MessageType)
+	}
+
+	message := &RunnerScaleSetMessage{
+		MessageID:  messageResponse.MessageID,
+		Statistics: messageResponse.Statistics,
+	}
+
+	var batchedMessages []json.RawMessage
+	if len(messageResponse.Body) > 0 {
+		if err := json.Unmarshal([]byte(messageResponse.Body), &batchedMessages); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal batched messages: %w", err)
+		}
+	}
+
+	for _, msg := range batchedMessages {
+		var messageType JobMessageType
+		if err := json.Unmarshal(msg, &messageType); err != nil {
+			return nil, fmt.Errorf("failed to decode job message type: %w", err)
+		}
+
+		switch messageType.MessageType {
+		case MessageTypeJobAssigned:
+			var jobAssigned JobAssigned
+			if err := json.Unmarshal(msg, &jobAssigned); err != nil {
+				return nil, fmt.Errorf("failed to decode job assigned: %w", err)
+			}
+
+			message.JobAssignedMessages = append(message.JobAssignedMessages, &jobAssigned)
+
+		case MessageTypeJobStarted:
+			var jobStarted JobStarted
+			if err := json.Unmarshal(msg, &jobStarted); err != nil {
+				return nil, fmt.Errorf("could not decode job started message. %w", err)
+			}
+
+			message.JobStartedMessages = append(message.JobStartedMessages, &jobStarted)
+
+		case MessageTypeJobCompleted:
+			var jobCompleted JobCompleted
+			if err := json.Unmarshal(msg, &jobCompleted); err != nil {
+				return nil, fmt.Errorf("failed to decode job completed: %w", err)
+			}
+
+			message.JobCompletedMessages = append(message.JobCompletedMessages, &jobCompleted)
+
+		default:
+		}
+	}
+
 	return message, nil
 }
 
