@@ -1,4 +1,4 @@
-// Package listener provides a listener for GitHub Actions runner scale set messages.
+// Package listener provides a default listener for GitHub Actions runner scale set messages.
 package listener
 
 import (
@@ -20,6 +20,7 @@ const (
 	sessionCreationMaxRetries = 10
 )
 
+// Config holds the configuration for the Listener.
 type Config struct {
 	ScaleSetID uint64
 	MinRunners uint32
@@ -33,6 +34,7 @@ func (c *Config) defaults() {
 	}
 }
 
+// Validate returns an error if the configuration is invalid.
 func (c *Config) Validate() error {
 	c.defaults()
 
@@ -45,6 +47,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// Listener listens for messages from the scaleset service and handles them. It automatically handles session
+// creation/deletion/refreshing and message polling and acking.
 type Listener struct {
 	// The main client responsible for communicating with the scaleset service
 	client *scaleset.Client
@@ -68,6 +72,7 @@ func (l *Listener) SetMaxRunners(count uint32) {
 	l.maxRunners.Store(count)
 }
 
+// New creates a new Listener with the given configuration.
 func New(client *scaleset.Client, config Config) (*Listener, error) {
 	if client == nil {
 		return nil, errors.New("client is required")
@@ -94,13 +99,15 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 	return listener, nil
 }
 
+// Scaler defines the interface for handling scale set messages.
 type Scaler interface {
 	HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error
 	HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error
 	HandleDesiredRunnerCount(ctx context.Context, count uint64) (int, error)
 }
 
-func (l *Listener) Run(ctx context.Context, handler Scaler) error {
+// Run starts the listener and processes messages using the provided scaler.
+func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 	l.logger.Info("Creating message session")
 	if err := l.createSession(ctx); err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
@@ -120,7 +127,7 @@ func (l *Listener) Run(ctx context.Context, handler Scaler) error {
 	l.logger.Info("Message session created; listening for messages", "sessionID", l.session.SessionID)
 
 	// Handle initial statistics
-	if _, err := handler.HandleDesiredRunnerCount(ctx, l.session.Statistics.TotalAssignedJobs); err != nil {
+	if _, err := scaler.HandleDesiredRunnerCount(ctx, l.session.Statistics.TotalAssignedJobs); err != nil {
 		return fmt.Errorf("handling initial message failed: %w", err)
 	}
 
@@ -137,7 +144,7 @@ func (l *Listener) Run(ctx context.Context, handler Scaler) error {
 		}
 
 		if msg == nil {
-			_, err := handler.HandleDesiredRunnerCount(ctx, 0)
+			_, err := scaler.HandleDesiredRunnerCount(ctx, 0)
 			if err != nil {
 				return fmt.Errorf("handling nil message failed: %w", err)
 			}
@@ -146,7 +153,7 @@ func (l *Listener) Run(ctx context.Context, handler Scaler) error {
 		}
 
 		// Remove cancellation from the context to avoid cancelling the message handling.
-		if err := l.handleMessage(context.WithoutCancel(ctx), handler, msg); err != nil {
+		if err := l.handleMessage(context.WithoutCancel(ctx), scaler, msg); err != nil {
 			return fmt.Errorf("failed to handle message: %w", err)
 		}
 	}
