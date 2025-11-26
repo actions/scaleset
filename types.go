@@ -99,11 +99,19 @@ type RunnerScaleSetJitRunnerSetting struct {
 	WorkFolder string `json:"workFolder"`
 }
 
-type RunnerScaleSetMessage struct {
+type runnerScaleSetMessageResponse struct {
 	MessageID   uint64                   `json:"messageId"`
 	MessageType string                   `json:"messageType"`
 	Body        string                   `json:"body"`
 	Statistics  *RunnerScaleSetStatistic `json:"statistics"`
+}
+
+type RunnerScaleSetMessage struct {
+	MessageID            uint64
+	Statistics           *RunnerScaleSetStatistic
+	JobAssignedMessages  []*JobAssigned
+	JobStartedMessages   []*JobStarted
+	JobCompletedMessages []*JobCompleted
 }
 
 type runnerScaleSetsResponse struct {

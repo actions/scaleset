@@ -160,29 +160,23 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 }
 
 func (l *Listener) handleMessage(ctx context.Context, handler Scaler, msg *scaleset.RunnerScaleSetMessage) error {
-	parsedMsg, err := l.parseMessage(ctx, msg)
-	if err != nil {
-		return fmt.Errorf("failed to parse message: %w", err)
-	}
-
 	l.lastMessageID = msg.MessageID
-
 	if err := l.deleteLastMessage(ctx); err != nil {
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
-	for _, jobStarted := range parsedMsg.jobsStarted {
+	for _, jobStarted := range msg.JobStartedMessages {
 		if err := handler.HandleJobStarted(ctx, jobStarted); err != nil {
 			return fmt.Errorf("failed to handle job started: %w", err)
 		}
 	}
-	for _, jobCompleted := range parsedMsg.jobsCompleted {
+	for _, jobCompleted := range msg.JobCompletedMessages {
 		if err := handler.HandleJobCompleted(ctx, jobCompleted); err != nil {
 			return fmt.Errorf("failed to handle job completed: %w", err)
 		}
 	}
 
-	if _, err := handler.HandleDesiredRunnerCount(ctx, parsedMsg.statistics.TotalAssignedJobs); err != nil {
+	if _, err := handler.HandleDesiredRunnerCount(ctx, msg.Statistics.TotalAssignedJobs); err != nil {
 		return fmt.Errorf("failed to handle desired runner count: %w", err)
 	}
 
@@ -310,76 +304,6 @@ type parsedMessage struct {
 	statistics    *scaleset.RunnerScaleSetStatistic
 	jobsStarted   []*scaleset.JobStarted
 	jobsCompleted []*scaleset.JobCompleted
-}
-
-func (l *Listener) parseMessage(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) (*parsedMessage, error) {
-	if msg.MessageType != "RunnerScaleSetJobMessages" {
-		l.logger.Info("Skipping message", "messageType", msg.MessageType)
-		return nil, fmt.Errorf("invalid message type: %s", msg.MessageType)
-	}
-
-	l.logger.Info("Processing message", "messageId", msg.MessageID, "messageType", msg.MessageType)
-	if msg.Statistics == nil {
-		return nil, fmt.Errorf("invalid message: statistics is nil")
-	}
-
-	l.logger.Info("New runner scale set statistics.", "statistics", msg.Statistics)
-
-	var batchedMessages []json.RawMessage
-	if len(msg.Body) > 0 {
-		if err := json.Unmarshal([]byte(msg.Body), &batchedMessages); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal batched messages: %w", err)
-		}
-	}
-
-	parsedMsg := &parsedMessage{
-		statistics: msg.Statistics,
-	}
-
-	for _, msg := range batchedMessages {
-		var messageType scaleset.JobMessageType
-		if err := json.Unmarshal(msg, &messageType); err != nil {
-			return nil, fmt.Errorf("failed to decode job message type: %w", err)
-		}
-
-		switch messageType.MessageType {
-		case scaleset.MessageTypeJobAssigned:
-			var jobAssigned scaleset.JobAssigned
-			if err := json.Unmarshal(msg, &jobAssigned); err != nil {
-				return nil, fmt.Errorf("failed to decode job assigned: %w", err)
-			}
-
-			l.logger.Info("Job assigned message received", "jobId", jobAssigned.JobID)
-
-		case scaleset.MessageTypeJobStarted:
-			var jobStarted scaleset.JobStarted
-			if err := json.Unmarshal(msg, &jobStarted); err != nil {
-				return nil, fmt.Errorf("could not decode job started message. %w", err)
-			}
-			l.logger.Info("Job started message received.", "JobID", jobStarted.JobID, "RunnerId", jobStarted.RunnerID)
-			parsedMsg.jobsStarted = append(parsedMsg.jobsStarted, &jobStarted)
-
-		case scaleset.MessageTypeJobCompleted:
-			var jobCompleted scaleset.JobCompleted
-			if err := json.Unmarshal(msg, &jobCompleted); err != nil {
-				return nil, fmt.Errorf("failed to decode job completed: %w", err)
-			}
-
-			l.logger.Info(
-				"Job completed message received.",
-				"JobID", jobCompleted.JobID,
-				"Result", jobCompleted.Result,
-				"RunnerId", jobCompleted.RunnerID,
-				"RunnerName", jobCompleted.RunnerName,
-			)
-			parsedMsg.jobsCompleted = append(parsedMsg.jobsCompleted, &jobCompleted)
-
-		default:
-			l.logger.Info("unknown job message type.", "messageType", messageType.MessageType)
-		}
-	}
-
-	return parsedMsg, ctx.Err()
 }
 
 func (l *Listener) refreshSession(ctx context.Context) error {
