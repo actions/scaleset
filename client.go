@@ -61,9 +61,11 @@ func (v *atomicValue[T]) Swap(new T) (old T) {
 	return v.v.Swap(new).(T)
 }
 
-// HeaderScaleSetMaxCapacity used to propagate capacity information to the back-end
+// HeaderScaleSetMaxCapacity is used to propagate the scale set max
+// capacity when polling for messages.
 const HeaderScaleSetMaxCapacity = "X-ScaleSetMaxCapacity"
 
+// Client implements a GitHub Actions Scale Set client.
 type Client struct {
 	httpClient *http.Client
 
@@ -75,8 +77,8 @@ type Client struct {
 	retryMax     int
 	retryWaitMax time.Duration
 
-	creds  *ActionsAuth
-	config *GitHubConfig
+	creds  *actionsAuth
+	config *gitHubConfig
 	logger *slog.Logger
 
 	userAgent atomicValue[string]
@@ -87,6 +89,7 @@ type Client struct {
 	proxyFunc ProxyFunc
 }
 
+// GitHubAppAuth contains the GitHub App authentication credentials. All fields are required.
 type GitHubAppAuth struct {
 	// ClientID is the Client ID of the application (app id also works)
 	ClientID string
@@ -96,6 +99,7 @@ type GitHubAppAuth struct {
 	PrivateKey string
 }
 
+// Validate returns an error if any required field is missing.
 func (a *GitHubAppAuth) Validate() error {
 	if a.ClientID == "" {
 		return fmt.Errorf("client ID is required")
@@ -109,17 +113,20 @@ func (a *GitHubAppAuth) Validate() error {
 	return nil
 }
 
-type ActionsAuth struct {
-	// AppCreds is the GitHub App credentials
-	App *GitHubAppAuth
+type actionsAuth struct {
+	// app is the GitHub app credentials
+	app *GitHubAppAuth
 	// GitHub PAT
-	Token string
+	token string
 }
 
+// ProxyFunc defines the function signature for a proxy function.
 type ProxyFunc func(req *http.Request) (*url.URL, error)
 
+// Option defines a functional option for configuring the Client.
 type Option func(*Client)
 
+// UserAgentInfo contains information for constructing the user agent string.
 type UserAgentInfo struct {
 	// System is the name of the scale set implementation
 	System string
@@ -152,44 +159,66 @@ func (u UserAgentInfo) String() string {
 	)
 }
 
+// WithLogger sets a custom logger for the Client.
 func WithLogger(logger slog.Logger) Option {
 	return func(c *Client) {
 		c.logger = &logger
 	}
 }
 
+// WithRetryMax sets the maximum number of retries for the Client.
 func WithRetryMax(retryMax int) Option {
 	return func(c *Client) {
 		c.retryMax = retryMax
 	}
 }
 
+// WithRetryWaitMax sets the maximum wait time between retries for the Client.
 func WithRetryWaitMax(retryWaitMax time.Duration) Option {
 	return func(c *Client) {
 		c.retryWaitMax = retryWaitMax
 	}
 }
 
+// WithRootCAs sets custom root certificate authorities for the Client.
 func WithRootCAs(rootCAs *x509.CertPool) Option {
 	return func(c *Client) {
 		c.rootCAs = rootCAs
 	}
 }
 
+// WithoutTLSVerify disables TLS certificate verification for the Client.
 func WithoutTLSVerify() Option {
 	return func(c *Client) {
 		c.tlsInsecureSkipVerify = true
 	}
 }
 
+// WithProxy sets a custom proxy function for the Client.
 func WithProxy(proxyFunc ProxyFunc) Option {
 	return func(c *Client) {
 		c.proxyFunc = proxyFunc
 	}
 }
 
-func NewClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*Client, error) {
-	config, err := ParseGitHubConfigFromURL(githubConfigURL)
+// NewClientWithGitHubApp creates a new Client using GitHub App credentials.
+func NewClientWithGitHubApp(githubConfigURL string, appCreds *GitHubAppAuth, options ...Option) (*Client, error) {
+	creds := &actionsAuth{
+		app: appCreds,
+	}
+	return newClient(githubConfigURL, creds, options...)
+}
+
+// NewClientWithPersonalAccessToken creates a new Client using a personal access token.
+func NewClientWithPersonalAccessToken(githubConfigURL, personalAccessToken string, options ...Option) (*Client, error) {
+	creds := &actionsAuth{
+		token: personalAccessToken,
+	}
+	return newClient(githubConfigURL, creds, options...)
+}
+
+func newClient(githubConfigURL string, creds *actionsAuth, options ...Option) (*Client, error) {
+	config, err := parseGitHubConfigFromURL(githubConfigURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse githubConfigURL: %w", err)
 	}
@@ -279,7 +308,7 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) newGitHubAPIRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	u := c.config.GitHubAPIURL(path)
+	u := c.config.gitHubAPIURL(path)
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
@@ -331,6 +360,7 @@ func (c *Client) newActionsServiceRequest(ctx context.Context, method, path stri
 	return req, nil
 }
 
+// GetRunnerScaleSet fetches a runner scale set by its name within a runner group.
 func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runnerScaleSetName string) (*RunnerScaleSet, error) {
 	path := fmt.Sprintf("/%s?runnerGroupId=%d&name=%s", scaleSetEndpoint, runnerGroupID, runnerScaleSetName)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
@@ -371,6 +401,7 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 	return &runnerScaleSetList.RunnerScaleSets[0], nil
 }
 
+// GetRunnerScaleSetByID fetches a runner scale set by its ID.
 func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID uint64) (*RunnerScaleSet, error) {
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
@@ -399,6 +430,7 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID uin
 	return runnerScaleSet, nil
 }
 
+// GetRunnerGroupByName fetches a runner group by its name.
 func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (*RunnerGroup, error) {
 	path := fmt.Sprintf("/_apis/runtime/runnergroups/?groupName=%s", runnerGroup)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
@@ -456,6 +488,7 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	return &runnerGroupList.RunnerGroups[0], nil
 }
 
+// CreateRunnerScaleSet creates a new runner scale set. Note that runner scale set names must be unique within a runner group.
 func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
 	body, err := json.Marshal(runnerScaleSet)
 	if err != nil {
@@ -486,6 +519,7 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 	return createdRunnerScaleSet, nil
 }
 
+// UpdateRunnerScaleSet updates an existing runner scale set.
 func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
 	path := fmt.Sprintf("%s/%d", scaleSetEndpoint, runnerScaleSetID)
 
@@ -519,6 +553,7 @@ func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int,
 	return updatedRunnerScaleSet, nil
 }
 
+// DeleteRunnerScaleSet deletes a runner scale set by its ID.
 func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int) error {
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodDelete, path, nil)
@@ -539,7 +574,10 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 	return nil
 }
 
-// GetMessage fetches a message from the runner scale set message queue.
+// GetMessage fetches a message from the runner scale set message queue. If there are no messages available, it returns (nil, nil).
+// Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
+// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
+// In these cases the caller should refresh the session with RefreshMessageSession.
 func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID uint64, maxCapacity uint32) (*RunnerScaleSetMessage, error) {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
@@ -604,6 +642,10 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 	return message, nil
 }
 
+// DeleteMessage deletes a message from the runner scale set message queue.
+// This should typically be done after processing the message and acts as an acknowledgment.
+// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
+// In these cases the caller should refresh the session with RefreshMessageSession.
 func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID uint64) error {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
@@ -651,6 +693,8 @@ func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueu
 	}
 }
 
+// CreateMessageSession creates a new message session for the specified runner scale set.
+// The resulting session contains the message queue URL and access token used to GetMessage.
 func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID uint64, owner string) (*RunnerScaleSetSession, error) {
 	path := fmt.Sprintf("/%s/%d/sessions", scaleSetEndpoint, runnerScaleSetID)
 
@@ -672,11 +716,14 @@ func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID uint
 	return createdSession, nil
 }
 
+// DeleteMessageSession deletes a message session for the specified runner scale set.
 func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetID uint64, sessionID uuid.UUID) error {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	return c.doSessionRequest(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
+// RefreshMessageSession refreshes a message session for the specified runner scale set.
+// This should be used when a MessageQueueTokenExpiredError is encountered.
 func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetID uint64, sessionID uuid.UUID) (*RunnerScaleSetSession, error) {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	refreshedSession := &RunnerScaleSetSession{}
@@ -735,6 +782,8 @@ func (c *Client) doSessionRequest(ctx context.Context, method, path string, requ
 	})
 }
 
+// GenerateJitRunnerConfig generates a JIT runner configuration for the specified runner scale set. This returns an encoded
+// configuration that can be used to directly start a new runner.
 func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *RunnerScaleSetJitRunnerSetting, scaleSetID int) (*RunnerScaleSetJitRunnerConfig, error) {
 	path := fmt.Sprintf("/%s/%d/generatejitconfig", scaleSetEndpoint, scaleSetID)
 
@@ -769,6 +818,7 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 	return runnerJitConfig, nil
 }
 
+// GetRunner fetches a runner by its ID. This can be used to check if a runner exists.
 func (c *Client) GetRunner(ctx context.Context, runnerID int64) (*RunnerReference, error) {
 	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
@@ -799,6 +849,7 @@ func (c *Client) GetRunner(ctx context.Context, runnerID int64) (*RunnerReferenc
 	return runnerReference, nil
 }
 
+// GetRunnerByName fetches a runner by its name. This can be used to check if a runner exists.
 func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*RunnerReference, error) {
 	path := fmt.Sprintf("/%s?agentName=%s", runnerEndpoint, runnerName)
 
@@ -841,6 +892,7 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 	return &runnerList.RunnerReferences[0], nil
 }
 
+// RemoveRunner removes a runner by its ID.
 func (c *Client) RemoveRunner(ctx context.Context, runnerID int64) error {
 	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
@@ -881,10 +933,10 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 
 	bearerToken := ""
 
-	if c.creds.Token != "" {
-		bearerToken = fmt.Sprintf("Bearer %v", c.creds.Token)
+	if c.creds.token != "" {
+		bearerToken = fmt.Sprintf("Bearer %v", c.creds.token)
 	} else {
-		accessToken, err := c.fetchAccessToken(ctx, c.creds.App)
+		accessToken, err := c.fetchAccessToken(ctx, c.creds.app)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch access token: %w", err)
 		}
@@ -981,19 +1033,19 @@ func (c *Client) fetchAccessToken(ctx context.Context, creds *GitHubAppAuth) (*a
 	return accessToken, nil
 }
 
-type ActionsServiceAdminConnection struct {
+type actionsServiceAdminConnection struct {
 	ActionsServiceURL *string `json:"url,omitempty"`
 	AdminToken        *string `json:"token,omitempty"`
 }
 
-func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *registrationToken) (*ActionsServiceAdminConnection, error) {
+func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *registrationToken) (*actionsServiceAdminConnection, error) {
 	path := "/actions/runner-registration"
 
 	body := struct {
 		URL         string `json:"url"`
 		RunnerEvent string `json:"runner_event"`
 	}{
-		URL:         c.config.ConfigURL.String(),
+		URL:         c.config.configURL.String(),
 		RunnerEvent: "register",
 	}
 
@@ -1059,7 +1111,7 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 	}
 }
 
-func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*ActionsServiceAdminConnection, error) {
+func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*actionsServiceAdminConnection, error) {
 	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
@@ -1067,7 +1119,7 @@ func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*Ac
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
-		var actionsServiceAdminConnection *ActionsServiceAdminConnection
+		var actionsServiceAdminConnection *actionsServiceAdminConnection
 		if err := json.NewDecoder(resp.Body).Decode(&actionsServiceAdminConnection); err != nil {
 			return nil, &GitHubAPIError{
 				StatusCode: resp.StatusCode,
@@ -1094,22 +1146,22 @@ func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*Ac
 	}
 }
 
-func createRegistrationTokenPath(config *GitHubConfig) (string, error) {
-	switch config.Scope {
-	case GitHubScopeOrganization:
-		path := fmt.Sprintf("/orgs/%s/actions/runners/registration-token", config.Organization)
+func createRegistrationTokenPath(config *gitHubConfig) (string, error) {
+	switch config.scope {
+	case gitHubScopeOrganization:
+		path := fmt.Sprintf("/orgs/%s/actions/runners/registration-token", config.organization)
 		return path, nil
 
-	case GitHubScopeEnterprise:
-		path := fmt.Sprintf("/enterprises/%s/actions/runners/registration-token", config.Enterprise)
+	case gitHubScopeEnterprise:
+		path := fmt.Sprintf("/enterprises/%s/actions/runners/registration-token", config.enterprise)
 		return path, nil
 
-	case GitHubScopeRepository:
-		path := fmt.Sprintf("/repos/%s/%s/actions/runners/registration-token", config.Organization, config.Repository)
+	case gitHubScopeRepository:
+		path := fmt.Sprintf("/repos/%s/%s/actions/runners/registration-token", config.organization, config.repository)
 		return path, nil
 
 	default:
-		return "", fmt.Errorf("unknown scope for config url: %s", config.ConfigURL)
+		return "", fmt.Errorf("unknown scope for config url: %s", config.configURL)
 	}
 }
 
@@ -1168,7 +1220,7 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 		return nil
 	}
 
-	c.logger.Info("refreshing token", "githubConfigUrl", c.config.ConfigURL.String())
+	c.logger.Info("refreshing token", "githubConfigUrl", c.config.configURL.String())
 	rt, err := c.getRunnerRegistrationToken(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get runner registration token on refresh: %w", err)

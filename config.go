@@ -9,27 +9,27 @@ import (
 
 var ErrInvalidGitHubConfigURL = fmt.Errorf("invalid config URL, should point to an enterprise, org, or repository")
 
-type GitHubScope int
+type gitHubScope int
 
 const (
-	GitHubScopeUnknown GitHubScope = iota
-	GitHubScopeEnterprise
-	GitHubScopeOrganization
-	GitHubScopeRepository
+	gitHubScopeUnknown gitHubScope = iota
+	gitHubScopeEnterprise
+	gitHubScopeOrganization
+	gitHubScopeRepository
 )
 
-type GitHubConfig struct {
-	ConfigURL *url.URL
-	Scope     GitHubScope
+type gitHubConfig struct {
+	configURL *url.URL
+	scope     gitHubScope
 
-	Enterprise   string
-	Organization string
-	Repository   string
+	enterprise   string
+	organization string
+	repository   string
 
-	IsHosted bool
+	isHosted bool
 }
 
-func ParseGitHubConfigFromURL(in string) (*GitHubConfig, error) {
+func parseGitHubConfigFromURL(in string) (*gitHubConfig, error) {
 	u, err := url.Parse(strings.Trim(in, "/"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL: %w", err)
@@ -37,9 +37,9 @@ func ParseGitHubConfigFromURL(in string) (*GitHubConfig, error) {
 
 	isHosted := isHostedGitHubURL(u)
 
-	configURL := &GitHubConfig{
-		ConfigURL: u,
-		IsHosted:  isHosted,
+	configURL := &gitHubConfig{
+		configURL: u,
+		isHosted:  isHosted,
 	}
 
 	invalidURLError := fmt.Errorf("%q: %w", u.String(), ErrInvalidGitHubConfigURL)
@@ -52,19 +52,19 @@ func ParseGitHubConfigFromURL(in string) (*GitHubConfig, error) {
 			return nil, invalidURLError
 		}
 
-		configURL.Scope = GitHubScopeOrganization
-		configURL.Organization = pathParts[0]
+		configURL.scope = gitHubScopeOrganization
+		configURL.organization = pathParts[0]
 
 	case 2: // Repository or enterprise
 		if strings.ToLower(pathParts[0]) == "enterprises" {
-			configURL.Scope = GitHubScopeEnterprise
-			configURL.Enterprise = pathParts[1]
+			configURL.scope = gitHubScopeEnterprise
+			configURL.enterprise = pathParts[1]
 			break
 		}
 
-		configURL.Scope = GitHubScopeRepository
-		configURL.Organization = pathParts[0]
-		configURL.Repository = pathParts[1]
+		configURL.scope = gitHubScopeRepository
+		configURL.organization = pathParts[0]
+		configURL.repository = pathParts[1]
 	default:
 		return nil, invalidURLError
 	}
@@ -72,20 +72,20 @@ func ParseGitHubConfigFromURL(in string) (*GitHubConfig, error) {
 	return configURL, nil
 }
 
-func (c *GitHubConfig) GitHubAPIURL(path string) *url.URL {
+func (c *gitHubConfig) gitHubAPIURL(path string) *url.URL {
 	result := &url.URL{
-		Scheme: c.ConfigURL.Scheme,
-		Host:   c.ConfigURL.Host, // default for Enterprise mode
+		Scheme: c.configURL.Scheme,
+		Host:   c.configURL.Host, // default for Enterprise mode
 		Path:   "/api/v3",        // default for Enterprise mode
 	}
 
-	isHosted := isHostedGitHubURL(c.ConfigURL)
+	isHosted := isHostedGitHubURL(c.configURL)
 
 	if isHosted {
-		result.Host = fmt.Sprintf("api.%s", c.ConfigURL.Host)
+		result.Host = fmt.Sprintf("api.%s", c.configURL.Host)
 		result.Path = ""
 
-		if strings.EqualFold("www.github.com", c.ConfigURL.Host) {
+		if strings.EqualFold("www.github.com", c.configURL.Host) {
 			// re-routing www.github.com to api.github.com
 			result.Host = "api.github.com"
 		}
