@@ -1,4 +1,4 @@
-// Package listener provides a default listener for GitHub Actions runner scale set messages.
+// Package listener provides a listener for GitHub Actions runner scale set messages.
 package listener
 
 import (

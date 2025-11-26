@@ -114,7 +114,7 @@ func (a *GitHubAppAuth) Validate() error {
 }
 
 type actionsAuth struct {
-	// AppCreds is the GitHub app credentials
+	// app is the GitHub app credentials
 	app *GitHubAppAuth
 	// GitHub PAT
 	token string
@@ -576,8 +576,8 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 
 // GetMessage fetches a message from the runner scale set message queue. If there are no messages available, it returns (nil, nil).
 // Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
-// If the current session token is expired, it returns a MessageQueueTokenExpiredError:
-// in these cases the caller should refresh the session with RefreshMessageSession.
+// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
+// In these cases the caller should refresh the session with RefreshMessageSession.
 func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID uint64, maxCapacity uint32) (*RunnerScaleSetMessage, error) {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
@@ -644,8 +644,8 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 
 // DeleteMessage deletes a message from the runner scale set message queue.
 // This should typically be done after processing the message and acts as an acknowledgment.
-// If the current session token is expired, it returns a MessageQueueTokenExpiredError:
-// in these cases the caller should refresh the session with RefreshMessageSession.
+// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
+// In these cases the caller should refresh the session with RefreshMessageSession.
 func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID uint64) error {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
