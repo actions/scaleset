@@ -178,8 +178,8 @@ func TestNewActionsServiceRequest(t *testing.T) {
 
 			srv := "http://github.com/my-org"
 			resp := &actionsServiceAdminConnection{
-				adminToken:        &newToken,
-				actionsServiceURL: &srv,
+				AdminToken:        &newToken,
+				ActionsServiceURL: &srv,
 			}
 			failures := 0
 			unauthorizedHandler := func(w http.ResponseWriter, r *http.Request) {
