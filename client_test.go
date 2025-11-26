@@ -113,7 +113,7 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 
 func TestNewActionsServiceRequest(t *testing.T) {
 	ctx := context.Background()
-	defaultCreds := &ActionsAuth{Token: "token"}
+	defaultCreds := &actionsAuth{token: "token"}
 
 	t.Run("manages authentication", func(t *testing.T) {
 		t.Run("client is brand new", func(t *testing.T) {
@@ -177,9 +177,9 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			errMessage := `{"message":"test"}`
 
 			srv := "http://github.com/my-org"
-			resp := &ActionsServiceAdminConnection{
-				AdminToken:        &newToken,
-				ActionsServiceURL: &srv,
+			resp := &actionsServiceAdminConnection{
+				adminToken:        &newToken,
+				actionsServiceURL: &srv,
 			}
 			failures := 0
 			unauthorizedHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -262,8 +262,8 @@ func TestNewActionsServiceRequest(t *testing.T) {
 
 func TestGetRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("Get Runner", func(t *testing.T) {
@@ -310,8 +310,8 @@ func TestGetRunner(t *testing.T) {
 
 func TestGetRunnerByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("Get Runner by Name", func(t *testing.T) {
@@ -376,8 +376,8 @@ func TestGetRunnerByName(t *testing.T) {
 
 func TestDeleteRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("Delete Runner", func(t *testing.T) {
@@ -424,8 +424,8 @@ func TestDeleteRunner(t *testing.T) {
 
 func TestGetRunnerGroupByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("Get RunnerGroup by Name", func(t *testing.T) {
@@ -468,8 +468,8 @@ func TestGetRunnerGroupByName(t *testing.T) {
 
 func TestGetRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	scaleSetName := "ScaleSet"
@@ -598,8 +598,8 @@ func TestGetRunnerScaleSet(t *testing.T) {
 
 func TestGetRunnerScaleSetByID(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	scaleSetCreationDateTime := time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -709,8 +709,8 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 
 func TestCreateRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	scaleSetCreationDateTime := time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -794,8 +794,8 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 
 func TestUpdateRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	scaleSetCreationDateTime := time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -839,8 +839,8 @@ func TestUpdateRunnerScaleSet(t *testing.T) {
 
 func TestDeleteRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("Delete runner scale set", func(t *testing.T) {
@@ -875,8 +875,8 @@ func TestDeleteRunnerScaleSet(t *testing.T) {
 
 func TestCreateMessageSession(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("CreateMessageSession unmarshals correctly", func(t *testing.T) {
@@ -998,8 +998,8 @@ func TestCreateMessageSession(t *testing.T) {
 
 func TestDeleteMessageSession(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("DeleteMessageSession call is retried the correct amount of times", func(t *testing.T) {
@@ -1038,8 +1038,8 @@ func TestDeleteMessageSession(t *testing.T) {
 }
 
 func TestRefreshMessageSession(t *testing.T) {
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("RefreshMessageSession call is retried the correct amount of times", func(t *testing.T) {
@@ -1079,8 +1079,8 @@ func TestRefreshMessageSession(t *testing.T) {
 
 func TestGetMessage(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
@@ -1214,8 +1214,8 @@ func TestGetMessage(t *testing.T) {
 
 func TestDeleteMessage(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
@@ -1333,8 +1333,8 @@ func TestClientProxy(t *testing.T) {
 
 func TestGenerateJitRunnerConfig(t *testing.T) {
 	ctx := context.Background()
-	auth := &ActionsAuth{
-		Token: "token",
+	auth := &actionsAuth{
+		token: "token",
 	}
 
 	t.Run("Get JIT Config for Runner", func(t *testing.T) {
@@ -1387,7 +1387,7 @@ func TestClient_Do(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, err := newClient("https://localhost/org/repo", &ActionsAuth{Token: "token"})
+			client, err := newClient("https://localhost/org/repo", &actionsAuth{token: "token"})
 			require.NoError(t, err)
 
 			req, err := http.NewRequest("GET", server.URL, nil)
@@ -1413,7 +1413,7 @@ func TestClient_Do(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, err := newClient("https://localhost/org/repo", &ActionsAuth{Token: "token"})
+			client, err := newClient("https://localhost/org/repo", &actionsAuth{token: "token"})
 			require.NoError(t, err)
 
 			req, err := http.NewRequest("GET", server.URL, nil)
@@ -1543,8 +1543,8 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &ActionsAuth{
-			Token: "token",
+		auth := &actionsAuth{
+			token: "token",
 		}
 		client, err := newClient(configURL, auth)
 		require.NoError(t, err)
@@ -1574,8 +1574,8 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &ActionsAuth{
-			Token: "token",
+		auth := &actionsAuth{
+			token: "token",
 		}
 
 		cert, err := os.ReadFile(filepath.Join("testdata", "rootCA.crt"))
@@ -1606,8 +1606,8 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &ActionsAuth{
-			Token: "token",
+		auth := &actionsAuth{
+			token: "token",
 		}
 
 		cert, err := os.ReadFile(filepath.Join("testdata", "intermediate.crt"))
@@ -1633,8 +1633,8 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
 		configURL := server.URL + "/my-org"
 
-		auth := &ActionsAuth{
-			Token: "token",
+		auth := &actionsAuth{
+			token: "token",
 		}
 
 		client, err := newClient(configURL, auth, WithoutTLSVerify())
