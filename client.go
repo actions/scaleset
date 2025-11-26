@@ -188,7 +188,21 @@ func WithProxy(proxyFunc ProxyFunc) Option {
 	}
 }
 
-func NewClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*Client, error) {
+func NewClientWithGitHubApp(githubConfigURL string, appCreds *GitHubAppAuth, options ...Option) (*Client, error) {
+	creds := &ActionsAuth{
+		App: appCreds,
+	}
+	return newClient(githubConfigURL, creds, options...)
+}
+
+func NewClientWithPersonalAccessToken(githubConfigURL, personalAccessToken string, options ...Option) (*Client, error) {
+	creds := &ActionsAuth{
+		Token: personalAccessToken,
+	}
+	return newClient(githubConfigURL, creds, options...)
+}
+
+func newClient(githubConfigURL string, creds *ActionsAuth, options ...Option) (*Client, error) {
 	config, err := ParseGitHubConfigFromURL(githubConfigURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse githubConfigURL: %w", err)
