@@ -158,7 +158,7 @@ func run(ctx context.Context, c Config) error {
 		minRunners:     c.MinRunners,
 		dockerClient:   dockerClient,
 		scalesetClient: scalesetClient,
-		scaleSetID:     int(scaleSet.ID),
+		scaleSetID:     scaleSet.ID,
 	}
 
 	defer scaler.shutdown(context.WithoutCancel(ctx))

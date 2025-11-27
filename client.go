@@ -860,7 +860,7 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 }
 
 // GetRunner fetches a runner by its ID. This can be used to check if a runner exists.
-func (c *Client) GetRunner(ctx context.Context, runnerID int64) (*RunnerReference, error) {
+func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference, error) {
 	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
