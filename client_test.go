@@ -315,10 +315,10 @@ func TestGetRunnerByName(t *testing.T) {
 	}
 
 	t.Run("Get Runner by Name", func(t *testing.T) {
-		var runnerID int64 = 1
+		runnerID := 1
 		runnerName := "self-hosted-ubuntu"
 		want := &RunnerReference{
-			ID:   int(runnerID),
+			ID:   runnerID,
 			Name: runnerName,
 		}
 		response := []byte(`{"count": 1, "value": [{"id": 1, "name": "self-hosted-ubuntu"}]}`)

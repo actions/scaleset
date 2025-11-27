@@ -578,7 +578,7 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
 	req.Header.Set("User-Agent", *c.userAgent.Load())
-	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(int(maxCapacity)))
+	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
 
 	resp, err := c.do(req)
 	if err != nil {
