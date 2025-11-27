@@ -300,12 +300,6 @@ func (l *Listener) deleteLastMessage(ctx context.Context) error {
 	return nil
 }
 
-type parsedMessage struct {
-	statistics    *scaleset.RunnerScaleSetStatistic
-	jobsStarted   []*scaleset.JobStarted
-	jobsCompleted []*scaleset.JobCompleted
-}
-
 func (l *Listener) refreshSession(ctx context.Context) error {
 	l.logger.Info("Message queue token is expired during GetNextMessage, refreshing...")
 	session, err := l.client.RefreshMessageSession(
