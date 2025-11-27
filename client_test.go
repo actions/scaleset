@@ -159,7 +159,11 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				testserver.WithActionsToken(newToken),
 				testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler),
 			)
-			client, err := newClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := newClient(
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+				WithRetryWaitMax(1*time.Millisecond),
+			)
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
 			expiresAt := time.Now().Add(59 * time.Second)
@@ -183,7 +187,7 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			}
 			failures := 0
 			unauthorizedHandler := func(w http.ResponseWriter, r *http.Request) {
-				if failures < 5 {
+				if failures < 4 {
 					failures++
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
@@ -194,8 +198,18 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				w.WriteHeader(http.StatusCreated)
 				_ = json.NewEncoder(w).Encode(resp)
 			}
-			server := testserver.New(t, nil, testserver.WithActionsToken("random-token"), testserver.WithActionsToken(newToken), testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler))
-			client, err := newClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			server := testserver.New(
+				t,
+				nil,
+				testserver.WithActionsToken("random-token"),
+				testserver.WithActionsToken(newToken),
+				testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler),
+			)
+			client, err := newClient(
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+				WithRetryWaitMax(1*time.Millisecond),
+			)
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
 			expiresAt := time.Now().Add(59 * time.Second)
