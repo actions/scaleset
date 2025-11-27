@@ -12,8 +12,8 @@ import (
 
 type Config struct {
 	RegistrationURL string
-	MaxRunners      uint32
-	MinRunners      uint32
+	MaxRunners      int
+	MinRunners      int
 	ScaleSetName    string
 	RunnerGroup     string
 	GitHubApp       scaleset.GitHubAppAuth
@@ -59,16 +59,12 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func (c *Config) ActionsAuth() *scaleset.ActionsAuth {
+func (c *Config) ScalesetClient() (*scaleset.Client, error) {
 	if err := c.GitHubApp.Validate(); err == nil {
-		return &scaleset.ActionsAuth{
-			App: &c.GitHubApp,
-		}
+		return scaleset.NewClientWithGitHubApp(c.RegistrationURL, &c.GitHubApp)
 	}
 
-	return &scaleset.ActionsAuth{
-		Token: c.Token,
-	}
+	return scaleset.NewClientWithPersonalAccessToken(c.RegistrationURL, c.Token)
 }
 
 func (c *Config) Logger() *slog.Logger {

@@ -12,15 +12,15 @@ import (
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 	"github.com/docker/docker/api/types/image"
-	dockerclient "github.com/moby/moby/client"
+	dockerclient "github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 )
 
 func init() {
 	flags := cmd.Flags()
 	flags.StringVar(&cfg.RegistrationURL, "url", "", "REQUIRED: URL where to register your scale set (e.g. https://github.com/org/repo)")
-	flags.Uint32Var(&cfg.MaxRunners, "max-runners", 10, "Maximum number of runners")
-	flags.Uint32Var(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
+	flags.IntVar(&cfg.MaxRunners, "max-runners", 10, "Maximum number of runners")
+	flags.IntVar(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
 	flags.StringVar(&cfg.ScaleSetName, "name", "", "REQUIRED: Name of your scale set")
 	flags.StringVar(&cfg.RunnerGroup, "runner-group", scaleset.DefaultRunnerGroup, "Name of the runner group your scale set should belong to")
 	flags.StringVar(&cfg.GitHubApp.ClientID, "app-client-id", "", "GitHub App client id")
@@ -54,7 +54,7 @@ func run(ctx context.Context, c Config) error {
 	logger := c.Logger()
 
 	// Create a new scaleset scalesetClient
-	scalesetClient, err := scaleset.NewClient(c.RegistrationURL, c.ActionsAuth())
+	scalesetClient, err := c.ScalesetClient()
 	if err != nil {
 		return fmt.Errorf("failed to create scaleset client: %w", err)
 	}
@@ -140,8 +140,8 @@ func run(ctx context.Context, c Config) error {
 	logger.Info("Initializing listener")
 	listener, err := listener.New(scalesetClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
-		MinRunners: int(c.MinRunners),
-		MaxRunners: int(c.MaxRunners),
+		MinRunners: c.MinRunners,
+		MaxRunners: c.MaxRunners,
 		Logger:     logger.WithGroup("listener"),
 	})
 	if err != nil {
@@ -156,9 +156,10 @@ func run(ctx context.Context, c Config) error {
 		},
 		runnerImage:    c.RunnerImage,
 		minRunners:     c.MinRunners,
+		maxRunners:     c.MaxRunners,
 		dockerClient:   dockerClient,
 		scalesetClient: scalesetClient,
-		scaleSetID:     uint64(scaleSet.ID),
+		scaleSetID:     scaleSet.ID,
 	}
 
 	defer scaler.shutdown(context.WithoutCancel(ctx))

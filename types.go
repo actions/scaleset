@@ -17,11 +17,6 @@ const (
 	MessageTypeJobCompleted MessageType = "JobCompleted"
 )
 
-type Int64List struct {
-	Count int     `json:"count"`
-	Value []int64 `json:"value"`
-}
-
 type JobAvailable struct {
 	AcquireJobURL string `json:"acquireJobUrl"`
 	JobMessageBase
@@ -71,9 +66,9 @@ type Label struct {
 }
 
 type RunnerGroup struct {
-	ID        uint64 `json:"id"`
+	ID        int    `json:"id"`
 	Name      string `json:"name"`
-	Size      uint64 `json:"size"`
+	Size      int    `json:"size"`
 	IsDefault bool   `json:"isDefaultGroup"`
 }
 
@@ -83,9 +78,9 @@ type RunnerGroupList struct {
 }
 
 type RunnerScaleSet struct {
-	ID                 uint64                   `json:"id,omitempty"`
+	ID                 int                      `json:"id,omitempty"`
 	Name               string                   `json:"name,omitempty"`
-	RunnerGroupID      uint64                   `json:"runnerGroupId,omitempty"`
+	RunnerGroupID      int                      `json:"runnerGroupId,omitempty"`
 	RunnerGroupName    string                   `json:"runnerGroupName,omitempty"`
 	Labels             []Label                  `json:"labels,omitempty"`
 	RunnerSetting      RunnerSetting            `json:"RunnerSetting,omitempty"`
@@ -100,14 +95,14 @@ type RunnerScaleSetJitRunnerSetting struct {
 }
 
 type runnerScaleSetMessageResponse struct {
-	MessageID   uint64                   `json:"messageId"`
+	MessageID   int                      `json:"messageId"`
 	MessageType string                   `json:"messageType"`
 	Body        string                   `json:"body"`
 	Statistics  *RunnerScaleSetStatistic `json:"statistics"`
 }
 
 type RunnerScaleSetMessage struct {
-	MessageID            uint64
+	MessageID            int
 	Statistics           *RunnerScaleSetStatistic
 	JobAssignedMessages  []*JobAssigned
 	JobStartedMessages   []*JobStarted
@@ -115,7 +110,7 @@ type RunnerScaleSetMessage struct {
 }
 
 type runnerScaleSetsResponse struct {
-	Count           uint64           `json:"count"`
+	Count           int              `json:"count"`
 	RunnerScaleSets []RunnerScaleSet `json:"value"`
 }
 
@@ -129,13 +124,13 @@ type RunnerScaleSetSession struct {
 }
 
 type RunnerScaleSetStatistic struct {
-	TotalAvailableJobs     uint64 `json:"totalAvailableJobs"`
-	TotalAcquiredJobs      uint64 `json:"totalAcquiredJobs"`
-	TotalAssignedJobs      uint64 `json:"totalAssignedJobs"`
-	TotalRunningJobs       uint64 `json:"totalRunningJobs"`
-	TotalRegisteredRunners uint64 `json:"totalRegisteredRunners"`
-	TotalBusyRunners       uint64 `json:"totalBusyRunners"`
-	TotalIdleRunners       uint64 `json:"totalIdleRunners"`
+	TotalAvailableJobs     int `json:"totalAvailableJobs"`
+	TotalAcquiredJobs      int `json:"totalAcquiredJobs"`
+	TotalAssignedJobs      int `json:"totalAssignedJobs"`
+	TotalRunningJobs       int `json:"totalRunningJobs"`
+	TotalRegisteredRunners int `json:"totalRegisteredRunners"`
+	TotalBusyRunners       int `json:"totalBusyRunners"`
+	TotalIdleRunners       int `json:"totalIdleRunners"`
 }
 
 type RunnerSetting struct {
