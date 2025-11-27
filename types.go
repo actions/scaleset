@@ -27,14 +27,14 @@ type JobAssigned struct {
 }
 
 type JobStarted struct {
-	RunnerID   int `json:"runnerId"`
+	RunnerID   int    `json:"runnerId"`
 	RunnerName string `json:"runnerName"`
 	JobMessageBase
 }
 
 type JobCompleted struct {
 	Result     string `json:"result"`
-	RunnerID   int `json:"runnerId"`
+	RunnerID   int    `json:"runnerId"`
 	RunnerName string `json:"runnerName"`
 	JobMessageBase
 }
@@ -66,21 +66,21 @@ type Label struct {
 }
 
 type RunnerGroup struct {
-	ID        int `json:"id"`
+	ID        int    `json:"id"`
 	Name      string `json:"name"`
-	Size      int `json:"size"`
+	Size      int    `json:"size"`
 	IsDefault bool   `json:"isDefaultGroup"`
 }
 
 type RunnerGroupList struct {
-	Count        int        `json:"count"`
+	Count        int           `json:"count"`
 	RunnerGroups []RunnerGroup `json:"value"`
 }
 
 type RunnerScaleSet struct {
-	ID                 int                   `json:"id,omitempty"`
+	ID                 int                      `json:"id,omitempty"`
 	Name               string                   `json:"name,omitempty"`
-	RunnerGroupID      int                   `json:"runnerGroupId,omitempty"`
+	RunnerGroupID      int                      `json:"runnerGroupId,omitempty"`
 	RunnerGroupName    string                   `json:"runnerGroupName,omitempty"`
 	Labels             []Label                  `json:"labels,omitempty"`
 	RunnerSetting      RunnerSetting            `json:"RunnerSetting,omitempty"`
@@ -95,7 +95,7 @@ type RunnerScaleSetJitRunnerSetting struct {
 }
 
 type runnerScaleSetMessageResponse struct {
-	MessageID   int                   `json:"messageId"`
+	MessageID   int                      `json:"messageId"`
 	MessageType string                   `json:"messageType"`
 	Body        string                   `json:"body"`
 	Statistics  *RunnerScaleSetStatistic `json:"statistics"`
@@ -110,7 +110,7 @@ type RunnerScaleSetMessage struct {
 }
 
 type runnerScaleSetsResponse struct {
-	Count           int           `json:"count"`
+	Count           int              `json:"count"`
 	RunnerScaleSets []RunnerScaleSet `json:"value"`
 }
 
@@ -140,14 +140,14 @@ type RunnerSetting struct {
 }
 
 type RunnerReferenceList struct {
-	Count            int            `json:"count"`
+	Count            int               `json:"count"`
 	RunnerReferences []RunnerReference `json:"value"`
 }
 
 type RunnerReference struct {
-	ID               int `json:"id"`
+	ID               int    `json:"id"`
 	Name             string `json:"name"`
-	RunnerScaleSetID int `json:"runnerScaleSetId"`
+	RunnerScaleSetID int    `json:"runnerScaleSetId"`
 }
 
 type RunnerScaleSetJitRunnerConfig struct {
