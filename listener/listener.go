@@ -22,9 +22,9 @@ const (
 
 // Config holds the configuration for the Listener.
 type Config struct {
-	ScaleSetID uint64
-	MinRunners uint32
-	MaxRunners uint32
+	ScaleSetID int
+	MinRunners int
+	MaxRunners int
 	Logger     *slog.Logger
 }
 
@@ -54,11 +54,11 @@ type Listener struct {
 	client *scaleset.Client
 
 	// Configuration for the listener
-	scaleSetID uint64
+	scaleSetID int
 	maxRunners atomic.Uint32
 
 	// lastMessageID keeps track of the last processed message ID
-	lastMessageID uint64
+	lastMessageID int
 	// hostname of the current machine
 	hostname string
 	// session represents the current message session
@@ -68,8 +68,8 @@ type Listener struct {
 	logger *slog.Logger
 }
 
-func (l *Listener) SetMaxRunners(count uint32) {
-	l.maxRunners.Store(count)
+func (l *Listener) SetMaxRunners(count int) {
+	l.maxRunners.Store(uint32(count))
 }
 
 // New creates a new Listener with the given configuration.
@@ -94,7 +94,7 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 		hostname:   hostname,
 		logger:     config.Logger,
 	}
-	listener.maxRunners.Store(uint32(config.MaxRunners))
+	listener.SetMaxRunners(config.MaxRunners)
 
 	return listener, nil
 }
@@ -103,7 +103,7 @@ func New(client *scaleset.Client, config Config) (*Listener, error) {
 type Scaler interface {
 	HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error
 	HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error
-	HandleDesiredRunnerCount(ctx context.Context, count uint64) (int, error)
+	HandleDesiredRunnerCount(ctx context.Context, count int) (int, error)
 }
 
 // Run starts the listener and processes messages using the provided scaler.
@@ -235,7 +235,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		l.session.MessageQueueURL,
 		l.session.MessageQueueAccessToken,
 		l.lastMessageID,
-		l.maxRunners.Load(),
+		int(l.maxRunners.Load()),
 	)
 	if err == nil { // if NO error
 		return msg, nil
@@ -257,7 +257,7 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		l.session.MessageQueueURL,
 		l.session.MessageQueueAccessToken,
 		l.lastMessageID,
-		l.maxRunners.Load(),
+		int(l.maxRunners.Load()),
 	)
 	if err != nil { // if error
 		return nil, fmt.Errorf("failed to get next message after message session refresh: %w", err)

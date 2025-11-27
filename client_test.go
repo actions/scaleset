@@ -429,7 +429,7 @@ func TestGetRunnerGroupByName(t *testing.T) {
 	}
 
 	t.Run("Get RunnerGroup by Name", func(t *testing.T) {
-		var runnerGroupID uint64 = 1
+		var runnerGroupID int = 1
 		runnerGroupName := "test-runner-group"
 		want := &RunnerGroup{
 			ID:   runnerGroupID,

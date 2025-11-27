@@ -9,23 +9,23 @@ import (
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 	"github.com/docker/docker/api/types/container"
+	dockerclient "github.com/docker/docker/client"
 	"github.com/google/uuid"
-	dockerclient "github.com/moby/moby/client"
 )
 
 type Scaler struct {
 	runners        runnerState
 	runnerImage    string
-	scaleSetID     uint64
+	scaleSetID     int
 	dockerClient   *dockerclient.Client
 	scalesetClient *scaleset.Client
-	minRunners     uint32
+	minRunners     int
 	logger         *slog.Logger
 }
 
 func (a *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
 	currentCount := a.runners.count()
-	targetRunnerCount := min(int(a.minRunners) + count)
+	targetRunnerCount := min(int(a.minRunners) + int(count))
 
 	switch {
 	case targetRunnerCount == currentCount:
@@ -141,7 +141,7 @@ func (a *Scaler) shutdown(ctx context.Context) {
 	clear(a.runners.busy)
 }
 
-var _ listener.Handler = (*Scaler)(nil)
+var _ listener.Scaler = (*Scaler)(nil)
 
 type runnerState struct {
 	mu   sync.Mutex

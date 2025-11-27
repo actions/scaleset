@@ -41,26 +41,6 @@ func init() {
 	packageVersion, commitSHA = detectModuleVersionAndCommit()
 }
 
-type atomicValue[T any] struct {
-	v atomic.Value
-}
-
-func (v *atomicValue[T]) CompareAndSwap(old, new T) (swapped bool) {
-	return v.v.CompareAndSwap(old, new)
-}
-
-func (v *atomicValue[T]) Load() T {
-	return v.v.Load().(T)
-}
-
-func (v *atomicValue[T]) Store(val T) {
-	v.v.Store(val)
-}
-
-func (v *atomicValue[T]) Swap(new T) (old T) {
-	return v.v.Swap(new).(T)
-}
-
 // HeaderScaleSetMaxCapacity is used to propagate the scale set max
 // capacity when polling for messages.
 const HeaderScaleSetMaxCapacity = "X-ScaleSetMaxCapacity"
@@ -81,7 +61,7 @@ type Client struct {
 	config *gitHubConfig
 	logger *slog.Logger
 
-	userAgent atomicValue[string]
+	userAgent atomic.Pointer[string]
 
 	rootCAs               *x509.CertPool
 	tlsInsecureSkipVerify bool
@@ -234,15 +214,14 @@ func newClient(githubConfigURL string, creds *actionsAuth, options ...Option) (*
 	}
 
 	version, sha := detectModuleVersionAndCommit()
-
-	ac.userAgent.Store(
-		UserAgentInfo{
-			System:     "scaleset-client",
-			Version:    version,
-			CommitSHA:  sha,
-			Subsystem:  "NA",
-			ScaleSetID: 0,
-		}.String())
+	userAgent := UserAgentInfo{
+		System:     "scaleset-client",
+		Version:    version,
+		CommitSHA:  sha,
+		Subsystem:  "NA",
+		ScaleSetID: 0,
+	}.String()
+	ac.userAgent.Store(&userAgent)
 
 	for _, option := range options {
 		option(ac)
@@ -284,7 +263,8 @@ func newClient(githubConfigURL string, creds *actionsAuth, options ...Option) (*
 
 // SetUserAgent updates the user agent
 func (c *Client) SetUserAgent(info UserAgentInfo) {
-	c.userAgent.Store(info.String())
+	v := info.String()
+	c.userAgent.Store(&v)
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
@@ -314,7 +294,7 @@ func (c *Client) newGitHubAPIRequest(ctx context.Context, method, path string, b
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", c.userAgent.Load())
+	req.Header.Set("User-Agent", *c.userAgent.Load())
 
 	return req, nil
 }
@@ -355,7 +335,7 @@ func (c *Client) newActionsServiceRequest(ctx context.Context, method, path stri
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.actionsServiceAdminToken))
-	req.Header.Set("User-Agent", c.userAgent.Load())
+	req.Header.Set("User-Agent", *c.userAgent.Load())
 
 	return req, nil
 }
@@ -402,7 +382,7 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 }
 
 // GetRunnerScaleSetByID fetches a runner scale set by its ID.
-func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID uint64) (*RunnerScaleSet, error) {
+func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int) (*RunnerScaleSet, error) {
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -578,7 +558,7 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 // Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
 // If the current session token is expired, it returns a MessageQueueTokenExpiredError.
 // In these cases the caller should refresh the session with RefreshMessageSession.
-func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID uint64, maxCapacity uint32) (*RunnerScaleSetMessage, error) {
+func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse message queue url: %w", err)
@@ -586,7 +566,7 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 
 	if lastMessageID > 0 {
 		q := u.Query()
-		q.Set("lastMessageId", strconv.FormatUint(lastMessageID, 10))
+		q.Set("lastMessageId", strconv.Itoa(lastMessageID))
 		u.RawQuery = q.Encode()
 	}
 
@@ -597,7 +577,7 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 
 	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
-	req.Header.Set("User-Agent", c.userAgent.Load())
+	req.Header.Set("User-Agent", *c.userAgent.Load())
 	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(int(maxCapacity)))
 
 	resp, err := c.do(req)
@@ -707,7 +687,7 @@ func (c *Client) parseRunnerScaleSetMessageResponse(respBody io.Reader) (*Runner
 // This should typically be done after processing the message and acts as an acknowledgment.
 // If the current session token is expired, it returns a MessageQueueTokenExpiredError.
 // In these cases the caller should refresh the session with RefreshMessageSession.
-func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID uint64) error {
+func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID int) error {
 	u, err := url.Parse(messageQueueURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse message queue url: %w", err)
@@ -722,7 +702,7 @@ func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueu
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
-	req.Header.Set("User-Agent", c.userAgent.Load())
+	req.Header.Set("User-Agent", *c.userAgent.Load())
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -756,7 +736,7 @@ func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueu
 
 // CreateMessageSession creates a new message session for the specified runner scale set.
 // The resulting session contains the message queue URL and access token used to GetMessage.
-func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID uint64, owner string) (*RunnerScaleSetSession, error) {
+func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*RunnerScaleSetSession, error) {
 	path := fmt.Sprintf("/%s/%d/sessions", scaleSetEndpoint, runnerScaleSetID)
 
 	newSession := &RunnerScaleSetSession{
@@ -778,14 +758,14 @@ func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID uint
 }
 
 // DeleteMessageSession deletes a message session for the specified runner scale set.
-func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetID uint64, sessionID uuid.UUID) error {
+func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	return c.doSessionRequest(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
 // RefreshMessageSession refreshes a message session for the specified runner scale set.
 // This should be used when a MessageQueueTokenExpiredError is encountered.
-func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetID uint64, sessionID uuid.UUID) (*RunnerScaleSetSession, error) {
+func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*RunnerScaleSetSession, error) {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
 	refreshedSession := &RunnerScaleSetSession{}
 	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {
