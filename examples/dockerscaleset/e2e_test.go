@@ -20,8 +20,8 @@ import (
 )
 
 func TestE2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping e2e test in short mode")
+	if os.Getenv("E2E") != "true" {
+		t.Skip("Skipping E2E test; set E2E=true to run")
 	}
 
 	configURL := mustGetEnv(t, "E2E_SCALESET_URL")
@@ -30,29 +30,15 @@ func TestE2E(t *testing.T) {
 	workflowEnv := mustE2EWorkflowEnv(t, name)
 	runArgs := mustE2ECommandArgs(t, configURL, name)
 
-	cwd, err := os.Getwd()
-	require.NoError(t, err, "Failed to get current working directory")
+	tempDir, err := os.MkdirTemp("", "e2e-dockerscaleset-")
+	require.NoError(t, err, "Failed to create temp dir")
+	defer os.RemoveAll(tempDir)
 
-	var testDir string
-	if os.Getenv("CI") == "true" {
-		testDir = filepath.Join(cwd, "..", "..")
-	} else {
-		testDir, err := os.MkdirTemp("", "e2e-dockerscaleset-")
-		require.NoError(t, err, "Failed to create temp dir")
-		defer os.RemoveAll(testDir)
-
-		err = exec.Command("bash", "-c", fmt.Sprintf("cp -r ../../ %s", testDir)).Run()
-		require.NoError(t, err, "Failed to copy source to temp dir")
-	}
-	exampleDir := filepath.Join(testDir, "examples", "dockerscaleset")
-
-	err = editGoModReplace(filepath.Join(exampleDir, "go.mod"), testDir)
-	require.NoError(t, err)
+	binaryPath := filepath.Join(tempDir, "dockerscaleset")
 
 	// Build the dockerscaleset binary in temp dir
 	{
-		cmd := exec.Command("go", "build", "-o", "dockerscaleset", ".")
-		cmd.Dir = exampleDir
+		cmd := exec.Command("go", "build", "-o", binaryPath, ".")
 		output, err := cmd.CombinedOutput()
 		require.NoError(t, err, "Failed to build dockerscaleset: %s", output)
 	}
@@ -60,9 +46,9 @@ func TestE2E(t *testing.T) {
 	// Fatal channel
 	testErrCh := make(chan error, 2)
 
-	runCmd := exec.Command(filepath.Join(exampleDir, "dockerscaleset"), runArgs...)
-	runCmd.Dir = exampleDir
+	runCmd := exec.Command(binaryPath, runArgs...)
 	stdout, err := runCmd.StdoutPipe()
+	runCmd.Stderr = os.Stderr
 	require.NoError(t, err, "Failed to get stdout pipe")
 	err = runCmd.Start()
 	require.NoError(t, err, "Failed to start dockerscaleset")
@@ -92,6 +78,10 @@ func TestE2E(t *testing.T) {
 				close(waitCh)
 				break
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			testErrCh <- fmt.Errorf("error reading dockerscaleset stdout: %w", err)
+			return
 		}
 
 		cmdCh <- runCmd.Wait()
@@ -232,46 +222,6 @@ func mustE2ECommandArgs(t *testing.T, configURL, name string) []string {
 	return args
 }
 
-func editGoModReplace(goModPath, rootDir string) error {
-	content, err := os.ReadFile(goModPath)
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(content), "\n")
-	// Find the module line
-	for i, line := range lines {
-		if strings.HasPrefix(line, "module ") {
-			// Insert after module
-			replaceLine := fmt.Sprintf("\nreplace github.com/actions/scaleset => %s\n", rootDir)
-			lines = append(lines[:i+1], append([]string{replaceLine}, lines[i+1:]...)...)
-			break
-		}
-	}
-	if err := os.WriteFile(goModPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
-		return fmt.Errorf("failed to write go.mod: %w", err)
-	}
-
-	// go mod tidy
-	cmd := exec.Command("go", "mod", "tidy")
-	cmd.Dir = filepath.Dir(goModPath)
-	cmd.Env = append(
-		os.Environ(),
-		"GONOSUMDB=github.com/actions/scaleset",
-		"GOPRIVATE=github.com/actions/scaleset",
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to run go mod tidy: %s", output)
-	}
-
-	return nil
-}
-
-type WorkflowDispatchRequest struct {
-	Ref    string            `json:"ref"`
-	Inputs map[string]string `json:"inputs,omitempty"`
-}
-
 type WorkflowRun struct {
 	ID         int    `json:"id"`
 	Status     string `json:"status"`
@@ -309,7 +259,7 @@ func (env *e2eWorkflowEnv) triggerWorkflowDispatch(t *testing.T, ctx context.Con
 		},
 	}
 	runs, _, err := env.client.Actions.ListWorkflowRunsByFileName(
-		context.Background(),
+		t.Context(),
 		env.targetOrg,
 		env.targetRepo,
 		env.targetFile,
@@ -327,6 +277,10 @@ func (env *e2eWorkflowEnv) triggerWorkflowDispatch(t *testing.T, ctx context.Con
 			latestTime = createdAt
 			latestRun = run
 		}
+	}
+
+	if latestRun == nil {
+		return 0, fmt.Errorf("no workflow runs found after dispatch")
 	}
 
 	return int(latestRun.GetID()), nil
