@@ -2,5 +2,5 @@
 
 set -eEuo pipefail
 
-go test ./...
+go test ./... "$@"
 
