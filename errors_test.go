@@ -78,6 +78,57 @@ func TestActionsError(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("is agent exists exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &actionsExceptionError{
+				ExceptionName: "AgentExistsException",
+				Message:       "example error message",
+			},
+		}
+
+		assert.True(t, err.IsAgentExists())
+	})
+
+	t.Run("is agent not found exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &actionsExceptionError{
+				ExceptionName: "AgentNotFoundException",
+				Message:       "example error message",
+			},
+		}
+
+		assert.True(t, err.IsAgentNotFound())
+	})
+
+	t.Run("is job still running exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &actionsExceptionError{
+				ExceptionName: "JobStillRunningException",
+				Message:       "example error message",
+			},
+		}
+
+		assert.True(t, err.IsJobStillRunning())
+	})
+
+	t.Run("is message queue token expired exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &messageQueueTokenExpiredError{
+				message: "example error message",
+			},
+		}
+
+		assert.True(t, err.IsMessageQueueTokenExpired())
+	})
 }
 
 func TestActionsExceptionError(t *testing.T) {
