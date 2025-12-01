@@ -29,7 +29,7 @@ jobs:
       - name: Check diff
         run: git diff --exit-code
 
-  generate:
+  mocks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -37,8 +37,8 @@ jobs:
         with:
           go-version-file: "go.mod"
           cache: false
-      - name: go generate
-        run: go generate ./...
+      - name: "Run mockery"
+        run: go tool github.com/vektra/mockery/v3
       - name: Check diff
         run: git diff --exit-code
 

@@ -361,7 +361,7 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseActionsErrorFromResponse(resp)
+		return nil, ParseActionsErrorFromResponse(resp)
 	}
 
 	var runnerScaleSetList *runnerScaleSetsResponse
@@ -402,7 +402,7 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseActionsErrorFromResponse(resp)
+		return nil, ParseActionsErrorFromResponse(resp)
 	}
 
 	var runnerScaleSet *RunnerScaleSet
@@ -492,7 +492,7 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseActionsErrorFromResponse(resp)
+		return nil, ParseActionsErrorFromResponse(resp)
 	}
 	var createdRunnerScaleSet *RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&createdRunnerScaleSet); err != nil {
@@ -525,7 +525,7 @@ func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseActionsErrorFromResponse(resp)
+		return nil, ParseActionsErrorFromResponse(resp)
 	}
 
 	var updatedRunnerScaleSet *RunnerScaleSet
@@ -554,7 +554,7 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return parseActionsErrorFromResponse(resp)
+		return ParseActionsErrorFromResponse(resp)
 	}
 
 	return nil
@@ -598,7 +598,7 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode != http.StatusUnauthorized {
-			return nil, parseActionsErrorFromResponse(resp)
+			return nil, ParseActionsErrorFromResponse(resp)
 		}
 
 		body, err := io.ReadAll(resp.Body)
@@ -610,10 +610,12 @@ func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAc
 				Err:        err,
 			}
 		}
-		return nil, &MessageQueueTokenExpiredError{
-			activityID: resp.Header.Get(headerActionsActivityID),
-			statusCode: resp.StatusCode,
-			msg:        string(body),
+		return nil, &ActionsError{
+			ActivityID: resp.Header.Get(headerActionsActivityID),
+			StatusCode: resp.StatusCode,
+			Err: &messageQueueTokenExpiredError{
+				message: string(body),
+			},
 		}
 	}
 
@@ -721,7 +723,7 @@ func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueu
 	}
 
 	if resp.StatusCode != http.StatusUnauthorized {
-		return parseActionsErrorFromResponse(resp)
+		return ParseActionsErrorFromResponse(resp)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -733,10 +735,12 @@ func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueu
 			Err:        err,
 		}
 	}
-	return &MessageQueueTokenExpiredError{
-		activityID: resp.Header.Get(headerActionsActivityID),
-		statusCode: resp.StatusCode,
-		msg:        string(body),
+	return &ActionsError{
+		ActivityID: resp.Header.Get(headerActionsActivityID),
+		StatusCode: resp.StatusCode,
+		Err: &messageQueueTokenExpiredError{
+			message: string(body),
+		},
 	}
 }
 
@@ -754,13 +758,19 @@ func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID int,
 		return nil, fmt.Errorf("failed to marshal new session: %w", err)
 	}
 
-	createdSession := &RunnerScaleSetSession{}
-
-	if err = c.doSessionRequest(ctx, http.MethodPost, path, bytes.NewBuffer(requestData), http.StatusOK, createdSession); err != nil {
+	var createdSession RunnerScaleSetSession
+	if err = c.doSessionRequest(
+		ctx,
+		http.MethodPost,
+		path,
+		bytes.NewBuffer(requestData),
+		http.StatusOK,
+		&createdSession,
+	); err != nil {
 		return nil, fmt.Errorf("failed to do the session request: %w", err)
 	}
 
-	return createdSession, nil
+	return &createdSession, nil
 }
 
 // DeleteMessageSession deletes a message session for the specified runner scale set.
@@ -809,7 +819,7 @@ func (c *Client) doSessionRequest(ctx context.Context, method, path string, requ
 	}
 
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return parseActionsErrorFromResponse(resp)
+		return ParseActionsErrorFromResponse(resp)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -851,7 +861,7 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseActionsErrorFromResponse(resp)
+		return nil, ParseActionsErrorFromResponse(resp)
 	}
 
 	var runnerJitConfig *RunnerScaleSetJitRunnerConfig
@@ -881,7 +891,7 @@ func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseActionsErrorFromResponse(resp)
+		return nil, ParseActionsErrorFromResponse(resp)
 	}
 
 	var runnerReference *RunnerReference
@@ -912,7 +922,7 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseActionsErrorFromResponse(resp)
+		return nil, ParseActionsErrorFromResponse(resp)
 	}
 
 	var runnerList *RunnerReferenceList
@@ -955,7 +965,7 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID int64) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return parseActionsErrorFromResponse(resp)
+		return ParseActionsErrorFromResponse(resp)
 	}
 
 	return nil

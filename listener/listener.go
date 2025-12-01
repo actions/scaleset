@@ -47,11 +47,19 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+type Client interface {
+	CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*scaleset.RunnerScaleSetSession, error)
+	GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)
+	DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID int) error
+	RefreshMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*scaleset.RunnerScaleSetSession, error)
+	DeleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error
+}
+
 // Listener listens for messages from the scaleset service and handles them. It automatically handles session
 // creation/deletion/refreshing and message polling and acking.
 type Listener struct {
 	// The main client responsible for communicating with the scaleset service
-	client *scaleset.Client
+	client Client
 
 	// Configuration for the listener
 	scaleSetID int
@@ -73,7 +81,7 @@ func (l *Listener) SetMaxRunners(count int) {
 }
 
 // New creates a new Listener with the given configuration.
-func New(client *scaleset.Client, config Config) (*Listener, error) {
+func New(client Client, config Config) (*Listener, error) {
 	if client == nil {
 		return nil, errors.New("client is required")
 	}
@@ -194,12 +202,12 @@ func (l *Listener) createSession(ctx context.Context) error {
 			break
 		}
 
-		clientErr := &scaleset.HttpClientSideError{}
+		clientErr := &scaleset.ActionsError{}
 		if !errors.As(err, &clientErr) {
 			return fmt.Errorf("failed to create session: %w", err)
 		}
 
-		if clientErr.Code != http.StatusConflict {
+		if clientErr.StatusCode != http.StatusConflict {
 			return fmt.Errorf("failed to create session: %w", err)
 		}
 
@@ -241,8 +249,8 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		return msg, nil
 	}
 
-	expiredError := &scaleset.MessageQueueTokenExpiredError{}
-	if !errors.As(err, &expiredError) {
+	expiredError := &scaleset.ActionsError{}
+	if !errors.As(err, &expiredError) || !expiredError.IsMessageQueueTokenExpired() {
 		return nil, fmt.Errorf("failed to get next message: %w", err)
 	}
 
@@ -278,8 +286,8 @@ func (l *Listener) deleteLastMessage(ctx context.Context) error {
 		return nil
 	}
 
-	expiredError := &scaleset.MessageQueueTokenExpiredError{}
-	if !errors.As(err, &expiredError) {
+	expiredError := &scaleset.ActionsError{}
+	if !errors.As(err, &expiredError) || !expiredError.IsMessageQueueTokenExpired() {
 		return fmt.Errorf("failed to delete last message: %w", err)
 	}
 

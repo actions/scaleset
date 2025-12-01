@@ -43,23 +43,46 @@ func (e *ActionsError) Unwrap() error {
 	return e.Err
 }
 
-func (e *ActionsError) IsException(target string) bool {
-	if ex, ok := e.Err.(*ActionsExceptionError); ok {
+func (e *ActionsError) IsAgentNotFound() bool {
+	return e.isException("AgentNotFoundException")
+}
+
+func (e *ActionsError) IsJobStillRunning() bool {
+	return e.isException("JobStillRunningException")
+}
+
+func (e *ActionsError) IsMessageQueueTokenExpired() bool {
+	if e == nil {
+		return false
+	}
+	var err *messageQueueTokenExpiredError
+	return errors.As(e.Err, &err)
+}
+
+func (e *ActionsError) IsAgentExists() bool {
+	return e.isException("AgentExistsException")
+}
+
+func (e *ActionsError) isException(target string) bool {
+	if e == nil {
+		return false
+	}
+	if ex, ok := e.Err.(*actionsExceptionError); ok {
 		return strings.Contains(ex.ExceptionName, target)
 	}
 	return false
 }
 
-type ActionsExceptionError struct {
+type actionsExceptionError struct {
 	ExceptionName string `json:"typeName,omitempty"`
 	Message       string `json:"message,omitempty"`
 }
 
-func (e *ActionsExceptionError) Error() string {
+func (e *actionsExceptionError) Error() string {
 	return fmt.Sprintf("%s: %s", e.ExceptionName, e.Message)
 }
 
-func parseActionsErrorFromResponse(response *http.Response) error {
+func ParseActionsErrorFromResponse(response *http.Response) error {
 	if response.ContentLength == 0 {
 		return &ActionsError{
 			ActivityID: response.Header.Get(headerActionsActivityID),
@@ -78,8 +101,8 @@ func parseActionsErrorFromResponse(response *http.Response) error {
 	}
 
 	body = trimByteOrderMark(body)
-	contentType, ok := response.Header["Content-Type"]
-	if ok && len(contentType) > 0 && strings.Contains(contentType[0], "text/plain") {
+	contentType := response.Header.Get("Content-Type")
+	if len(contentType) > 0 && strings.Contains(contentType, "text/plain") {
 		message := string(body)
 		return &ActionsError{
 			ActivityID: response.Header.Get(headerActionsActivityID),
@@ -88,7 +111,7 @@ func parseActionsErrorFromResponse(response *http.Response) error {
 		}
 	}
 
-	var exception ActionsExceptionError
+	var exception actionsExceptionError
 	if err := json.Unmarshal(body, &exception); err != nil {
 		return &ActionsError{
 			ActivityID: response.Header.Get(headerActionsActivityID),
@@ -104,21 +127,16 @@ func parseActionsErrorFromResponse(response *http.Response) error {
 	}
 }
 
-type MessageQueueTokenExpiredError struct {
-	activityID string
-	statusCode int
-	msg        string
+type messageQueueTokenExpiredError struct {
+	message string
 }
 
-func (e *MessageQueueTokenExpiredError) Error() string {
-	return fmt.Sprintf("MessageQueueTokenExpiredError: ActivityId %q, StatusCode %d: %s", e.activityID, e.statusCode, e.msg)
+func (e *messageQueueTokenExpiredError) Error() string {
+	return fmt.Sprintf("message queue token expired: %s", e.message)
 }
 
-type HttpClientSideError struct {
-	msg  string
-	Code int
-}
-
-func (e *HttpClientSideError) Error() string {
-	return e.msg
+func NewMessageQueueTokenExpiredError(message string) error {
+	return &messageQueueTokenExpiredError{
+		message: message,
+	}
 }
