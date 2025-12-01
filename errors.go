@@ -135,6 +135,9 @@ func (e *messageQueueTokenExpiredError) Error() string {
 	return fmt.Sprintf("message queue token expired: %s", e.message)
 }
 
+// NewMessageQueueTokenExpiredError creates a new MessageQueueTokenExpiredError.
+//
+// This function is mostly used by tests.
 func NewMessageQueueTokenExpiredError(message string) error {
 	return &messageQueueTokenExpiredError{
 		message: message,
