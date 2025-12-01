@@ -140,7 +140,6 @@ func run(ctx context.Context, c Config) error {
 	logger.Info("Initializing listener")
 	listener, err := listener.New(scalesetClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
-		MinRunners: c.MinRunners,
 		MaxRunners: c.MaxRunners,
 		Logger:     logger.WithGroup("listener"),
 	})

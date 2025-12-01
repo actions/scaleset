@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -23,7 +24,6 @@ const (
 // Config holds the configuration for the Listener.
 type Config struct {
 	ScaleSetID int
-	MinRunners int
 	MaxRunners int
 	Logger     *slog.Logger
 }
@@ -41,8 +41,8 @@ func (c *Config) Validate() error {
 	if c.ScaleSetID == 0 {
 		return errors.New("scaleSetID is required")
 	}
-	if c.MaxRunners > 0 && c.MinRunners > c.MaxRunners {
-		return errors.New("minRunners must be less than or equal to maxRunners")
+	if c.MaxRunners < 0 || c.MaxRunners > math.MaxInt32 {
+		return errors.New("maxRunners must be between 0 and MaxInt32")
 	}
 	return nil
 }

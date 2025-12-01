@@ -3,6 +3,7 @@ package listener
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"testing"
 	"time"
@@ -16,29 +17,62 @@ import (
 
 func TestNew(t *testing.T) {
 	t.Parallel()
-	t.Run("InvalidConfig", func(t *testing.T) {
+	t.Run("invalid config", func(t *testing.T) {
 		t.Parallel()
 		var config Config
 		assert.Error(t, config.Validate())
 	})
 
-	t.Run("ValidConfig", func(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
 		t.Parallel()
 		config := Config{
 			ScaleSetID: 1,
 		}
 		assert.NoError(t, config.Validate())
 	})
+
+	t.Run("invalid max runners", func(t *testing.T) {
+		t.Parallel()
+		config := Config{
+			ScaleSetID: 1,
+			MaxRunners: -1,
+		}
+		assert.Error(t, config.Validate())
+	})
+
+	t.Run("zero max runners", func(t *testing.T) {
+		t.Parallel()
+		config := Config{
+			ScaleSetID: 1,
+			MaxRunners: math.MaxInt32 + 1,
+		}
+		assert.Error(t, config.Validate())
+	})
+
+	t.Run("creates listener", func(t *testing.T) {
+		t.Parallel()
+		config := Config{
+			ScaleSetID: 1,
+			MaxRunners: 5,
+		}
+
+		client := NewMockClient(t)
+		l, err := New(client, config)
+		require.Nil(t, err)
+		assert.Equal(t, config.ScaleSetID, l.scaleSetID)
+		assert.Equal(t, uint32(config.MaxRunners), l.maxRunners.Load())
+	})
 }
 
 func TestListener_createSession(t *testing.T) {
 	t.Parallel()
-	t.Run("FailOnce", func(t *testing.T) {
+	t.Run("fail once", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 
 		config := Config{
 			ScaleSetID: 1,
+			MaxRunners: 10,
 		}
 
 		client := NewMockClient(t)
@@ -59,7 +93,7 @@ func TestListener_createSession(t *testing.T) {
 		assert.NotNil(t, err)
 	})
 
-	t.Run("FailContext", func(t *testing.T) {
+	t.Run("fail context", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -88,7 +122,7 @@ func TestListener_createSession(t *testing.T) {
 		assert.True(t, errors.Is(err, context.DeadlineExceeded))
 	})
 
-	t.Run("SetsSession", func(t *testing.T) {
+	t.Run("sets session", func(t *testing.T) {
 		t.Parallel()
 		config := Config{
 			ScaleSetID: 1,
@@ -124,7 +158,7 @@ func TestListener_createSession(t *testing.T) {
 func TestListener_getMessage(t *testing.T) {
 	t.Parallel()
 
-	t.Run("ReceivesMessage", func(t *testing.T) {
+	t.Run("receives message", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -158,7 +192,7 @@ func TestListener_getMessage(t *testing.T) {
 		assert.Equal(t, want, got)
 	})
 
-	t.Run("NotExpiredError", func(t *testing.T) {
+	t.Run("not expired error", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -191,7 +225,7 @@ func TestListener_getMessage(t *testing.T) {
 		assert.NotNil(t, err)
 	})
 
-	t.Run("RefreshAndSucceeds", func(t *testing.T) {
+	t.Run("refresh and succeeds", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -259,7 +293,7 @@ func TestListener_getMessage(t *testing.T) {
 		assert.Equal(t, want, got)
 	})
 
-	t.Run("RefreshAndFails", func(t *testing.T) {
+	t.Run("refresh and fails", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -319,7 +353,7 @@ func TestListener_getMessage(t *testing.T) {
 func TestListener_refreshSession(t *testing.T) {
 	t.Parallel()
 
-	t.Run("SuccessfullyRefreshes", func(t *testing.T) {
+	t.Run("successfully refreshes", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -359,7 +393,7 @@ func TestListener_refreshSession(t *testing.T) {
 		assert.Equal(t, session, l.session)
 	})
 
-	t.Run("FailsToRefresh", func(t *testing.T) {
+	t.Run("fails to refresh", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -395,7 +429,7 @@ func TestListener_refreshSession(t *testing.T) {
 func TestListener_deleteLastMessage(t *testing.T) {
 	t.Parallel()
 
-	t.Run("SuccessfullyDeletes", func(t *testing.T) {
+	t.Run("successfully deletes", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -427,7 +461,7 @@ func TestListener_deleteLastMessage(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
-	t.Run("FailsToDelete", func(t *testing.T) {
+	t.Run("fails to delete", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -455,7 +489,7 @@ func TestListener_deleteLastMessage(t *testing.T) {
 		assert.NotNil(t, err)
 	})
 
-	t.Run("RefreshAndSucceeds", func(t *testing.T) {
+	t.Run("refresh and succeeds", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -521,7 +555,7 @@ func TestListener_deleteLastMessage(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("RefreshAndFails", func(t *testing.T) {
+	t.Run("refresh and fails", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -579,7 +613,7 @@ func TestListener_deleteLastMessage(t *testing.T) {
 func TestListener_Listen(t *testing.T) {
 	t.Parallel()
 
-	t.Run("CreateSessionFails", func(t *testing.T) {
+	t.Run("create session fails", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		config := Config{
@@ -601,7 +635,7 @@ func TestListener_Listen(t *testing.T) {
 		assert.NotNil(t, err)
 	})
 
-	t.Run("CallHandleRegardlessOfInitialMessage", func(t *testing.T) {
+	t.Run("call handle regardless of initial message", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
 
@@ -657,7 +691,7 @@ func TestListener_Listen(t *testing.T) {
 		assert.True(t, called)
 	})
 
-	t.Run("CancelContextAfterGetMessage", func(t *testing.T) {
+	t.Run("cancel context after get message", func(t *testing.T) {
 		t.Parallel()
 
 		ctx, cancel := context.WithCancel(context.Background())
