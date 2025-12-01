@@ -23,9 +23,12 @@ const (
 
 // Config holds the configuration for the Listener.
 type Config struct {
+	// ScaleSetID is the ID of the runner scale set to listen to.
 	ScaleSetID int
+	// MaxRunners is the capacity of runners that can be handled at once.
 	MaxRunners int
-	Logger     *slog.Logger
+	// Logger is the logger to use for logging. Default is a no-op logger.
+	Logger *slog.Logger
 }
 
 func (c *Config) defaults() {
@@ -47,6 +50,10 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// Client defines the interface for communicating with the scaleset API.
+// In most cases, it should be scaleset.Client from the scaleset package.
+// This interface is defined to allow for easier testing and mocking, as well
+// as allowing wrappers around the scaleset client if needed.
 type Client interface {
 	CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*scaleset.RunnerScaleSetSession, error)
 	GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)
@@ -76,6 +83,8 @@ type Listener struct {
 	logger *slog.Logger
 }
 
+// SetMaxRunners sets the capacity of the scaleset. It is concurrently
+// safe to update the max runners during listener.Run.
 func (l *Listener) SetMaxRunners(count int) {
 	l.maxRunners.Store(uint32(count))
 }

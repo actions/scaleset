@@ -610,7 +610,7 @@ func TestListener_deleteLastMessage(t *testing.T) {
 	})
 }
 
-func TestListener_Listen(t *testing.T) {
+func TestListener_Run(t *testing.T) {
 	t.Parallel()
 
 	t.Run("create session fails", func(t *testing.T) {
