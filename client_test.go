@@ -945,7 +945,7 @@ func TestCreateMessageSession(t *testing.T) {
 		want := &ActionsError{
 			ActivityID: exampleRequestID,
 			StatusCode: http.StatusBadRequest,
-			Err: &ActionsExceptionError{
+			Err: &actionsExceptionError{
 				ExceptionName: "CSharpExceptionNameHere",
 				Message:       "could not do something",
 			},
@@ -1169,8 +1169,10 @@ func TestGetMessage(t *testing.T) {
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
 		require.NotNil(t, err)
 
-		var expectedErr *MessageQueueTokenExpiredError
+		var expectedErr *ActionsError
 		require.True(t, errors.As(err, &expectedErr))
+
+		assert.True(t, expectedErr.IsMessageQueueTokenExpired())
 	})
 
 	t.Run("Status code not found", func(t *testing.T) {
@@ -1258,8 +1260,9 @@ func TestDeleteMessage(t *testing.T) {
 
 		err = client.DeleteMessage(ctx, server.URL, token, 0)
 		require.NotNil(t, err)
-		var expectedErr *MessageQueueTokenExpiredError
-		assert.True(t, errors.As(err, &expectedErr))
+		var expectedErr *ActionsError
+		require.ErrorAs(t, err, &expectedErr)
+		assert.True(t, expectedErr.IsMessageQueueTokenExpired())
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {

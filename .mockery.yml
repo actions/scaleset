@@ -1,0 +1,14 @@
+all: false
+dir: "{{.InterfaceDir}}"
+filename: mocks_test.go
+force-file-write: true
+formatter: goimports
+log-level: info
+structname: "{{.Mock}}{{.InterfaceName}}"
+pkgname: "{{.SrcPackageName}}"
+recursive: true
+template: testify
+packages:
+  github.com/actions/scaleset/listener:
+    config:
+      all: true

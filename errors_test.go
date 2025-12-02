@@ -29,7 +29,7 @@ func TestActionsError(t *testing.T) {
 		err := &ActionsError{
 			ActivityID: "activity-id",
 			StatusCode: 404,
-			Err: &ActionsExceptionError{
+			Err: &actionsExceptionError{
 				ExceptionName: "exception-name",
 				Message:       "example error message",
 			},
@@ -42,16 +42,16 @@ func TestActionsError(t *testing.T) {
 		err := &ActionsError{
 			ActivityID: "activity-id",
 			StatusCode: 404,
-			Err: &ActionsExceptionError{
+			Err: &actionsExceptionError{
 				ExceptionName: "exception-name",
 				Message:       "example error message",
 			},
 		}
 
-		var exception *ActionsExceptionError
+		var exception *actionsExceptionError
 		assert.True(t, errors.As(err, &exception))
 
-		assert.True(t, err.IsException("exception-name"))
+		assert.True(t, err.isException("exception-name"))
 	})
 
 	t.Run("is exception is not ok", func(t *testing.T) {
@@ -64,7 +64,7 @@ func TestActionsError(t *testing.T) {
 			"not target exception": {
 				ActivityID: "activity-id",
 				StatusCode: 404,
-				Err: &ActionsExceptionError{
+				Err: &actionsExceptionError{
 					ExceptionName: "exception-name",
 					Message:       "example error message",
 				},
@@ -74,15 +74,66 @@ func TestActionsError(t *testing.T) {
 		targetException := "target-exception"
 		for name, err := range tt {
 			t.Run(name, func(t *testing.T) {
-				assert.False(t, err.IsException(targetException))
+				assert.False(t, err.isException(targetException))
 			})
 		}
+	})
+
+	t.Run("is agent exists exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &actionsExceptionError{
+				ExceptionName: "AgentExistsException",
+				Message:       "example error message",
+			},
+		}
+
+		assert.True(t, err.IsAgentExists())
+	})
+
+	t.Run("is agent not found exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &actionsExceptionError{
+				ExceptionName: "AgentNotFoundException",
+				Message:       "example error message",
+			},
+		}
+
+		assert.True(t, err.IsAgentNotFound())
+	})
+
+	t.Run("is job still running exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &actionsExceptionError{
+				ExceptionName: "JobStillRunningException",
+				Message:       "example error message",
+			},
+		}
+
+		assert.True(t, err.IsJobStillRunning())
+	})
+
+	t.Run("is message queue token expired exception", func(t *testing.T) {
+		err := &ActionsError{
+			ActivityID: "activity-id",
+			StatusCode: 404,
+			Err: &messageQueueTokenExpiredError{
+				message: "example error message",
+			},
+		}
+
+		assert.True(t, err.IsMessageQueueTokenExpired())
 	})
 }
 
 func TestActionsExceptionError(t *testing.T) {
 	t.Run("contains the exception name and message", func(t *testing.T) {
-		err := &ActionsExceptionError{
+		err := &actionsExceptionError{
 			ExceptionName: "exception-name",
 			Message:       "example error message",
 		}
@@ -127,7 +178,7 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		}
 		response.Header.Add(headerActionsActivityID, "activity-id")
 
-		err := parseActionsErrorFromResponse(response)
+		err := ParseActionsErrorFromResponse(response)
 		require.Error(t, err)
 		assert.Equal(t, "activity-id", err.(*ActionsError).ActivityID)
 		assert.Equal(t, 404, err.(*ActionsError).StatusCode)
@@ -145,7 +196,7 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		response.Header.Add(headerActionsActivityID, "activity-id")
 		response.Header.Add("Content-Type", "text/plain")
 
-		err := parseActionsErrorFromResponse(response)
+		err := ParseActionsErrorFromResponse(response)
 		require.Error(t, err)
 		var actionsError *ActionsError
 		assert.ErrorAs(t, err, &actionsError)
@@ -165,14 +216,14 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		response.Header.Add(headerActionsActivityID, "activity-id")
 		response.Header.Add("Content-Type", "application/json")
 
-		err := parseActionsErrorFromResponse(response)
+		err := ParseActionsErrorFromResponse(response)
 		require.Error(t, err)
 		var actionsError *ActionsError
 		assert.ErrorAs(t, err, &actionsError)
 		assert.Equal(t, "activity-id", actionsError.ActivityID)
 		assert.Equal(t, 404, actionsError.StatusCode)
 
-		inner, ok := actionsError.Err.(*ActionsExceptionError)
+		inner, ok := actionsError.Err.(*actionsExceptionError)
 		require.True(t, ok)
 		assert.Equal(t, "exception-name", inner.ExceptionName)
 		assert.Equal(t, "example error message", inner.Message)
@@ -189,10 +240,10 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		response.Header.Add(headerActionsActivityID, "activity-id")
 		response.Header.Add("Content-Type", "application/json")
 
-		err := parseActionsErrorFromResponse(response)
+		err := ParseActionsErrorFromResponse(response)
 		require.Error(t, err)
 
-		var actionsExceptionError *ActionsExceptionError
+		var actionsExceptionError *actionsExceptionError
 		assert.ErrorAs(t, err, &actionsExceptionError)
 
 		assert.Equal(t, "exception-name", actionsExceptionError.ExceptionName)

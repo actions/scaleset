@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -22,10 +23,12 @@ const (
 
 // Config holds the configuration for the Listener.
 type Config struct {
+	// ScaleSetID is the ID of the runner scale set to listen to.
 	ScaleSetID int
-	MinRunners int
+	// MaxRunners is the capacity of runners that can be handled at once.
 	MaxRunners int
-	Logger     *slog.Logger
+	// Logger is the logger to use for logging. Default is a no-op logger.
+	Logger *slog.Logger
 }
 
 func (c *Config) defaults() {
@@ -41,17 +44,29 @@ func (c *Config) Validate() error {
 	if c.ScaleSetID == 0 {
 		return errors.New("scaleSetID is required")
 	}
-	if c.MaxRunners > 0 && c.MinRunners > c.MaxRunners {
-		return errors.New("minRunners must be less than or equal to maxRunners")
+	if c.MaxRunners < 0 || c.MaxRunners > math.MaxInt32 {
+		return errors.New("maxRunners must be between 0 and MaxInt32")
 	}
 	return nil
+}
+
+// Client defines the interface for communicating with the scaleset API.
+// In most cases, it should be scaleset.Client from the scaleset package.
+// This interface is defined to allow for easier testing and mocking, as well
+// as allowing wrappers around the scaleset client if needed.
+type Client interface {
+	CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*scaleset.RunnerScaleSetSession, error)
+	GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)
+	DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID int) error
+	RefreshMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*scaleset.RunnerScaleSetSession, error)
+	DeleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error
 }
 
 // Listener listens for messages from the scaleset service and handles them. It automatically handles session
 // creation/deletion/refreshing and message polling and acking.
 type Listener struct {
 	// The main client responsible for communicating with the scaleset service
-	client *scaleset.Client
+	client Client
 
 	// Configuration for the listener
 	scaleSetID int
@@ -68,12 +83,14 @@ type Listener struct {
 	logger *slog.Logger
 }
 
+// SetMaxRunners sets the capacity of the scaleset. It is concurrently
+// safe to update the max runners during listener.Run.
 func (l *Listener) SetMaxRunners(count int) {
 	l.maxRunners.Store(uint32(count))
 }
 
 // New creates a new Listener with the given configuration.
-func New(client *scaleset.Client, config Config) (*Listener, error) {
+func New(client Client, config Config) (*Listener, error) {
 	if client == nil {
 		return nil, errors.New("client is required")
 	}
@@ -194,12 +211,12 @@ func (l *Listener) createSession(ctx context.Context) error {
 			break
 		}
 
-		clientErr := &scaleset.HttpClientSideError{}
+		clientErr := &scaleset.ActionsError{}
 		if !errors.As(err, &clientErr) {
 			return fmt.Errorf("failed to create session: %w", err)
 		}
 
-		if clientErr.Code != http.StatusConflict {
+		if clientErr.StatusCode != http.StatusConflict {
 			return fmt.Errorf("failed to create session: %w", err)
 		}
 
@@ -241,8 +258,8 @@ func (l *Listener) getMessage(ctx context.Context) (*scaleset.RunnerScaleSetMess
 		return msg, nil
 	}
 
-	expiredError := &scaleset.MessageQueueTokenExpiredError{}
-	if !errors.As(err, &expiredError) {
+	expiredError := &scaleset.ActionsError{}
+	if !errors.As(err, &expiredError) || !expiredError.IsMessageQueueTokenExpired() {
 		return nil, fmt.Errorf("failed to get next message: %w", err)
 	}
 
@@ -278,8 +295,8 @@ func (l *Listener) deleteLastMessage(ctx context.Context) error {
 		return nil
 	}
 
-	expiredError := &scaleset.MessageQueueTokenExpiredError{}
-	if !errors.As(err, &expiredError) {
+	expiredError := &scaleset.ActionsError{}
+	if !errors.As(err, &expiredError) || !expiredError.IsMessageQueueTokenExpired() {
 		return fmt.Errorf("failed to delete last message: %w", err)
 	}
 
