@@ -247,8 +247,6 @@ func newClient(systemInfo SystemInfo, githubConfigURL string, creds *actionsAuth
 		return nil, fmt.Errorf("failed to parse githubConfigURL: %w", err)
 	}
 
-	version, sha := detectModuleVersionAndCommit()
-
 	ac := &Client{
 		creds:  creds,
 		config: config,
@@ -259,8 +257,8 @@ func newClient(systemInfo SystemInfo, githubConfigURL string, creds *actionsAuth
 		retryWaitMax: 30 * time.Second,
 
 		buildInfo: clientBuildInfo{
-			version:   version,
-			commitSHA: sha,
+			version:   packageVersion,
+			commitSHA: commitSHA,
 		},
 	}
 
