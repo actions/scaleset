@@ -133,7 +133,10 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 	defer func() {
 		l.logger.Debug("Deleting message session")
 		if err := l.deleteMessageSession(); err != nil {
-			l.logger.Error("failed to delete message session", "error", err.Error())
+			l.logger.Error(
+				"failed to delete message session",
+				slog.String("error", err.Error()),
+			)
 		}
 	}()
 
