@@ -90,6 +90,9 @@ type debugInfo struct {
 	SystemInfo string `json:"system_info"`
 }
 
+// DebugInfo returns a JSON string containing debug information about the client,
+// including whether a proxy or custom root CA is configured, and the current system info.
+// This method is intended for diagnostic and troubleshooting purposes.
 func (c *Client) DebugInfo() string {
 	info := debugInfo{
 		HasProxy:   c.proxyFunc != nil,
