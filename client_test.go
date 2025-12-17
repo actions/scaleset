@@ -1902,7 +1902,7 @@ func TestUserAgent(t *testing.T) {
 		"https://github.com/org/repo",
 		&actionsAuth{token: "token"},
 	)
-	require.NoError(t, err, "faield to instantiate the client")
+	require.NoError(t, err, "failed to instantiate the client")
 	got := *client.userAgent.Load()
 	wantInfo := userAgent{
 		SystemInfo:     testSystemInfo,
