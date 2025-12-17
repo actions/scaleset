@@ -320,7 +320,7 @@ func (c *Client) SetSystemInfo(info SystemInfo) {
 	c.setUserAgent()
 }
 
-// SystemInfo returns the current system info that client
+// SystemInfo returns the current system info that the client
 // has configured.
 func (c *Client) SystemInfo() SystemInfo {
 	c.systemInfoMu.Lock()
