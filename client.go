@@ -60,12 +60,48 @@ type Client struct {
 	config *gitHubConfig
 	logger *slog.Logger
 
+	buildInfo clientBuildInfo
+	// systemInfoMu guards setting system info.
+	systemInfoMu sync.Mutex
+	systemInfo   SystemInfo
+
+	// userAgent is computed based on buildInfo and systemInfo.
+	// userAgent should be re-computed every time client.SetSystemInfo
+	// is called.
+	//
+	// On every call, load the userAgent first locally so we can
+	// avoid lock-unlock on every call.
 	userAgent atomic.Pointer[string]
 
 	rootCAs               *x509.CertPool
 	tlsInsecureSkipVerify bool
 
 	proxyFunc ProxyFunc
+}
+
+type clientBuildInfo struct {
+	version   string
+	commitSHA string
+}
+
+type debugInfo struct {
+	HasProxy   bool   `json:"has_proxy"`
+	HasRootCA  bool   `json:"has_root_ca"`
+	SystemInfo string `json:"system_info"`
+}
+
+// DebugInfo returns a JSON string containing debug information about the client,
+// including whether a proxy or custom root CA is configured, and the current system info.
+// This method is intended for diagnostic and troubleshooting purposes.
+func (c *Client) DebugInfo() string {
+	info := debugInfo{
+		HasProxy:   c.proxyFunc != nil,
+		HasRootCA:  c.rootCAs != nil,
+		SystemInfo: *c.userAgent.Load(),
+	}
+
+	b, _ := json.Marshal(info)
+	return string(b)
 }
 
 // GitHubAppAuth contains the GitHub App authentication credentials. All fields are required.
@@ -105,37 +141,27 @@ type ProxyFunc func(req *http.Request) (*url.URL, error)
 // Option defines a functional option for configuring the Client.
 type Option func(*Client)
 
-// UserAgentInfo contains information for constructing the user agent string.
-type UserAgentInfo struct {
+// SystemInfo contains information about the system that uses the
+// scaleset client.
+//
+// For example, when Actions Runner Controller uses the scaleset API,
+// it will set the following:
+// - System: "actions-runner-controller"
+// - Version: "release-version"
+// - CommitSHA: "sha-of-the-release-commit"
+// - Subsystem: "listener" or "controller"
+type SystemInfo struct {
 	// System is the name of the scale set implementation
-	System string
+	System string `json:"system"`
 	// Version is the version of the controller
-	Version string
+	Version string `json:"version"`
 	// CommitSHA is the git commit SHA of the controller
-	CommitSHA string
+	CommitSHA string `json:"commit_sha"`
 	// ScaleSetID is the ID of the scale set
-	ScaleSetID int
+	ScaleSetID int `json:"scale_set_id"`
 	// Subsystem is the subsystem such as listener, controller, etc.
 	// Each system may pick its own subsystem name.
-	Subsystem string
-}
-
-func (u UserAgentInfo) String() string {
-	scaleSetID := "NA"
-	if u.ScaleSetID > 0 {
-		scaleSetID = strconv.Itoa(u.ScaleSetID)
-	}
-
-	return fmt.Sprintf(
-		"%s/%s (%s; %s) ScaleSetID/%s; client (%s; %s)",
-		u.System,
-		u.Version,
-		u.CommitSHA,
-		u.Subsystem,
-		scaleSetID,
-		packageVersion,
-		commitSHA,
-	)
+	Subsystem string `json:"subsystem"`
 }
 
 // WithLogger sets a custom logger for the Client.
@@ -180,23 +206,45 @@ func WithProxy(proxyFunc ProxyFunc) Option {
 	}
 }
 
+type ClientWithGitHubAppConfig struct {
+	GitHubConfigURL string
+	GitHubAppAuth   GitHubAppAuth
+	SystemInfo      SystemInfo
+}
+
 // NewClientWithGitHubApp creates a new Client using GitHub App credentials.
-func NewClientWithGitHubApp(githubConfigURL string, appCreds *GitHubAppAuth, options ...Option) (*Client, error) {
+func NewClientWithGitHubApp(config ClientWithGitHubAppConfig, options ...Option) (*Client, error) {
 	creds := &actionsAuth{
-		app: appCreds,
+		app: &config.GitHubAppAuth,
 	}
-	return newClient(githubConfigURL, creds, options...)
+	return newClient(
+		config.SystemInfo,
+		config.GitHubConfigURL,
+		creds,
+		options...,
+	)
+}
+
+type NewClientWithPersonalAccessTokenConfig struct {
+	GitHubConfigURL     string
+	PersonalAccessToken string
+	SystemInfo          SystemInfo
 }
 
 // NewClientWithPersonalAccessToken creates a new Client using a personal access token.
-func NewClientWithPersonalAccessToken(githubConfigURL, personalAccessToken string, options ...Option) (*Client, error) {
+func NewClientWithPersonalAccessToken(config NewClientWithPersonalAccessTokenConfig, options ...Option) (*Client, error) {
 	creds := &actionsAuth{
-		token: personalAccessToken,
+		token: config.PersonalAccessToken,
 	}
-	return newClient(githubConfigURL, creds, options...)
+	return newClient(
+		config.SystemInfo,
+		config.GitHubConfigURL,
+		creds,
+		options...,
+	)
 }
 
-func newClient(githubConfigURL string, creds *actionsAuth, options ...Option) (*Client, error) {
+func newClient(systemInfo SystemInfo, githubConfigURL string, creds *actionsAuth, options ...Option) (*Client, error) {
 	config, err := parseGitHubConfigFromURL(githubConfigURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse githubConfigURL: %w", err)
@@ -210,17 +258,14 @@ func newClient(githubConfigURL string, creds *actionsAuth, options ...Option) (*
 		// retryablehttp defaults
 		retryMax:     4,
 		retryWaitMax: 30 * time.Second,
+
+		buildInfo: clientBuildInfo{
+			version:   packageVersion,
+			commitSHA: commitSHA,
+		},
 	}
 
-	version, sha := detectModuleVersionAndCommit()
-	userAgent := UserAgentInfo{
-		System:     "scaleset-client",
-		Version:    version,
-		CommitSHA:  sha,
-		Subsystem:  "NA",
-		ScaleSetID: 0,
-	}.String()
-	ac.userAgent.Store(&userAgent)
+	ac.SetSystemInfo(systemInfo)
 
 	for _, option := range options {
 		option(ac)
@@ -267,10 +312,36 @@ func (c *Client) newRetryableHTTPClient() (*retryablehttp.Client, error) {
 	return retryClient, nil
 }
 
-// SetUserAgent updates the user agent
-func (c *Client) SetUserAgent(info UserAgentInfo) {
-	v := info.String()
-	c.userAgent.Store(&v)
+// SetSystemInfo updates the information about the system.
+func (c *Client) SetSystemInfo(info SystemInfo) {
+	c.systemInfoMu.Lock()
+	defer c.systemInfoMu.Unlock()
+	c.systemInfo = info
+	c.setUserAgent()
+}
+
+// SystemInfo returns the current system info that the client
+// has configured.
+func (c *Client) SystemInfo() SystemInfo {
+	c.systemInfoMu.Lock()
+	defer c.systemInfoMu.Unlock()
+	return c.systemInfo
+}
+
+type userAgent struct {
+	SystemInfo
+	BuildVersion   string `json:"build_version"`
+	BuildCommitSHA string `json:"build_commit_sha"`
+}
+
+func (c *Client) setUserAgent() {
+	b, _ := json.Marshal(userAgent{
+		SystemInfo:     c.systemInfo,
+		BuildVersion:   c.buildInfo.version,
+		BuildCommitSHA: c.buildInfo.commitSHA,
+	})
+	userAgent := string(b)
+	c.userAgent.Store(&userAgent)
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {

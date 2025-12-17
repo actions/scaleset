@@ -29,9 +29,11 @@ import (
 
 const exampleRequestID = "5ddf2050-dae0-013c-9159-04421ad31b68"
 
-var testUserAgent = UserAgentInfo{
-	Version:    "test",
-	CommitSHA:  "test",
+var testSystemInfo = SystemInfo{
+	System:     "test",
+	Subsystem:  "subtest",
+	Version:    "test-version",
+	CommitSHA:  "test-sha",
 	ScaleSetID: 1,
 }
 
@@ -72,7 +74,11 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 		}
 
 		for _, scenario := range scenarios {
-			client, err := newClient(scenario.configURL, nil)
+			client, err := newClient(
+				testSystemInfo,
+				scenario.configURL,
+				nil,
+			)
 			require.NoError(t, err)
 
 			req, err := client.newGitHubAPIRequest(ctx, http.MethodGet, scenario.path, nil)
@@ -81,20 +87,12 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 		}
 	})
 
-	t.Run("sets user agent header if present", func(t *testing.T) {
-		client, err := newClient("http://localhost/my-org", nil)
-		require.NoError(t, err)
-
-		client.SetUserAgent(testUserAgent)
-
-		req, err := client.newGitHubAPIRequest(ctx, http.MethodGet, "/app/installations/123/access_tokens", nil)
-		require.NoError(t, err)
-
-		assert.Equal(t, testUserAgent.String(), req.Header.Get("User-Agent"))
-	})
-
 	t.Run("sets the body we pass", func(t *testing.T) {
-		client, err := newClient("http://localhost/my-org", nil)
+		client, err := newClient(
+			testSystemInfo,
+			"http://localhost/my-org",
+			nil,
+		)
 		require.NoError(t, err)
 
 		req, err := client.newGitHubAPIRequest(
@@ -120,7 +118,11 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			token := defaultActionsToken(t)
 			server := testserver.New(t, nil, testserver.WithActionsToken(token))
 
-			client, err := newClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+			)
 			require.NoError(t, err)
 
 			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
@@ -133,7 +135,11 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			newToken := defaultActionsToken(t)
 			server := testserver.New(t, nil, testserver.WithActionsToken(newToken))
 
-			client, err := newClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+			)
 			require.NoError(t, err)
 			client.actionsServiceAdminToken = "expiring-token"
 			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(59 * time.Second)
@@ -160,6 +166,7 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler),
 			)
 			client, err := newClient(
+				testSystemInfo,
 				server.ConfigURLForOrg("my-org"),
 				defaultCreds,
 				WithRetryWaitMax(1*time.Millisecond),
@@ -206,6 +213,7 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler),
 			)
 			client, err := newClient(
+				testSystemInfo,
 				server.ConfigURLForOrg("my-org"),
 				defaultCreds,
 				WithRetryWaitMax(1*time.Millisecond),
@@ -227,7 +235,11 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			tokenThatShouldNotBeFetched := defaultActionsToken(t)
 			server := testserver.New(t, nil, testserver.WithActionsToken(tokenThatShouldNotBeFetched))
 
-			client, err := newClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+			)
 			require.NoError(t, err)
 			client.actionsServiceAdminToken = "healthy-token"
 			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(1 * time.Hour)
@@ -242,7 +254,11 @@ func TestNewActionsServiceRequest(t *testing.T) {
 	t.Run("builds the right URL including api version", func(t *testing.T) {
 		server := testserver.New(t, nil)
 
-		client, err := newClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+		client, err := newClient(
+			testSystemInfo,
+			server.ConfigURLForOrg("my-org"),
+			defaultCreds,
+		)
 		require.NoError(t, err)
 
 		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path?name=banana", nil)
@@ -261,15 +277,19 @@ func TestNewActionsServiceRequest(t *testing.T) {
 	t.Run("populates header", func(t *testing.T) {
 		server := testserver.New(t, nil)
 
-		client, err := newClient(server.ConfigURLForOrg("my-org"), defaultCreds)
+		client, err := newClient(
+			testSystemInfo,
+			server.ConfigURLForOrg("my-org"),
+			defaultCreds,
+		)
 		require.NoError(t, err)
 
-		client.SetUserAgent(testUserAgent)
+		client.SetSystemInfo(testSystemInfo)
 
 		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path", nil)
 		require.NoError(t, err)
 
-		assert.Equal(t, testUserAgent.String(), req.Header.Get("User-Agent"))
+		assert.Equal(t, *client.userAgent.Load(), req.Header.Get("User-Agent"))
 		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 	})
 }
@@ -292,7 +312,11 @@ func TestGetRunner(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunner(ctx, runnerID)
@@ -313,7 +337,13 @@ func TestGetRunner(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth, WithRetryMax(retryMax), WithRetryWaitMax(retryWaitMax))
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunner(ctx, runnerID)
@@ -341,7 +371,11 @@ func TestGetRunnerByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerByName(ctx, runnerName)
@@ -357,7 +391,11 @@ func TestGetRunnerByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerByName(ctx, runnerName)
@@ -379,7 +417,13 @@ func TestGetRunnerByName(t *testing.T) {
 			actualRetry++
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth, WithRetryMax(retryMax), WithRetryWaitMax(retryWaitMax))
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerByName(ctx, runnerName)
@@ -401,7 +445,11 @@ func TestDeleteRunner(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		err = client.RemoveRunner(ctx, runnerID)
@@ -423,6 +471,7 @@ func TestDeleteRunner(t *testing.T) {
 		}))
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -455,7 +504,11 @@ func TestGetRunnerGroupByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerGroupByName(ctx, runnerGroupName)
@@ -471,7 +524,11 @@ func TestGetRunnerGroupByName(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerGroupByName(ctx, runnerGroupName)
@@ -496,7 +553,11 @@ func TestGetRunnerScaleSet(t *testing.T) {
 			w.Write(runnerScaleSetsResp)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerScaleSet(ctx, 1, scaleSetName)
@@ -512,7 +573,11 @@ func TestGetRunnerScaleSet(t *testing.T) {
 			url = *r.URL
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
@@ -529,7 +594,11 @@ func TestGetRunnerScaleSet(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
@@ -542,7 +611,11 @@ func TestGetRunnerScaleSet(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
@@ -560,6 +633,7 @@ func TestGetRunnerScaleSet(t *testing.T) {
 		retryWaitMax := 1 * time.Microsecond
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -580,7 +654,11 @@ func TestGetRunnerScaleSet(t *testing.T) {
 			w.Write(runnerScaleSetsResp)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerScaleSet(ctx, 1, scaleSetName)
@@ -601,7 +679,11 @@ func TestGetRunnerScaleSet(t *testing.T) {
 			w.Write(runnerScaleSetsResp)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
@@ -627,7 +709,11 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 			w.Write(rsl)
 		}))
 
-		client, err := newClient(sservere.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			sservere.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
@@ -645,7 +731,11 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 			url = *r.URL
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
@@ -661,7 +751,11 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
@@ -674,7 +768,11 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
@@ -691,6 +789,7 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 		retryMax := 1
 		retryWaitMax := 1 * time.Microsecond
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -712,7 +811,11 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 			w.Write(rsl)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
@@ -738,7 +841,11 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 			w.Write(rsl)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
@@ -755,7 +862,11 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 			url = *r.URL
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
@@ -772,7 +883,11 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
@@ -792,6 +907,7 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 		retryWaitMax := 1 * time.Microsecond
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -823,7 +939,11 @@ func TestUpdateRunnerScaleSet(t *testing.T) {
 			w.Write(rsl)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.UpdateRunnerScaleSet(ctx, 1, &RunnerScaleSet{RunnerGroupID: 1})
@@ -843,7 +963,11 @@ func TestUpdateRunnerScaleSet(t *testing.T) {
 			w.Write(rsl)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.UpdateRunnerScaleSet(ctx, 1, &runnerScaleSet)
@@ -864,7 +988,11 @@ func TestDeleteRunnerScaleSet(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		err = client.DeleteRunnerScaleSet(ctx, 10)
@@ -879,7 +1007,11 @@ func TestDeleteRunnerScaleSet(t *testing.T) {
 			w.Write([]byte(`{"message": "test error"}`))
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		err = client.DeleteRunnerScaleSet(ctx, 10)
@@ -925,7 +1057,11 @@ func TestCreateMessageSession(t *testing.T) {
 			w.Write(resp)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
@@ -959,7 +1095,11 @@ func TestCreateMessageSession(t *testing.T) {
 			w.Write(resp)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
@@ -997,6 +1137,7 @@ func TestCreateMessageSession(t *testing.T) {
 		wantRetries := retryMax + 1
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -1036,6 +1177,7 @@ func TestDeleteMessageSession(t *testing.T) {
 		wantRetries := retryMax + 1
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -1076,6 +1218,7 @@ func TestRefreshMessageSession(t *testing.T) {
 		wantRetries := retryMax + 1
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -1109,7 +1252,11 @@ func TestGetMessage(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := newClient(s.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			s.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetMessage(ctx, s.URL, token, 0, 10)
@@ -1126,7 +1273,11 @@ func TestGetMessage(t *testing.T) {
 			w.Write(response)
 		}))
 
-		client, err := newClient(s.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			s.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GetMessage(ctx, s.URL, token, 1, 10)
@@ -1146,6 +1297,7 @@ func TestGetMessage(t *testing.T) {
 		}))
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -1163,7 +1315,11 @@ func TestGetMessage(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
@@ -1184,7 +1340,11 @@ func TestGetMessage(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
@@ -1198,7 +1358,11 @@ func TestGetMessage(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
@@ -1216,7 +1380,11 @@ func TestGetMessage(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		_, err = client.GetMessage(ctx, server.URL, token, 0, 0)
@@ -1243,7 +1411,11 @@ func TestDeleteMessage(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
@@ -1255,7 +1427,11 @@ func TestDeleteMessage(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		err = client.DeleteMessage(ctx, server.URL, token, 0)
@@ -1271,7 +1447,11 @@ func TestDeleteMessage(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
@@ -1290,6 +1470,7 @@ func TestDeleteMessage(t *testing.T) {
 
 		retryMax := 1
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(retryMax),
@@ -1311,7 +1492,11 @@ func TestDeleteMessage(t *testing.T) {
 			w.Write(rsl)
 		}))
 
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID+1)
@@ -1334,7 +1519,12 @@ func TestClientProxy(t *testing.T) {
 		return proxyConfig.ProxyFunc()(req.URL)
 	}
 
-	c, err := newClient("http://github.com/org/repo", nil, WithProxy(proxyFunc))
+	c, err := newClient(
+		testSystemInfo,
+		"http://github.com/org/repo",
+		nil,
+		WithProxy(proxyFunc),
+	)
 	require.NoError(t, err)
 
 	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
@@ -1361,7 +1551,11 @@ func TestGenerateJitRunnerConfig(t *testing.T) {
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Write(response)
 		}))
-		client, err := newClient(server.configURLForOrg("my-org"), auth)
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
 		require.NoError(t, err)
 
 		got, err := client.GenerateJitRunnerConfig(ctx, runnerSettings, 1)
@@ -1382,6 +1576,7 @@ func TestGenerateJitRunnerConfig(t *testing.T) {
 		}))
 
 		client, err := newClient(
+			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
 			WithRetryMax(1),
@@ -1402,7 +1597,11 @@ func TestClient_Do(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, err := newClient("https://localhost/org/repo", &actionsAuth{token: "token"})
+			client, err := newClient(
+				testSystemInfo,
+				"https://localhost/org/repo",
+				&actionsAuth{token: "token"},
+			)
 			require.NoError(t, err)
 
 			req, err := http.NewRequest("GET", server.URL, nil)
@@ -1428,7 +1627,11 @@ func TestClient_Do(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client, err := newClient("https://localhost/org/repo", &actionsAuth{token: "token"})
+			client, err := newClient(
+				testSystemInfo,
+				"https://localhost/org/repo",
+				&actionsAuth{token: "token"},
+			)
 			require.NoError(t, err)
 
 			req, err := http.NewRequest("GET", server.URL, nil)
@@ -1561,7 +1764,11 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		auth := &actionsAuth{
 			token: "token",
 		}
-		client, err := newClient(configURL, auth)
+		client, err := newClient(
+			testSystemInfo,
+			configURL,
+			auth,
+		)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 
@@ -1600,6 +1807,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		require.True(t, pool.AppendCertsFromPEM(cert))
 
 		client, err := newClient(
+			testSystemInfo,
 			configURL,
 			auth,
 			WithRootCAs(pool),
@@ -1632,6 +1840,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		require.True(t, pool.AppendCertsFromPEM(cert))
 
 		client, err := newClient(
+			testSystemInfo,
 			configURL,
 			auth,
 			WithRootCAs(pool),
@@ -1652,7 +1861,12 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 			token: "token",
 		}
 
-		client, err := newClient(configURL, auth, WithoutTLSVerify())
+		client, err := newClient(
+			testSystemInfo,
+			configURL,
+			auth,
+			WithoutTLSVerify(),
+		)
 		require.NoError(t, err)
 		assert.NotNil(t, client)
 	})
@@ -1673,8 +1887,9 @@ func startNewTLSTestServer(t *testing.T, certPath, keyPath string, handler http.
 	return server
 }
 
-func TestUserAgentInfoString(t *testing.T) {
-	userAgentInfo := UserAgentInfo{
+func TestUserAgent(t *testing.T) {
+	version, sha := detectModuleVersionAndCommit()
+	userAgentInfo := SystemInfo{
 		System:     "actions-runner-controller",
 		Version:    "0.1.0",
 		CommitSHA:  "1234567890abcdef",
@@ -1682,13 +1897,43 @@ func TestUserAgentInfoString(t *testing.T) {
 		Subsystem:  "test",
 	}
 
-	userAgent := userAgentInfo.String()
-	expectedProduct := fmt.Sprintf(
-		"actions-runner-controller/0.1.0 (1234567890abcdef; test) ScaleSetID/10; client (%s; %s)",
-		packageVersion,
-		commitSHA,
+	client, err := newClient(
+		testSystemInfo,
+		"https://github.com/org/repo",
+		&actionsAuth{token: "token"},
 	)
-	assert.Contains(t, userAgent, expectedProduct)
+	require.NoError(t, err, "failed to instantiate the client")
+	got := *client.userAgent.Load()
+	wantInfo := userAgent{
+		SystemInfo:     testSystemInfo,
+		BuildCommitSHA: sha,
+		BuildVersion:   version,
+	}
+	b, err := json.Marshal(wantInfo)
+	require.NoError(t, err, "failed to marshal expected user agent")
+	want := string(b)
+
+	assert.Equal(t, want, got)
+
+	client.SetSystemInfo(SystemInfo{
+		System:     "actions-runner-controller",
+		Version:    "0.1.0",
+		CommitSHA:  "1234567890abcdef",
+		ScaleSetID: 10,
+		Subsystem:  "test",
+	})
+
+	got = *client.userAgent.Load()
+	wantInfo = userAgent{
+		SystemInfo:     userAgentInfo,
+		BuildCommitSHA: sha,
+		BuildVersion:   version,
+	}
+	b, err = json.Marshal(wantInfo)
+	require.NoError(t, err, "failed to marshal expected user agent after SetSystemInfo")
+	want = string(b)
+
+	assert.Equal(t, want, got)
 }
 
 const samplePrivateKey = `-----BEGIN PRIVATE KEY-----

@@ -92,13 +92,7 @@ func run(ctx context.Context, c Config) error {
 	}
 
 	// Set the user agent for the scaleset client now that we have the scale set ID
-	scalesetClient.SetUserAgent(scaleset.UserAgentInfo{
-		System:     "dockerscaleset",
-		Version:    "0.1.0",
-		CommitSHA:  "unknown",
-		ScaleSetID: scaleSet.ID,
-		Subsystem:  scaleSet.Name,
-	})
+	scalesetClient.SetSystemInfo(systemInfo(scaleSet.ID))
 
 	defer func() {
 		logger.Info(

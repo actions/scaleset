@@ -59,12 +59,35 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// systemInfo serves as a base system info
+func systemInfo(scaleSetID int) scaleset.SystemInfo {
+	return scaleset.SystemInfo{
+		System:     "dockerscaleset",
+		Subsystem:  "dockerscaleset",
+		CommitSHA:  "NA",    // You can leverage build flags to set commit SHA
+		Version:    "0.1.0", // You can leverage build flags to set version
+		ScaleSetID: scaleSetID,
+	}
+}
+
 func (c *Config) ScalesetClient() (*scaleset.Client, error) {
 	if err := c.GitHubApp.Validate(); err == nil {
-		return scaleset.NewClientWithGitHubApp(c.RegistrationURL, &c.GitHubApp)
+		return scaleset.NewClientWithGitHubApp(
+			scaleset.ClientWithGitHubAppConfig{
+				GitHubConfigURL: c.RegistrationURL,
+				GitHubAppAuth:   c.GitHubApp,
+				SystemInfo:      systemInfo(0),
+			},
+		)
 	}
 
-	return scaleset.NewClientWithPersonalAccessToken(c.RegistrationURL, c.Token)
+	return scaleset.NewClientWithPersonalAccessToken(
+		scaleset.NewClientWithPersonalAccessTokenConfig{
+			GitHubConfigURL:     c.RegistrationURL,
+			PersonalAccessToken: c.Token,
+			SystemInfo:          systemInfo(0),
+		},
+	)
 }
 
 func (c *Config) Logger() *slog.Logger {
