@@ -15,14 +15,12 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/google/uuid"
 	"github.com/hashicorp/go-retryablehttp"
 )
 
@@ -46,9 +44,9 @@ const HeaderScaleSetMaxCapacity = "X-ScaleSetMaxCapacity"
 
 // Client implements a GitHub Actions Scale Set client.
 type Client struct {
+	mu         sync.Mutex // guards every public call
 	httpClient *http.Client
 
-	actionsMu                         sync.Mutex // guards actionsService fields
 	actionsServiceAdminToken          string
 	actionsServiceAdminTokenExpiresAt time.Time
 	actionsServiceURL                 string
@@ -60,10 +58,8 @@ type Client struct {
 	config *gitHubConfig
 	logger *slog.Logger
 
-	buildInfo clientBuildInfo
-	// systemInfoMu guards setting system info.
-	systemInfoMu sync.Mutex
-	systemInfo   SystemInfo
+	buildInfo  clientBuildInfo
+	systemInfo SystemInfo
 
 	// userAgent is computed based on buildInfo and systemInfo.
 	// userAgent should be re-computed every time client.SetSystemInfo
@@ -77,6 +73,24 @@ type Client struct {
 	tlsInsecureSkipVerify bool
 
 	proxyFunc ProxyFunc
+}
+
+func (c *Client) Clone() *Client {
+	return &Client{
+		httpClient:   c.httpClient,
+		creds:        c.creds,
+		config:       c.config,
+		logger:       c.logger,
+		retryMax:     c.retryMax,
+		retryWaitMax: c.retryWaitMax,
+		buildInfo:    c.buildInfo,
+		rootCAs:      c.rootCAs,
+		proxyFunc:    c.proxyFunc,
+	}
+}
+
+func (c *Client) Close(ctx context.Context) error {
+	return nil
 }
 
 type clientBuildInfo struct {
@@ -314,8 +328,8 @@ func (c *Client) newRetryableHTTPClient() (*retryablehttp.Client, error) {
 
 // SetSystemInfo updates the information about the system.
 func (c *Client) SetSystemInfo(info SystemInfo) {
-	c.systemInfoMu.Lock()
-	defer c.systemInfoMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.systemInfo = info
 	c.setUserAgent()
 }
@@ -323,8 +337,8 @@ func (c *Client) SetSystemInfo(info SystemInfo) {
 // SystemInfo returns the current system info that the client
 // has configured.
 func (c *Client) SystemInfo() SystemInfo {
-	c.systemInfoMu.Lock()
-	defer c.systemInfoMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.systemInfo
 }
 
@@ -419,6 +433,9 @@ func (c *Client) newActionsServiceRequest(ctx context.Context, method, path stri
 
 // GetRunnerScaleSet fetches a runner scale set by its name within a runner group.
 func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runnerScaleSetName string) (*RunnerScaleSet, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/%s?runnerGroupId=%d&name=%s", scaleSetEndpoint, runnerGroupID, runnerScaleSetName)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -460,6 +477,9 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 
 // GetRunnerScaleSetByID fetches a runner scale set by its ID.
 func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int) (*RunnerScaleSet, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -489,6 +509,9 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int
 
 // GetRunnerGroupByName fetches a runner group by its name.
 func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (*RunnerGroup, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/_apis/runtime/runnergroups/?groupName=%s", runnerGroup)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -547,6 +570,9 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 
 // CreateRunnerScaleSet creates a new runner scale set. Note that runner scale set names must be unique within a runner group.
 func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	body, err := json.Marshal(runnerScaleSet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal runner scale set: %w", err)
@@ -578,6 +604,9 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 
 // UpdateRunnerScaleSet updates an existing runner scale set.
 func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("%s/%d", scaleSetEndpoint, runnerScaleSetID)
 
 	body, err := json.Marshal(runnerScaleSet)
@@ -612,6 +641,9 @@ func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int,
 
 // DeleteRunnerScaleSet deletes a runner scale set by its ID.
 func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
@@ -631,78 +663,7 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 	return nil
 }
 
-// GetMessage fetches a message from the runner scale set message queue. If there are no messages available, it returns (nil, nil).
-// Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
-// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
-// In these cases the caller should refresh the session with RefreshMessageSession.
-func (c *Client) GetMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
-	u, err := url.Parse(messageQueueURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse message queue url: %w", err)
-	}
-
-	if lastMessageID > 0 {
-		q := u.Query()
-		q.Set("lastMessageId", strconv.Itoa(lastMessageID))
-		u.RawQuery = q.Encode()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create new request with context: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
-	req.Header.Set("User-Agent", *c.userAgent.Load())
-	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
-
-	resp, err := c.do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to issue the request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusAccepted {
-		return nil, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode != http.StatusUnauthorized {
-			return nil, ParseActionsErrorFromResponse(resp)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		body = trimByteOrderMark(body)
-		if err != nil {
-			return nil, &ActionsError{
-				ActivityID: resp.Header.Get(headerActionsActivityID),
-				StatusCode: resp.StatusCode,
-				Err:        err,
-			}
-		}
-		return nil, &ActionsError{
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			StatusCode: resp.StatusCode,
-			Err: &messageQueueTokenExpiredError{
-				message: string(body),
-			},
-		}
-	}
-
-	message, err := c.parseRunnerScaleSetMessageResponse(resp.Body)
-	if err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
-	}
-
-	return message, nil
-}
-
-func (c *Client) parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMessage, error) {
+func parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMessage, error) {
 	var messageResponse runnerScaleSetMessageResponse
 	if err := json.NewDecoder(respBody).Decode(&messageResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode runner scale set message response: %w", err)
@@ -762,103 +723,23 @@ func (c *Client) parseRunnerScaleSetMessageResponse(respBody io.Reader) (*Runner
 	return message, nil
 }
 
-// DeleteMessage deletes a message from the runner scale set message queue.
-// This should typically be done after processing the message and acts as an acknowledgment.
-// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
-// In these cases the caller should refresh the session with RefreshMessageSession.
-func (c *Client) DeleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID int) error {
-	u, err := url.Parse(messageQueueURL)
-	if err != nil {
-		return fmt.Errorf("failed to parse message queue url: %w", err)
+func (c *Client) MakeMessageSessionClient(ctx context.Context, runnerScaleSetID int, owner string) (*MessageSessionClient, error) {
+	cc := c.Clone()
+	systemInfo := c.SystemInfo()
+	systemInfo.ScaleSetID = runnerScaleSetID
+	cc.SetSystemInfo(systemInfo)
+	client := &MessageSessionClient{
+		client:     cc,
+		owner:      owner,
+		scaleSetID: runnerScaleSetID,
+		session:    nil,
 	}
 
-	u.Path = fmt.Sprintf("%s/%d", u.Path, messageID)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
-	if err != nil {
-		return fmt.Errorf("failed to create new request with context: %w", err)
+	if err := client.createMessageSession(ctx); err != nil {
+		return nil, fmt.Errorf("failed to create message session: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
-	req.Header.Set("User-Agent", *c.userAgent.Load())
-
-	resp, err := c.do(req)
-	if err != nil {
-		return fmt.Errorf("failed to issue the request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNoContent {
-		return nil
-	}
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		return ParseActionsErrorFromResponse(resp)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	body = trimByteOrderMark(body)
-	if err != nil {
-		return &ActionsError{
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			StatusCode: resp.StatusCode,
-			Err:        err,
-		}
-	}
-	return &ActionsError{
-		ActivityID: resp.Header.Get(headerActionsActivityID),
-		StatusCode: resp.StatusCode,
-		Err: &messageQueueTokenExpiredError{
-			message: string(body),
-		},
-	}
-}
-
-// CreateMessageSession creates a new message session for the specified runner scale set.
-// The resulting session contains the message queue URL and access token used to GetMessage.
-func (c *Client) CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*RunnerScaleSetSession, error) {
-	path := fmt.Sprintf("/%s/%d/sessions", scaleSetEndpoint, runnerScaleSetID)
-
-	newSession := &RunnerScaleSetSession{
-		OwnerName: owner,
-	}
-
-	requestData, err := json.Marshal(newSession)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal new session: %w", err)
-	}
-
-	var createdSession RunnerScaleSetSession
-	if err = c.doSessionRequest(
-		ctx,
-		http.MethodPost,
-		path,
-		bytes.NewBuffer(requestData),
-		http.StatusOK,
-		&createdSession,
-	); err != nil {
-		return nil, fmt.Errorf("failed to do the session request: %w", err)
-	}
-
-	return &createdSession, nil
-}
-
-// DeleteMessageSession deletes a message session for the specified runner scale set.
-func (c *Client) DeleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error {
-	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
-	return c.doSessionRequest(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
-}
-
-// RefreshMessageSession refreshes a message session for the specified runner scale set.
-// This should be used when a MessageQueueTokenExpiredError is encountered.
-func (c *Client) RefreshMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*RunnerScaleSetSession, error) {
-	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
-	refreshedSession := &RunnerScaleSetSession{}
-	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {
-		return nil, fmt.Errorf("failed to do the session request: %w", err)
-	}
-	return refreshedSession, nil
+	return client, nil
 }
 
 func (c *Client) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
@@ -1323,9 +1204,6 @@ func actionsServiceAdminTokenExpiresAt(jwtToken string) (time.Time, error) {
 }
 
 func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
-	c.actionsMu.Lock()
-	defer c.actionsMu.Unlock()
-
 	aboutToExpire := time.Now().Add(60 * time.Second).After(c.actionsServiceAdminTokenExpiresAt)
 	if !aboutToExpire && !c.actionsServiceAdminTokenExpiresAt.IsZero() {
 		return nil
