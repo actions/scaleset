@@ -84,8 +84,6 @@ func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int
 
 	message, err := c.getMessage(
 		ctx,
-		c.session.MessageQueueURL,
-		c.session.MessageQueueAccessToken,
 		lastMessageID,
 		maxCapacity,
 	)
@@ -104,15 +102,13 @@ func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int
 
 	return c.getMessage(
 		ctx,
-		c.session.MessageQueueURL,
-		c.session.MessageQueueAccessToken,
 		lastMessageID,
 		maxCapacity,
 	)
 }
 
-func (c *MessageSessionClient) getMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
-	u, err := url.Parse(messageQueueURL)
+func (c *MessageSessionClient) getMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
+	u, err := url.Parse(c.session.MessageQueueURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse message queue url: %w", err)
 	}
@@ -129,7 +125,7 @@ func (c *MessageSessionClient) getMessage(ctx context.Context, messageQueueURL, 
 	}
 
 	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
 	req.Header.Set("User-Agent", *c.client.userAgent.Load())
 	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
 
@@ -186,12 +182,7 @@ func (c *MessageSessionClient) DeleteMessage(ctx context.Context, messageID int)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.deleteMessage(
-		ctx,
-		c.session.MessageQueueURL,
-		c.session.MessageQueueAccessToken,
-		messageID,
-	)
+	err := c.deleteMessage(ctx, messageID)
 	if err == nil {
 		return nil
 	}
@@ -205,16 +196,11 @@ func (c *MessageSessionClient) DeleteMessage(ctx context.Context, messageID int)
 		return fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
-	return c.deleteMessage(
-		ctx,
-		c.session.MessageQueueURL,
-		c.session.MessageQueueAccessToken,
-		messageID,
-	)
+	return c.deleteMessage(ctx, messageID)
 }
 
-func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageQueueURL, messageQueueAccessToken string, messageID int) error {
-	u, err := url.Parse(messageQueueURL)
+func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageID int) error {
+	u, err := url.Parse(c.session.MessageQueueURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse message queue url: %w", err)
 	}
@@ -227,7 +213,7 @@ func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageQueueUR
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", messageQueueAccessToken))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
 	req.Header.Set("User-Agent", *c.client.userAgent.Load())
 
 	resp, err := c.client.do(req)

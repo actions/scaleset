@@ -1160,6 +1160,10 @@ func TestClient_Do(t *testing.T) {
 	})
 }
 
+type serverCtxKey int
+
+const ctxKeyServer serverCtxKey = iota
+
 // newActionsServer returns a new httptest.Server that handles the
 // authentication requests neeeded to create a new client. Any requests not
 // made to the /actions/runners/registration-token or
@@ -1180,6 +1184,7 @@ func newActionsServer(t *testing.T, handler http.Handler, options ...actionsServ
 	}
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyServer, server))
 		// handle getRunnerRegistrationToken
 		if strings.HasSuffix(r.URL.Path, "/runners/registration-token") {
 			w.WriteHeader(http.StatusCreated)

@@ -7,15 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
 	"sync/atomic"
 
 	"github.com/actions/scaleset"
-	"github.com/google/uuid"
-)
-
-const (
-	sessionCreationMaxRetries = 10
 )
 
 // Config holds the configuration for the Listener.
@@ -87,12 +81,6 @@ func New(client Client, config Config, options ...Option) (*Listener, error) {
 
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = uuid.NewString()
-		config.Logger.Info("Failed to get hostname, fallback to uuid", "uuid", hostname, "error", err)
 	}
 
 	listener := &Listener{

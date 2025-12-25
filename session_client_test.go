@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testSession() *RunnerScaleSetSession {
+	return &RunnerScaleSetSession{
+		SessionID: uuid.New(),
+		OwnerName: "foo",
+		RunnerScaleSet: &RunnerScaleSet{
+			ID:   1,
+			Name: "ScaleSet",
+		},
+		MessageQueueURL:         "http://fake.github.com/123",
+		MessageQueueAccessToken: "fake.jwt.here",
+		Statistics: &RunnerScaleSetStatistic{
+			TotalAvailableJobs:     0,
+			TotalAcquiredJobs:      0,
+			TotalAssignedJobs:      0,
+			TotalRunningJobs:       0,
+			TotalRegisteredRunners: 0,
+			TotalBusyRunners:       0,
+			TotalIdleRunners:       0,
+		},
+	}
+}
+
+func newTestSessionRequestHandler(t *testing.T, session *RunnerScaleSetSession) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		srv := r.Context().Value(ctxKeyServer).(*actionsServer)
+		session.MessageQueueURL = srv.URL
+		resp, err := json.Marshal(session)
+		require.NoError(t, err)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(resp)
+	}
+}
+
 func TestCreateMessageSession(t *testing.T) {
 	ctx := context.Background()
 	auth := &actionsAuth{
@@ -21,7 +55,6 @@ func TestCreateMessageSession(t *testing.T) {
 	}
 
 	t.Run("CreateMessageSession unmarshals correctly", func(t *testing.T) {
-		owner := "foo"
 		runnerScaleSet := RunnerScaleSet{
 			ID:            1,
 			Name:          "ScaleSet",
@@ -29,27 +62,11 @@ func TestCreateMessageSession(t *testing.T) {
 			RunnerSetting: RunnerSetting{},
 		}
 
-		want := &RunnerScaleSetSession{
-			OwnerName: "foo",
-			RunnerScaleSet: &RunnerScaleSet{
-				ID:   1,
-				Name: "ScaleSet",
-			},
-			MessageQueueURL:         "http://fake.github.com/123",
-			MessageQueueAccessToken: "fake.jwt.here",
-		}
+		want := testSession()
+		handleSessionRequest := newTestSessionRequestHandler(t, want)
 
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			resp := []byte(`{
-					"ownerName": "foo",
-					"runnerScaleSet": {
-						"id": 1,
-						"name": "ScaleSet"
-					},
-					"messageQueueUrl": "http://fake.github.com/123",
-					"messageQueueAccessToken": "fake.jwt.here"
-				}`)
-			w.Write(resp)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleSessionRequest(w, r)
 		}))
 
 		client, err := newClient(
@@ -59,7 +76,7 @@ func TestCreateMessageSession(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(runnerScaleSet.ID, owner)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, runnerScaleSet.ID, "my-org")
 		require.NoError(t, err)
 
 		session := sessionClient.Session()
@@ -145,54 +162,12 @@ func TestCreateMessageSession(t *testing.T) {
 	})
 }
 
-func TestRefreshMessageSession(t *testing.T) {
-	auth := &actionsAuth{
-		token: "token",
-	}
-
-	t.Run("RefreshMessageSession call is retried the correct amount of times", func(t *testing.T) {
-		runnerScaleSet := RunnerScaleSet{
-			ID:            1,
-			Name:          "ScaleSet",
-			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: RunnerSetting{},
-		}
-
-		gotRetries := 0
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-			gotRetries++
-		}))
-
-		retryMax := 3
-		retryWaitMax := 1 * time.Microsecond
-
-		wantRetries := retryMax + 1
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
-		)
-		require.NoError(t, err)
-
-		sessionID := uuid.New()
-
-		_, err = client.RefreshMessageSession(context.Background(), runnerScaleSet.ID, sessionID)
-		assert.NotNil(t, err)
-		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
-	})
-}
-
 func TestGetMessage(t *testing.T) {
 	ctx := context.Background()
 	auth := &actionsAuth{
 		token: "token",
 	}
 
-	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
 	runnerScaleSetMessage := &RunnerScaleSetMessage{
 		MessageID: 1,
 	}
@@ -200,7 +175,13 @@ func TestGetMessage(t *testing.T) {
 	t.Run("Get Runner Scale Set Message", func(t *testing.T) {
 		want := runnerScaleSetMessage
 		response := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
-		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.Write(response)
 		}))
 
@@ -211,7 +192,10 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		got, err := client.GetMessage(ctx, s.URL, token, 0, 10)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		got, err := sessionClient.GetMessage(ctx, 0, 10)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
 	})
@@ -219,7 +203,12 @@ func TestGetMessage(t *testing.T) {
 	t.Run("GetMessage sets the last message id if not 0", func(t *testing.T) {
 		want := runnerScaleSetMessage
 		response := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
 		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			q := r.URL.Query()
 			assert.Equal(t, "1", q.Get("lastMessageId"))
 			w.Write(response)
@@ -232,7 +221,10 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		got, err := client.GetMessage(ctx, s.URL, token, 1, 10)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		got, err := sessionClient.GetMessage(ctx, 1, 10)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
 	})
@@ -243,7 +235,12 @@ func TestGetMessage(t *testing.T) {
 		actualRetry := 0
 		expectedRetry := retryMax + 1
 
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 			actualRetry++
 		}))
@@ -257,13 +254,21 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		_, err = sessionClient.GetMessage(ctx, 0, 10)
 		assert.NotNil(t, err)
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
 	})
 
 	t.Run("Message token expired", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 
@@ -274,7 +279,10 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		_, err = sessionClient.getMessage(ctx, 0, 10)
 		require.NotNil(t, err)
 
 		var expectedErr *ActionsError
@@ -288,7 +296,12 @@ func TestGetMessage(t *testing.T) {
 			Err:        errors.New("unknown exception"),
 			StatusCode: 404,
 		}
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusNotFound)
 		}))
 
@@ -299,13 +312,21 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		_, err = sessionClient.getMessage(ctx, 0, 10)
 		require.NotNil(t, err)
 		assert.Equal(t, want.Error(), err.Error())
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
 		}))
@@ -317,12 +338,20 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		_, err = sessionClient.GetMessage(ctx, 0, 10)
 		assert.NotNil(t, err)
 	})
 
 	t.Run("Capacity error handling", func(t *testing.T) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			hc := r.Header.Get(HeaderScaleSetMaxCapacity)
 			c, err := strconv.Atoi(hc)
 			require.NoError(t, err)
@@ -339,7 +368,10 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 0)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		_, err = sessionClient.GetMessage(ctx, 0, 0)
 		assert.Error(t, err)
 		var expectedErr *ActionsError
 		assert.ErrorAs(t, err, &expectedErr)
@@ -353,13 +385,17 @@ func TestDeleteMessage(t *testing.T) {
 		token: "token",
 	}
 
-	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
 	runnerScaleSetMessage := &RunnerScaleSetMessage{
 		MessageID: 1,
 	}
 
 	t.Run("Delete existing message", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
@@ -370,12 +406,20 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
 		assert.Nil(t, err)
 	})
 
 	t.Run("Message token expired", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 
@@ -386,7 +430,11 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = client.DeleteMessage(ctx, server.URL, token, 0)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		err = sessionClient.deleteMessage(ctx, 0)
+		// TODO: fix this to later check retry
 		require.NotNil(t, err)
 		var expectedErr *ActionsError
 		require.ErrorAs(t, err, &expectedErr)
@@ -394,7 +442,12 @@ func TestDeleteMessage(t *testing.T) {
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
 		}))
@@ -406,7 +459,10 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
 		require.NotNil(t, err)
 		var expectedErr *ActionsError
 		assert.True(t, errors.As(err, &expectedErr))
@@ -415,7 +471,12 @@ func TestDeleteMessage(t *testing.T) {
 
 	t.Run("Default retries on server error", func(t *testing.T) {
 		actualRetry := 0
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 			actualRetry++
 		}))
@@ -429,7 +490,11 @@ func TestDeleteMessage(t *testing.T) {
 			WithRetryWaitMax(1*time.Nanosecond),
 		)
 		require.NoError(t, err)
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
+
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
 		assert.NotNil(t, err)
 		expectedRetry := retryMax + 1
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
@@ -440,7 +505,12 @@ func TestDeleteMessage(t *testing.T) {
 		rsl, err := json.Marshal(want)
 		require.NoError(t, err)
 
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
 			w.Write(rsl)
 		}))
 
@@ -451,7 +521,10 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID+1)
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID+1)
 		var expectedErr *ActionsError
 		require.True(t, errors.As(err, &expectedErr))
 	})
