@@ -64,28 +64,6 @@ func TestNew(t *testing.T) {
 func TestListener_Run(t *testing.T) {
 	t.Parallel()
 
-	t.Run("create session fails", func(t *testing.T) {
-		t.Parallel()
-		ctx := context.Background()
-		config := Config{
-			ScaleSetID: 1,
-		}
-
-		client := NewMockClient(t)
-		client.On(
-			"CreateMessageSession",
-			ctx,
-			mock.Anything,
-			mock.Anything,
-		).Return(nil, assert.AnError).Once()
-
-		l, err := New(client, config)
-		require.Nil(t, err)
-
-		err = l.Run(ctx, nil)
-		assert.NotNil(t, err)
-	})
-
 	t.Run("call handle regardless of initial message", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -105,18 +83,8 @@ func TestListener_Run(t *testing.T) {
 			MessageQueueAccessToken: "1234567890",
 			Statistics:              &scaleset.RunnerScaleSetStatistic{},
 		}
-		client.On(
-			"CreateMessageSession",
-			ctx,
-			mock.Anything,
-			mock.Anything,
-		).Return(session, nil).Once()
-		client.On(
-			"DeleteMessageSession",
-			mock.Anything,
-			session.RunnerScaleSet.ID,
-			session.SessionID,
-		).Return(nil).Once()
+
+		client.On("Session").Return(session).Once()
 
 		l, err := New(client, config)
 		require.Nil(t, err)
@@ -162,28 +130,15 @@ func TestListener_Run(t *testing.T) {
 			MessageQueueAccessToken: "1234567890",
 			Statistics:              &scaleset.RunnerScaleSetStatistic{},
 		}
-		client.On(
-			"CreateMessageSession",
-			ctx,
-			mock.Anything,
-			mock.Anything,
-		).Return(session, nil).Once()
-		client.On(
-			"DeleteMessageSession",
-			mock.Anything,
-			session.RunnerScaleSet.ID,
-			session.SessionID,
-		).Return(nil).Once()
 
 		msg := &scaleset.RunnerScaleSetMessage{
 			MessageID:  1,
 			Statistics: &scaleset.RunnerScaleSetStatistic{},
 		}
+		client.On("Session").Return(session).Once()
 		client.On(
 			"GetMessage",
 			ctx,
-			mock.Anything,
-			mock.Anything,
 			mock.Anything,
 			10,
 		).
@@ -199,8 +154,6 @@ func TestListener_Run(t *testing.T) {
 		client.On(
 			"DeleteMessage",
 			context.WithoutCancel(ctx),
-			mock.Anything,
-			mock.Anything,
 			mock.Anything,
 		).Return(nil).Once()
 

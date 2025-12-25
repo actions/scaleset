@@ -46,7 +46,7 @@ func (c *Config) Validate() error {
 // This interface is defined to allow for easier testing and mocking, as well
 // as allowing wrappers around the scaleset client if needed.
 type Client interface {
-	GetMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)
+	GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)
 	DeleteMessage(ctx context.Context, messageID int) error
 	Session() *scaleset.RunnerScaleSetSession
 }
