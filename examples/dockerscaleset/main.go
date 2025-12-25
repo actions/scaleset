@@ -13,6 +13,7 @@ import (
 	"github.com/actions/scaleset/listener"
 	"github.com/docker/docker/api/types/image"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -131,8 +132,21 @@ func run(ctx context.Context, c Config) error {
 		return fmt.Errorf("failed to close image pull: %w", err)
 	}
 
+	// Get the name of the client which will be used as the owner
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = uuid.NewString()
+		logger.Info("Failed to get hostname, fallback to uuid", "uuid", hostname, "error", err)
+	}
+
+	sessionClient, err := scalesetClient.MakeMessageSessionClient(ctx, scaleSet.ID, hostname)
+	if err != nil {
+		return fmt.Errorf("failed to create message session client: %w", err)
+	}
+	defer sessionClient.Close(context.Background())
+
 	logger.Info("Initializing listener")
-	listener, err := listener.New(scalesetClient, listener.Config{
+	listener, err := listener.New(sessionClient, listener.Config{
 		ScaleSetID: scaleSet.ID,
 		MaxRunners: c.MaxRunners,
 		Logger:     logger.WithGroup("listener"),
