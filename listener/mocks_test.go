@@ -170,20 +170,18 @@ func (_c *MockClient_GetMessage_Call) RunAndReturn(run func(ctx context.Context,
 }
 
 // Session provides a mock function for the type MockClient
-func (_mock *MockClient) Session() *scaleset.RunnerScaleSetSession {
+func (_mock *MockClient) Session() scaleset.RunnerScaleSetSession {
 	ret := _mock.Called()
 
 	if len(ret) == 0 {
 		panic("no return value specified for Session")
 	}
 
-	var r0 *scaleset.RunnerScaleSetSession
-	if returnFunc, ok := ret.Get(0).(func() *scaleset.RunnerScaleSetSession); ok {
+	var r0 scaleset.RunnerScaleSetSession
+	if returnFunc, ok := ret.Get(0).(func() scaleset.RunnerScaleSetSession); ok {
 		r0 = returnFunc()
 	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*scaleset.RunnerScaleSetSession)
-		}
+		r0 = ret.Get(0).(scaleset.RunnerScaleSetSession)
 	}
 	return r0
 }
@@ -205,12 +203,12 @@ func (_c *MockClient_Session_Call) Run(run func()) *MockClient_Session_Call {
 	return _c
 }
 
-func (_c *MockClient_Session_Call) Return(runnerScaleSetSession *scaleset.RunnerScaleSetSession) *MockClient_Session_Call {
+func (_c *MockClient_Session_Call) Return(runnerScaleSetSession scaleset.RunnerScaleSetSession) *MockClient_Session_Call {
 	_c.Call.Return(runnerScaleSetSession)
 	return _c
 }
 
-func (_c *MockClient_Session_Call) RunAndReturn(run func() *scaleset.RunnerScaleSetSession) *MockClient_Session_Call {
+func (_c *MockClient_Session_Call) RunAndReturn(run func() scaleset.RunnerScaleSetSession) *MockClient_Session_Call {
 	_c.Call.Return(run)
 	return _c
 }

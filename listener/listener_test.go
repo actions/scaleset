@@ -75,7 +75,7 @@ func TestListener_Run(t *testing.T) {
 		client := NewMockClient(t)
 
 		uuid := uuid.New()
-		session := &scaleset.RunnerScaleSetSession{
+		session := scaleset.RunnerScaleSetSession{
 			SessionID:               uuid,
 			OwnerName:               "example",
 			RunnerScaleSet:          &scaleset.RunnerScaleSet{},
@@ -122,7 +122,7 @@ func TestListener_Run(t *testing.T) {
 
 		client := NewMockClient(t)
 		uuid := uuid.New()
-		session := &scaleset.RunnerScaleSetSession{
+		session := scaleset.RunnerScaleSetSession{
 			SessionID:               uuid,
 			OwnerName:               "example",
 			RunnerScaleSet:          &scaleset.RunnerScaleSet{},

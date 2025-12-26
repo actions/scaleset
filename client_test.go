@@ -287,7 +287,7 @@ func TestNewActionsServiceRequest(t *testing.T) {
 		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path", nil)
 		require.NoError(t, err)
 
-		assert.Equal(t, client.commonClient.userAgent, req.Header.Get("User-Agent"))
+		assert.Equal(t, client.userAgent, req.Header.Get("User-Agent"))
 		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 	})
 }
@@ -1126,7 +1126,31 @@ type actionsServerOption func(*actionsServer)
 type actionsServer struct {
 	*httptest.Server
 
-	token string
+	token   string
+	session *RunnerScaleSetSession
+}
+
+func (srv *actionsServer) testRunnerScaleSetSession() RunnerScaleSetSession {
+	session := RunnerScaleSetSession{
+		SessionID: uuid.New(),
+		OwnerName: "foo",
+		RunnerScaleSet: &RunnerScaleSet{
+			ID:   1,
+			Name: "ScaleSet",
+		},
+		MessageQueueURL:         srv.URL,
+		MessageQueueAccessToken: srv.token,
+		Statistics: &RunnerScaleSetStatistic{
+			TotalAvailableJobs:     0,
+			TotalAcquiredJobs:      0,
+			TotalAssignedJobs:      0,
+			TotalRunningJobs:       0,
+			TotalRegisteredRunners: 0,
+			TotalBusyRunners:       0,
+			TotalIdleRunners:       0,
+		},
+	}
+	return session
 }
 
 func (s *actionsServer) configURLForOrg(org string) string {

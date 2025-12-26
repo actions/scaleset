@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/actions/scaleset"
+	"github.com/google/uuid"
 )
 
 // Config holds the configuration for the Listener.
@@ -48,7 +49,7 @@ func (c *Config) Validate() error {
 type Client interface {
 	GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)
 	DeleteMessage(ctx context.Context, messageID int) error
-	Session() *scaleset.RunnerScaleSetSession
+	Session() scaleset.RunnerScaleSetSession
 }
 
 type Option func(*Listener)
@@ -105,7 +106,7 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 	{
 		initialSession := l.client.Session()
 
-		if initialSession == nil {
+		if initialSession.SessionID == uuid.Nil {
 			return fmt.Errorf("initial session is nil")
 		}
 

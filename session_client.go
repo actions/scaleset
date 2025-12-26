@@ -260,16 +260,15 @@ func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageID int)
 	}
 }
 
-func (c *MessageSessionClient) Session() *RunnerScaleSetSession {
+func (c *MessageSessionClient) Session() RunnerScaleSetSession {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.session == nil {
-		return nil
+		return RunnerScaleSetSession{}
 	}
 
-	s := *c.session
-	return &s
+	return *c.session
 }
 
 func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
@@ -278,6 +277,7 @@ func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, pat
 		return fmt.Errorf("failed to create new actions service request: %w", err)
 	}
 
+	// use potentially modified client to issue a request
 	resp, err := c.commonClient.do(req)
 	if err != nil {
 		return fmt.Errorf("failed to issue the request: %w", err)

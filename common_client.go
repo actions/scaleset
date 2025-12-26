@@ -74,15 +74,15 @@ type httpClientOption struct {
 	proxyFunc             ProxyFunc
 }
 
-func (opt *httpClientOption) defaults() {
-	if opt.logger == nil {
-		opt.logger = slog.New(slog.DiscardHandler)
+func (o *httpClientOption) defaults() {
+	if o.logger == nil {
+		o.logger = slog.New(slog.DiscardHandler)
 	}
-	if opt.retryMax == 0 {
-		opt.retryMax = 4
+	if o.retryMax == 0 {
+		o.retryMax = 4
 	}
-	if opt.retryWaitMax == 0 {
-		opt.retryWaitMax = 30 * time.Second
+	if o.retryWaitMax == 0 {
+		o.retryWaitMax = 30 * time.Second
 	}
 }
 
@@ -92,11 +92,11 @@ func defaultHTTPClientOption() httpClientOption {
 	return opt
 }
 
-func (c *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, error) {
+func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, error) {
 	retryClient := retryablehttp.NewClient()
-	retryClient.Logger = c.logger
-	retryClient.RetryMax = c.retryMax
-	retryClient.RetryWaitMax = c.retryWaitMax
+	retryClient.Logger = o.logger
+	retryClient.RetryMax = o.retryMax
+	retryClient.RetryWaitMax = o.retryWaitMax
 	retryClient.HTTPClient.Timeout = 5 * time.Minute // timeout must be > 1m to accomodate long polling
 
 	transport, ok := retryClient.HTTPClient.Transport.(*http.Transport)
@@ -109,15 +109,15 @@ func (c *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 		transport.TLSClientConfig = &tls.Config{}
 	}
 
-	if c.rootCAs != nil {
-		transport.TLSClientConfig.RootCAs = c.rootCAs
+	if o.rootCAs != nil {
+		transport.TLSClientConfig.RootCAs = o.rootCAs
 	}
 
-	if c.tlsInsecureSkipVerify {
+	if o.tlsInsecureSkipVerify {
 		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 
-	transport.Proxy = c.proxyFunc
+	transport.Proxy = o.proxyFunc
 
 	retryClient.HTTPClient.Transport = transport
 
