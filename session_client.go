@@ -15,14 +15,26 @@ import (
 	"github.com/google/uuid"
 )
 
+// MessageSessionClient is a client used to interact with a message session for a runner scale set.
+// It provides methods to Get and Delete messages from the message queue associated with the session,
+// handling session token expiration and refreshing as needed.
+//
+// It is safe for concurrent use by multiple goroutines.
+// Please do not forget to call Close when done to clean up the session.
 type MessageSessionClient struct {
-	mu         sync.Mutex
-	client     *Client
-	scaleSetID int
-	owner      string
-	session    *RunnerScaleSetSession
+	mu sync.Mutex
+	// inner client is the parent of the message session, allowing session refreshing
+	// use this client to create (and potentially refresh the session) requests.
+	innerClient *Client
+	// commonClient uses different options than the original client
+	// use this client for message session requests
+	commonClient *commonClient
+	scaleSetID   int
+	owner        string
+	session      *RunnerScaleSetSession
 }
 
+// Close deletes the message session associated with this client.
 func (c *MessageSessionClient) Close(ctx context.Context) error {
 	return c.deleteMessageSession(ctx, c.scaleSetID, c.session.SessionID)
 }
@@ -40,7 +52,7 @@ func (c *MessageSessionClient) createMessageSession(ctx context.Context) error {
 	}
 
 	var createdSession RunnerScaleSetSession
-	if err = c.client.doSessionRequest(
+	if err = c.doSessionRequest(
 		ctx,
 		http.MethodPost,
 		path,
@@ -59,7 +71,7 @@ func (c *MessageSessionClient) createMessageSession(ctx context.Context) error {
 // DeleteMessageSession deletes a message session for the specified runner scale set.
 func (c *MessageSessionClient) deleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, runnerScaleSetID, sessionID.String())
-	return c.client.doSessionRequest(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
+	return c.doSessionRequest(ctx, http.MethodDelete, path, nil, http.StatusNoContent, nil)
 }
 
 // RefreshMessageSession refreshes a message session for the specified runner scale set.
@@ -67,7 +79,7 @@ func (c *MessageSessionClient) deleteMessageSession(ctx context.Context, runnerS
 func (c *MessageSessionClient) refreshMessageSession(ctx context.Context) error {
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, c.scaleSetID, c.session.SessionID.String())
 	refreshedSession := &RunnerScaleSetSession{}
-	if err := c.client.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {
+	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {
 		return fmt.Errorf("failed to do the session request: %w", err)
 	}
 	c.session = refreshedSession
@@ -126,10 +138,10 @@ func (c *MessageSessionClient) getMessage(ctx context.Context, lastMessageID int
 
 	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
-	req.Header.Set("User-Agent", *c.client.userAgent.Load())
+	req.Header.Set("User-Agent", c.commonClient.userAgent)
 	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
 
-	resp, err := c.client.do(req)
+	resp, err := c.commonClient.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
@@ -214,9 +226,9 @@ func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageID int)
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
-	req.Header.Set("User-Agent", *c.client.userAgent.Load())
+	req.Header.Set("User-Agent", c.commonClient.userAgent)
 
-	resp, err := c.client.do(req)
+	resp, err := c.commonClient.do(req)
 	if err != nil {
 		return fmt.Errorf("failed to issue the request: %w", err)
 	}
@@ -258,4 +270,53 @@ func (c *MessageSessionClient) Session() *RunnerScaleSetSession {
 
 	s := *c.session
 	return &s
+}
+
+func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
+	req, err := c.innerClient.newActionsServiceRequest(ctx, method, path, requestData)
+	if err != nil {
+		return fmt.Errorf("failed to create new actions service request: %w", err)
+	}
+
+	resp, err := c.commonClient.do(req)
+	if err != nil {
+		return fmt.Errorf("failed to issue the request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == expectedResponseStatusCode {
+		if responseUnmarshalTarget == nil {
+			return nil
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(responseUnmarshalTarget); err != nil {
+			return &ActionsError{
+				StatusCode: resp.StatusCode,
+				ActivityID: resp.Header.Get(headerActionsActivityID),
+				Err:        err,
+			}
+		}
+
+		return nil
+	}
+
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return ParseActionsErrorFromResponse(resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	body = trimByteOrderMark(body)
+	if err != nil {
+		return &ActionsError{
+			StatusCode: resp.StatusCode,
+			ActivityID: resp.Header.Get(headerActionsActivityID),
+			Err:        err,
+		}
+	}
+
+	return fmt.Errorf("unexpected status code: %w", &ActionsError{
+		StatusCode: resp.StatusCode,
+		ActivityID: resp.Header.Get(headerActionsActivityID),
+		Err:        errors.New(string(body)),
+	})
 }

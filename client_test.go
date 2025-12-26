@@ -23,7 +23,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http/httpproxy"
 )
 
 const exampleRequestID = "5ddf2050-dae0-013c-9159-04421ad31b68"
@@ -76,7 +75,7 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 			client, err := newClient(
 				testSystemInfo,
 				scenario.configURL,
-				nil,
+				actionsAuth{token: "token"},
 			)
 			require.NoError(t, err)
 
@@ -90,7 +89,7 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 		client, err := newClient(
 			testSystemInfo,
 			"http://localhost/my-org",
-			nil,
+			actionsAuth{token: "token"},
 		)
 		require.NoError(t, err)
 
@@ -110,7 +109,7 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 
 func TestNewActionsServiceRequest(t *testing.T) {
 	ctx := context.Background()
-	defaultCreds := &actionsAuth{token: "token"}
+	defaultCreds := actionsAuth{token: "token"}
 
 	t.Run("manages authentication", func(t *testing.T) {
 		t.Run("client is brand new", func(t *testing.T) {
@@ -288,14 +287,14 @@ func TestNewActionsServiceRequest(t *testing.T) {
 		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path", nil)
 		require.NoError(t, err)
 
-		assert.Equal(t, *client.userAgent.Load(), req.Header.Get("User-Agent"))
+		assert.Equal(t, client.commonClient.userAgent, req.Header.Get("User-Agent"))
 		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 	})
 }
 
 func TestGetRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -353,7 +352,7 @@ func TestGetRunner(t *testing.T) {
 
 func TestGetRunnerByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -433,7 +432,7 @@ func TestGetRunnerByName(t *testing.T) {
 
 func TestDeleteRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -486,7 +485,7 @@ func TestDeleteRunner(t *testing.T) {
 
 func TestGetRunnerGroupByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -538,7 +537,7 @@ func TestGetRunnerGroupByName(t *testing.T) {
 
 func TestGetRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -693,7 +692,7 @@ func TestGetRunnerScaleSet(t *testing.T) {
 
 func TestGetRunnerScaleSetByID(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -825,7 +824,7 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 
 func TestCreateRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -923,7 +922,7 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 
 func TestUpdateRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -976,7 +975,7 @@ func TestUpdateRunnerScaleSet(t *testing.T) {
 
 func TestDeleteRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -1018,40 +1017,9 @@ func TestDeleteRunnerScaleSet(t *testing.T) {
 	})
 }
 
-func TestClientProxy(t *testing.T) {
-	serverCalled := false
-
-	proxy := testserver.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalled = true
-	}))
-
-	proxyConfig := &httpproxy.Config{
-		HTTPProxy: proxy.URL,
-	}
-	proxyFunc := func(req *http.Request) (*url.URL, error) {
-		return proxyConfig.ProxyFunc()(req.URL)
-	}
-
-	c, err := newClient(
-		testSystemInfo,
-		"http://github.com/org/repo",
-		nil,
-		WithProxy(proxyFunc),
-	)
-	require.NoError(t, err)
-
-	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
-	require.NoError(t, err)
-
-	_, err = c.do(req)
-	require.NoError(t, err)
-
-	assert.True(t, serverCalled)
-}
-
 func TestGenerateJitRunnerConfig(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -1100,63 +1068,6 @@ func TestGenerateJitRunnerConfig(t *testing.T) {
 		_, err = client.GenerateJitRunnerConfig(ctx, runnerSettings, 1)
 		assert.NotNil(t, err)
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
-	})
-}
-
-func TestClient_Do(t *testing.T) {
-	t.Run("trims byte order mark from response if present", func(t *testing.T) {
-		t.Run("when there is no body", func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			}))
-			defer server.Close()
-
-			client, err := newClient(
-				testSystemInfo,
-				"https://localhost/org/repo",
-				&actionsAuth{token: "token"},
-			)
-			require.NoError(t, err)
-
-			req, err := http.NewRequest("GET", server.URL, nil)
-			require.NoError(t, err)
-
-			resp, err := client.do(req)
-			require.NoError(t, err)
-
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			assert.Empty(t, string(body))
-		})
-
-		responses := []string{
-			"\xef\xbb\xbf{\"foo\":\"bar\"}",
-			"{\"foo\":\"bar\"}",
-		}
-
-		for _, response := range responses {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(response))
-			}))
-			defer server.Close()
-
-			client, err := newClient(
-				testSystemInfo,
-				"https://localhost/org/repo",
-				&actionsAuth{token: "token"},
-			)
-			require.NoError(t, err)
-
-			req, err := http.NewRequest("GET", server.URL, nil)
-			require.NoError(t, err)
-
-			resp, err := client.do(req)
-			require.NoError(t, err)
-
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			assert.Equal(t, "{\"foo\":\"bar\"}", string(body))
-		}
 	})
 }
 
@@ -1279,13 +1190,12 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 		)
 		require.NoError(t, err)
 		require.NotNil(t, client)
@@ -1314,10 +1224,6 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
-
 		cert, err := os.ReadFile(filepath.Join("testdata", "rootCA.crt"))
 		require.NoError(t, err)
 
@@ -1327,7 +1233,9 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 			WithRootCAs(pool),
 		)
 		require.NoError(t, err)
@@ -1347,10 +1255,6 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
-
 		cert, err := os.ReadFile(filepath.Join("testdata", "intermediate.crt"))
 		require.NoError(t, err)
 
@@ -1360,7 +1264,9 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 			WithRootCAs(pool),
 			WithRetryMax(0),
 		)
@@ -1375,14 +1281,12 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
-
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 			WithoutTLSVerify(),
 		)
 		require.NoError(t, err)
@@ -1403,55 +1307,6 @@ func startNewTLSTestServer(t *testing.T, certPath, keyPath string, handler http.
 	server.StartTLS()
 
 	return server
-}
-
-func TestUserAgent(t *testing.T) {
-	version, sha := detectModuleVersionAndCommit()
-	userAgentInfo := SystemInfo{
-		System:     "actions-runner-controller",
-		Version:    "0.1.0",
-		CommitSHA:  "1234567890abcdef",
-		ScaleSetID: 10,
-		Subsystem:  "test",
-	}
-
-	client, err := newClient(
-		testSystemInfo,
-		"https://github.com/org/repo",
-		&actionsAuth{token: "token"},
-	)
-	require.NoError(t, err, "failed to instantiate the client")
-	got := *client.userAgent.Load()
-	wantInfo := userAgent{
-		SystemInfo:     testSystemInfo,
-		BuildCommitSHA: sha,
-		BuildVersion:   version,
-	}
-	b, err := json.Marshal(wantInfo)
-	require.NoError(t, err, "failed to marshal expected user agent")
-	want := string(b)
-
-	assert.Equal(t, want, got)
-
-	client.SetSystemInfo(SystemInfo{
-		System:     "actions-runner-controller",
-		Version:    "0.1.0",
-		CommitSHA:  "1234567890abcdef",
-		ScaleSetID: 10,
-		Subsystem:  "test",
-	})
-
-	got = *client.userAgent.Load()
-	wantInfo = userAgent{
-		SystemInfo:     userAgentInfo,
-		BuildCommitSHA: sha,
-		BuildVersion:   version,
-	}
-	b, err = json.Marshal(wantInfo)
-	require.NoError(t, err, "failed to marshal expected user agent after SetSystemInfo")
-	want = string(b)
-
-	assert.Equal(t, want, got)
 }
 
 const samplePrivateKey = `-----BEGIN PRIVATE KEY-----

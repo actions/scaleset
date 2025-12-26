@@ -50,7 +50,7 @@ func newTestSessionRequestHandler(t *testing.T, session *RunnerScaleSetSession) 
 
 func TestCreateMessageSession(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -76,7 +76,7 @@ func TestCreateMessageSession(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, runnerScaleSet.ID, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, runnerScaleSet.ID, "my-org")
 		require.NoError(t, err)
 
 		session := sessionClient.Session()
@@ -118,7 +118,7 @@ func TestCreateMessageSession(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(context.Background(), runnerScaleSet.ID, owner)
+		sessionClient, err := client.MessageSessionClient(context.Background(), runnerScaleSet.ID, owner)
 		assert.Nil(t, sessionClient)
 
 		errorTypeForComparison := &ActionsError{}
@@ -137,7 +137,7 @@ func TestCreateMessageSession(t *testing.T) {
 		}
 
 		gotRetries := 0
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			gotRetries++
 		}))
@@ -156,7 +156,13 @@ func TestCreateMessageSession(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		_, err = client.MakeMessageSessionClient(ctx, runnerScaleSet.ID, owner)
+		_, err = client.MessageSessionClient(
+			ctx,
+			runnerScaleSet.ID,
+			owner,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
 		assert.NotNil(t, err)
 		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
 	})
@@ -164,7 +170,7 @@ func TestCreateMessageSession(t *testing.T) {
 
 func TestGetMessage(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -192,7 +198,7 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		got, err := sessionClient.GetMessage(ctx, 0, 10)
@@ -221,7 +227,7 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		got, err := sessionClient.GetMessage(ctx, 1, 10)
@@ -254,7 +260,13 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(
+			ctx,
+			1,
+			"my-org",
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Millisecond),
+		)
 		require.NoError(t, err)
 
 		msg, err := sessionClient.GetMessage(ctx, 0, 10)
@@ -287,7 +299,7 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		msg, err := sessionClient.GetMessage(ctx, 0, 10)
@@ -342,7 +354,7 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		got, err := sessionClient.GetMessage(ctx, 0, 10)
@@ -371,7 +383,7 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		msg, err := sessionClient.GetMessage(ctx, 0, 10)
@@ -400,7 +412,7 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		msg, err := sessionClient.GetMessage(ctx, 0, 10)
@@ -431,7 +443,7 @@ func TestGetMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		msg, err := sessionClient.GetMessage(ctx, 0, 0)
@@ -445,7 +457,7 @@ func TestGetMessage(t *testing.T) {
 
 func TestDeleteMessage(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -470,7 +482,7 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
@@ -502,7 +514,7 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		err = sessionClient.DeleteMessage(ctx, 0)
@@ -513,7 +525,6 @@ func TestDeleteMessage(t *testing.T) {
 	})
 
 	t.Run("message token refreshed", func(t *testing.T) {
-
 		type state int
 		const (
 			createSession state = iota
@@ -556,7 +567,7 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		err = sessionClient.DeleteMessage(ctx, 0)
@@ -581,7 +592,7 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
@@ -613,7 +624,13 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(
+			ctx,
+			1,
+			"my-org",
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Nanosecond),
+		)
 		require.NoError(t, err)
 
 		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
@@ -643,7 +660,7 @@ func TestDeleteMessage(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
 		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID+1)

@@ -4,20 +4,16 @@ package scaleset
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -29,13 +25,14 @@ const (
 	scaleSetEndpoint = "_apis/runtime/runnerscalesets"
 )
 
-var (
-	packageVersion string
-	commitSHA      string
-)
+var buildInfo clientBuildInfo
 
 func init() {
-	packageVersion, commitSHA = detectModuleVersionAndCommit()
+	packageVersion, commitSHA := detectModuleVersionAndCommit()
+	buildInfo = clientBuildInfo{
+		version:   packageVersion,
+		commitSHA: commitSHA,
+	}
 }
 
 // HeaderScaleSetMaxCapacity is used to propagate the scale set max
@@ -44,49 +41,17 @@ const HeaderScaleSetMaxCapacity = "X-ScaleSetMaxCapacity"
 
 // Client implements a GitHub Actions Scale Set client.
 type Client struct {
-	mu         sync.Mutex // guards every public call
-	httpClient *http.Client
+	mu sync.Mutex // guards every public call
 
+	// admin session info
 	actionsServiceAdminToken          string
 	actionsServiceAdminTokenExpiresAt time.Time
 	actionsServiceURL                 string
 
-	retryMax     int
-	retryWaitMax time.Duration
+	creds  actionsAuth
+	config gitHubConfig
 
-	creds  *actionsAuth
-	config *gitHubConfig
-	logger *slog.Logger
-
-	buildInfo  clientBuildInfo
-	systemInfo SystemInfo
-
-	// userAgent is computed based on buildInfo and systemInfo.
-	// userAgent should be re-computed every time client.SetSystemInfo
-	// is called.
-	//
-	// On every call, load the userAgent first locally so we can
-	// avoid lock-unlock on every call.
-	userAgent atomic.Pointer[string]
-
-	rootCAs               *x509.CertPool
-	tlsInsecureSkipVerify bool
-
-	proxyFunc ProxyFunc
-}
-
-func (c *Client) Clone() *Client {
-	return &Client{
-		httpClient:   c.httpClient,
-		creds:        c.creds,
-		config:       c.config,
-		logger:       c.logger,
-		retryMax:     c.retryMax,
-		retryWaitMax: c.retryWaitMax,
-		buildInfo:    c.buildInfo,
-		rootCAs:      c.rootCAs,
-		proxyFunc:    c.proxyFunc,
-	}
+	commonClient
 }
 
 func (c *Client) Close(ctx context.Context) error {
@@ -108,10 +73,12 @@ type debugInfo struct {
 // including whether a proxy or custom root CA is configured, and the current system info.
 // This method is intended for diagnostic and troubleshooting purposes.
 func (c *Client) DebugInfo() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	info := debugInfo{
 		HasProxy:   c.proxyFunc != nil,
 		HasRootCA:  c.rootCAs != nil,
-		SystemInfo: *c.userAgent.Load(),
+		SystemInfo: c.userAgent,
 	}
 
 	b, _ := json.Marshal(info)
@@ -152,9 +119,6 @@ type actionsAuth struct {
 // ProxyFunc defines the function signature for a proxy function.
 type ProxyFunc func(req *http.Request) (*url.URL, error)
 
-// Option defines a functional option for configuring the Client.
-type Option func(*Client)
-
 // SystemInfo contains information about the system that uses the
 // scaleset client.
 //
@@ -178,48 +142,6 @@ type SystemInfo struct {
 	Subsystem string `json:"subsystem"`
 }
 
-// WithLogger sets a custom logger for the Client.
-func WithLogger(logger slog.Logger) Option {
-	return func(c *Client) {
-		c.logger = &logger
-	}
-}
-
-// WithRetryMax sets the maximum number of retries for the Client.
-func WithRetryMax(retryMax int) Option {
-	return func(c *Client) {
-		c.retryMax = retryMax
-	}
-}
-
-// WithRetryWaitMax sets the maximum wait time between retries for the Client.
-func WithRetryWaitMax(retryWaitMax time.Duration) Option {
-	return func(c *Client) {
-		c.retryWaitMax = retryWaitMax
-	}
-}
-
-// WithRootCAs sets custom root certificate authorities for the Client.
-func WithRootCAs(rootCAs *x509.CertPool) Option {
-	return func(c *Client) {
-		c.rootCAs = rootCAs
-	}
-}
-
-// WithoutTLSVerify disables TLS certificate verification for the Client.
-func WithoutTLSVerify() Option {
-	return func(c *Client) {
-		c.tlsInsecureSkipVerify = true
-	}
-}
-
-// WithProxy sets a custom proxy function for the Client.
-func WithProxy(proxyFunc ProxyFunc) Option {
-	return func(c *Client) {
-		c.proxyFunc = proxyFunc
-	}
-}
-
 type ClientWithGitHubAppConfig struct {
 	GitHubConfigURL string
 	GitHubAppAuth   GitHubAppAuth
@@ -227,18 +149,18 @@ type ClientWithGitHubAppConfig struct {
 }
 
 // NewClientWithGitHubApp creates a new Client using GitHub App credentials.
-func NewClientWithGitHubApp(config ClientWithGitHubAppConfig, options ...Option) (*Client, error) {
-	creds := &actionsAuth{
-		app: &config.GitHubAppAuth,
-	}
+func NewClientWithGitHubApp(config ClientWithGitHubAppConfig, options ...HTTPOption) (*Client, error) {
 	return newClient(
 		config.SystemInfo,
 		config.GitHubConfigURL,
-		creds,
+		actionsAuth{
+			app: &config.GitHubAppAuth,
+		},
 		options...,
 	)
 }
 
+// NewClientWithPersonalAccessTokenConfig contains the configuration for creating a new Client using a personal access token.
 type NewClientWithPersonalAccessTokenConfig struct {
 	GitHubConfigURL     string
 	PersonalAccessToken string
@@ -246,92 +168,51 @@ type NewClientWithPersonalAccessTokenConfig struct {
 }
 
 // NewClientWithPersonalAccessToken creates a new Client using a personal access token.
-func NewClientWithPersonalAccessToken(config NewClientWithPersonalAccessTokenConfig, options ...Option) (*Client, error) {
-	creds := &actionsAuth{
-		token: config.PersonalAccessToken,
-	}
+func NewClientWithPersonalAccessToken(config NewClientWithPersonalAccessTokenConfig, options ...HTTPOption) (*Client, error) {
 	return newClient(
 		config.SystemInfo,
 		config.GitHubConfigURL,
-		creds,
+		actionsAuth{
+			token: config.PersonalAccessToken,
+		},
 		options...,
 	)
 }
 
-func newClient(systemInfo SystemInfo, githubConfigURL string, creds *actionsAuth, options ...Option) (*Client, error) {
+func newClient(systemInfo SystemInfo, githubConfigURL string, creds actionsAuth, options ...HTTPOption) (*Client, error) {
 	config, err := parseGitHubConfigFromURL(githubConfigURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse githubConfigURL: %w", err)
 	}
 
-	ac := &Client{
-		creds:  creds,
-		config: config,
-		logger: slog.New(slog.DiscardHandler),
-
-		// retryablehttp defaults
+	httpClientOption := httpClientOption{
 		retryMax:     4,
 		retryWaitMax: 30 * time.Second,
-
-		buildInfo: clientBuildInfo{
-			version:   packageVersion,
-			commitSHA: commitSHA,
-		},
 	}
-
-	ac.SetSystemInfo(systemInfo)
-
+	httpClientOption.defaults()
 	for _, option := range options {
-		option(ac)
+		option(&httpClientOption)
 	}
 
-	retryClient, err := ac.newRetryableHTTPClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create retryable HTTP client: %w", err)
+	commonCLient := newCommonClient(
+		systemInfo,
+		httpClientOption,
+	)
+
+	ac := &Client{
+		creds:        creds,
+		config:       *config,
+		commonClient: *commonCLient,
 	}
-	ac.httpClient = retryClient.StandardClient()
 
 	return ac, nil
-}
-
-func (c *Client) newRetryableHTTPClient() (*retryablehttp.Client, error) {
-	retryClient := retryablehttp.NewClient()
-	retryClient.Logger = c.logger
-	retryClient.RetryMax = c.retryMax
-	retryClient.RetryWaitMax = c.retryWaitMax
-	retryClient.HTTPClient.Timeout = 5 * time.Minute // timeout must be > 1m to accomodate long polling
-
-	transport, ok := retryClient.HTTPClient.Transport.(*http.Transport)
-	if !ok {
-		// this should always be true, because retryablehttp.NewClient() uses
-		// cleanhttp.DefaultPooledTransport()
-		return nil, fmt.Errorf("failed to get http transport from retryablehttp client")
-	}
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	}
-
-	if c.rootCAs != nil {
-		transport.TLSClientConfig.RootCAs = c.rootCAs
-	}
-
-	if c.tlsInsecureSkipVerify {
-		transport.TLSClientConfig.InsecureSkipVerify = true
-	}
-
-	transport.Proxy = c.proxyFunc
-
-	retryClient.HTTPClient.Transport = transport
-
-	return retryClient, nil
 }
 
 // SetSystemInfo updates the information about the system.
 func (c *Client) SetSystemInfo(info SystemInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.systemInfo = info
-	c.setUserAgent()
+	c.setSystemInfo(info)
 }
 
 // SystemInfo returns the current system info that the client
@@ -348,36 +229,6 @@ type userAgent struct {
 	BuildCommitSHA string `json:"build_commit_sha"`
 }
 
-func (c *Client) setUserAgent() {
-	b, _ := json.Marshal(userAgent{
-		SystemInfo:     c.systemInfo,
-		BuildVersion:   c.buildInfo.version,
-		BuildCommitSHA: c.buildInfo.commitSHA,
-	})
-	userAgent := string(b)
-	c.userAgent.Store(&userAgent)
-}
-
-func (c *Client) do(req *http.Request) (*http.Response, error) {
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("client request failed: %w", err)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the response body: %w", err)
-	}
-	err = resp.Body.Close()
-	if err != nil {
-		return nil, fmt.Errorf("failed to close the response body: %w", err)
-	}
-
-	body = trimByteOrderMark(body)
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	return resp, nil
-}
-
 func (c *Client) newGitHubAPIRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	u := c.config.gitHubAPIURL(path)
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
@@ -385,7 +236,7 @@ func (c *Client) newGitHubAPIRequest(ctx context.Context, method, path string, b
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", *c.userAgent.Load())
+	req.Header.Set("User-Agent", c.userAgent)
 
 	return req, nil
 }
@@ -426,7 +277,7 @@ func (c *Client) newActionsServiceRequest(ctx context.Context, method, path stri
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.actionsServiceAdminToken))
-	req.Header.Set("User-Agent", *c.userAgent.Load())
+	req.Header.Set("User-Agent", c.userAgent)
 
 	return req, nil
 }
@@ -723,16 +574,31 @@ func parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMess
 	return message, nil
 }
 
-func (c *Client) MakeMessageSessionClient(ctx context.Context, runnerScaleSetID int, owner string) (*MessageSessionClient, error) {
-	cc := c.Clone()
-	systemInfo := c.SystemInfo()
-	systemInfo.ScaleSetID = runnerScaleSetID
-	cc.SetSystemInfo(systemInfo)
+// MessageSessionClient creates a new MessageSessionClient for the specified runner scale set ID and owner.
+//
+// It exposes client options that could be overwritten, providing ability to specify different retry policies or TLS settings, proxy, etc.
+func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int, owner string, options ...HTTPOption) (*MessageSessionClient, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Copy original options
+	httpClientOption := c.httpClientOption
+	// Apply overwrites
+	for _, option := range options {
+		option(&httpClientOption)
+	}
+	// Instantiate a new common client
+	commonCLient := newCommonClient(
+		c.systemInfo,
+		httpClientOption,
+	)
+
 	client := &MessageSessionClient{
-		client:     cc,
-		owner:      owner,
-		scaleSetID: runnerScaleSetID,
-		session:    nil,
+		innerClient:  c,
+		commonClient: commonCLient,
+		owner:        owner,
+		scaleSetID:   runnerScaleSetID,
+		session:      nil,
 	}
 
 	if err := client.createMessageSession(ctx); err != nil {
@@ -742,58 +608,12 @@ func (c *Client) MakeMessageSessionClient(ctx context.Context, runnerScaleSetID 
 	return client, nil
 }
 
-func (c *Client) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
-	req, err := c.newActionsServiceRequest(ctx, method, path, requestData)
-	if err != nil {
-		return fmt.Errorf("failed to create new actions service request: %w", err)
-	}
-
-	resp, err := c.do(req)
-	if err != nil {
-		return fmt.Errorf("failed to issue the request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == expectedResponseStatusCode {
-		if responseUnmarshalTarget == nil {
-			return nil
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(responseUnmarshalTarget); err != nil {
-			return &ActionsError{
-				StatusCode: resp.StatusCode,
-				ActivityID: resp.Header.Get(headerActionsActivityID),
-				Err:        err,
-			}
-		}
-
-		return nil
-	}
-
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return ParseActionsErrorFromResponse(resp)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	body = trimByteOrderMark(body)
-	if err != nil {
-		return &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
-	}
-
-	return fmt.Errorf("unexpected status code: %w", &ActionsError{
-		StatusCode: resp.StatusCode,
-		ActivityID: resp.Header.Get(headerActionsActivityID),
-		Err:        errors.New(string(body)),
-	})
-}
-
 // GenerateJitRunnerConfig generates a JIT runner configuration for the specified runner scale set. This returns an encoded
 // configuration that can be used to directly start a new runner.
 func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *RunnerScaleSetJitRunnerSetting, scaleSetID int) (*RunnerScaleSetJitRunnerConfig, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/%s/%d/generatejitconfig", scaleSetEndpoint, scaleSetID)
 
 	body, err := json.Marshal(jitRunnerSetting)
@@ -829,6 +649,9 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 
 // GetRunner fetches a runner by its ID. This can be used to check if a runner exists.
 func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
@@ -860,6 +683,9 @@ func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference,
 
 // GetRunnerByName fetches a runner by its name. This can be used to check if a runner exists.
 func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*RunnerReference, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/%s?agentName=%s", runnerEndpoint, runnerName)
 
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
@@ -903,6 +729,9 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 
 // RemoveRunner removes a runner by its ID.
 func (c *Client) RemoveRunner(ctx context.Context, runnerID int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
 	req, err := c.newActionsServiceRequest(ctx, http.MethodDelete, path, nil)
@@ -929,7 +758,7 @@ type registrationToken struct {
 }
 
 func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationToken, error) {
-	path, err := createRegistrationTokenPath(c.config)
+	path, err := createRegistrationTokenPath(&c.config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create registration token path: %w", err)
 	}

@@ -139,7 +139,7 @@ func run(ctx context.Context, c Config) error {
 		logger.Info("Failed to get hostname, fallback to uuid", "uuid", hostname, "error", err)
 	}
 
-	sessionClient, err := scalesetClient.MakeMessageSessionClient(ctx, scaleSet.ID, hostname)
+	sessionClient, err := scalesetClient.MessageSessionClient(ctx, scaleSet.ID, hostname)
 	if err != nil {
 		return fmt.Errorf("failed to create message session client: %w", err)
 	}
