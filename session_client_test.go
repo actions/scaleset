@@ -257,7 +257,8 @@ func TestGetMessage(t *testing.T) {
 		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
-		_, err = sessionClient.GetMessage(ctx, 0, 10)
+		msg, err := sessionClient.GetMessage(ctx, 0, 10)
+		assert.Nil(t, msg)
 		assert.NotNil(t, err)
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
 	})
@@ -265,7 +266,14 @@ func TestGetMessage(t *testing.T) {
 	t.Run("Message token expired", func(t *testing.T) {
 		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// create session
 			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
+			// refresh
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				// just set the same session
 				handleSessionRequest(w, r)
 				return
 			}
@@ -282,13 +290,64 @@ func TestGetMessage(t *testing.T) {
 		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
-		_, err = sessionClient.getMessage(ctx, 0, 10)
-		require.NotNil(t, err)
+		msg, err := sessionClient.GetMessage(ctx, 0, 10)
+		assert.Nil(t, msg)
 
 		var expectedErr *ActionsError
-		require.True(t, errors.As(err, &expectedErr))
+		require.ErrorAs(t, err, &expectedErr)
+		assert.True(t, expectedErr.IsMessageQueueTokenExpired(), "expected error to be of type MessageQueueTokenExpiredError but got: %v", err)
+	})
 
-		assert.True(t, expectedErr.IsMessageQueueTokenExpired())
+	t.Run("Message token refreshed", func(t *testing.T) {
+		want := runnerScaleSetMessage
+		afterRefreshResponse := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		type state int
+		const (
+			createSession state = iota
+			firstGetMessage
+			refreshToken
+			secondGetMessage
+		)
+		currentState := createSession
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// create session
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				require.Equal(t, createSession, currentState)
+				handleSessionRequest(w, r)
+				currentState = firstGetMessage
+				return
+			}
+			// refresh
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				// just set the same session
+				require.Equal(t, refreshToken, currentState)
+				handleSessionRequest(w, r)
+				currentState = secondGetMessage
+				return
+			}
+			if currentState == firstGetMessage {
+				w.WriteHeader(http.StatusUnauthorized)
+				currentState = refreshToken
+				return
+			}
+			require.Equal(t, secondGetMessage, currentState)
+			w.Write(afterRefreshResponse)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		got, err := sessionClient.GetMessage(ctx, 0, 10)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
 	})
 
 	t.Run("Status code not found", func(t *testing.T) {
@@ -315,9 +374,12 @@ func TestGetMessage(t *testing.T) {
 		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
-		_, err = sessionClient.getMessage(ctx, 0, 10)
-		require.NotNil(t, err)
-		assert.Equal(t, want.Error(), err.Error())
+		msg, err := sessionClient.GetMessage(ctx, 0, 10)
+		assert.Nil(t, msg)
+		var got *ActionsError
+		require.ErrorAs(t, err, &got)
+		assert.Equal(t, want.StatusCode, got.StatusCode)
+		assert.Equal(t, want.Err.Error(), got.Err.Error())
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
@@ -341,7 +403,8 @@ func TestGetMessage(t *testing.T) {
 		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
-		_, err = sessionClient.GetMessage(ctx, 0, 10)
+		msg, err := sessionClient.GetMessage(ctx, 0, 10)
+		assert.Nil(t, msg)
 		assert.NotNil(t, err)
 	})
 
@@ -371,7 +434,8 @@ func TestGetMessage(t *testing.T) {
 		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
-		_, err = sessionClient.GetMessage(ctx, 0, 0)
+		msg, err := sessionClient.GetMessage(ctx, 0, 0)
+		assert.Nil(t, msg)
 		assert.Error(t, err)
 		var expectedErr *ActionsError
 		assert.ErrorAs(t, err, &expectedErr)
@@ -416,7 +480,15 @@ func TestDeleteMessage(t *testing.T) {
 	t.Run("Message token expired", func(t *testing.T) {
 		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// create session
 			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
+
+			// refresh
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				// just set the same session
 				handleSessionRequest(w, r)
 				return
 			}
@@ -433,12 +505,62 @@ func TestDeleteMessage(t *testing.T) {
 		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
 		require.NoError(t, err)
 
-		err = sessionClient.deleteMessage(ctx, 0)
-		// TODO: fix this to later check retry
+		err = sessionClient.DeleteMessage(ctx, 0)
 		require.NotNil(t, err)
 		var expectedErr *ActionsError
 		require.ErrorAs(t, err, &expectedErr)
 		assert.True(t, expectedErr.IsMessageQueueTokenExpired())
+	})
+
+	t.Run("message token refreshed", func(t *testing.T) {
+
+		type state int
+		const (
+			createSession state = iota
+			firstDeleteMessage
+			refreshToken
+			secondDeleteMessage
+		)
+		currentState := createSession
+
+		handleSessionRequest := newTestSessionRequestHandler(t, testSession())
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// create session
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				require.Equal(t, createSession, currentState)
+				handleSessionRequest(w, r)
+				currentState = firstDeleteMessage
+				return
+			}
+			// refresh
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				// just set the same session
+				require.Equal(t, refreshToken, currentState)
+				handleSessionRequest(w, r)
+				currentState = secondDeleteMessage
+				return
+			}
+			if currentState == firstDeleteMessage {
+				w.WriteHeader(http.StatusUnauthorized)
+				currentState = refreshToken
+				return
+			}
+			require.Equal(t, secondDeleteMessage, currentState)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MakeMessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		err = sessionClient.DeleteMessage(ctx, 0)
+		require.NoError(t, err)
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {

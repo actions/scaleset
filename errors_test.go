@@ -121,7 +121,7 @@ func TestActionsError(t *testing.T) {
 	t.Run("is message queue token expired exception", func(t *testing.T) {
 		err := &ActionsError{
 			ActivityID: "activity-id",
-			StatusCode: 404,
+			StatusCode: 401,
 			Err: &messageQueueTokenExpiredError{
 				message: "example error message",
 			},
