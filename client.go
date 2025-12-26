@@ -54,10 +54,6 @@ type Client struct {
 	commonClient
 }
 
-func (c *Client) Close(ctx context.Context) error {
-	return nil
-}
-
 type clientBuildInfo struct {
 	version   string
 	commitSHA string

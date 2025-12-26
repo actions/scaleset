@@ -17,7 +17,6 @@ import (
 type commonClient struct {
 	httpClient *http.Client
 
-	buildInfo  clientBuildInfo
 	systemInfo SystemInfo // never set directly, use setSystemInfoUnlocked
 
 	userAgent string
@@ -27,7 +26,6 @@ type commonClient struct {
 
 func newCommonClient(systemInfo SystemInfo, httpClienhttpClientOption httpClientOption) *commonClient {
 	c := &commonClient{
-		buildInfo:        buildInfo,
 		httpClientOption: httpClienhttpClientOption,
 	}
 	c.setSystemInfo(systemInfo)
@@ -55,8 +53,7 @@ func (c *commonClient) do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the response body: %w", err)
 	}
-	err = resp.Body.Close()
-	if err != nil {
+	if err := resp.Body.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close the response body: %w", err)
 	}
 
@@ -84,12 +81,6 @@ func (o *httpClientOption) defaults() {
 	if o.retryWaitMax == 0 {
 		o.retryWaitMax = 30 * time.Second
 	}
-}
-
-func defaultHTTPClientOption() httpClientOption {
-	var opt httpClientOption
-	opt.defaults()
-	return opt
 }
 
 func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, error) {
@@ -132,8 +123,8 @@ func (c *commonClient) setSystemInfo(info SystemInfo) {
 func (c *commonClient) setUserAgent() {
 	b, _ := json.Marshal(userAgent{
 		SystemInfo:     c.systemInfo,
-		BuildVersion:   c.buildInfo.version,
-		BuildCommitSHA: c.buildInfo.commitSHA,
+		BuildVersion:   buildInfo.version,
+		BuildCommitSHA: buildInfo.commitSHA,
 	})
 	c.userAgent = string(b)
 }

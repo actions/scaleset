@@ -14,6 +14,12 @@ import (
 	"golang.org/x/net/http/httpproxy"
 )
 
+func defaultHTTPClientOption() httpClientOption {
+	var opt httpClientOption
+	opt.defaults()
+	return opt
+}
+
 func TestClient_Do(t *testing.T) {
 	t.Run("trims byte order mark from response if present", func(t *testing.T) {
 		t.Run("when there is no body", func(t *testing.T) {
