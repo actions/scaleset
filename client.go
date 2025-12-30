@@ -190,7 +190,7 @@ func newClient(systemInfo SystemInfo, githubConfigURL string, creds actionsAuth,
 		option(&httpClientOption)
 	}
 
-	commonCLient := newCommonClient(
+	commonClient := newCommonClient(
 		systemInfo,
 		httpClientOption,
 	)
@@ -198,7 +198,7 @@ func newClient(systemInfo SystemInfo, githubConfigURL string, creds actionsAuth,
 	ac := &Client{
 		creds:        creds,
 		config:       *config,
-		commonClient: *commonCLient,
+		commonClient: *commonClient,
 	}
 
 	return ac, nil
@@ -584,14 +584,14 @@ func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int,
 		option(&httpClientOption)
 	}
 	// Instantiate a new common client
-	commonCLient := newCommonClient(
+	commonClient := newCommonClient(
 		c.systemInfo,
 		httpClientOption,
 	)
 
 	client := &MessageSessionClient{
 		innerClient:  c,
-		commonClient: commonCLient,
+		commonClient: commonClient,
 		owner:        owner,
 		scaleSetID:   runnerScaleSetID,
 		session:      nil,

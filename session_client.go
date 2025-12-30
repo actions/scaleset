@@ -36,6 +36,8 @@ type MessageSessionClient struct {
 
 // Close deletes the message session associated with this client.
 func (c *MessageSessionClient) Close(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.deleteMessageSession(ctx, c.scaleSetID, c.session.SessionID)
 }
 
@@ -88,8 +90,7 @@ func (c *MessageSessionClient) refreshMessageSession(ctx context.Context) error 
 
 // GetMessage fetches a message from the runner scale set message queue. If there are no messages available, it returns (nil, nil).
 // Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
-// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
-// In these cases the caller should refresh the session with RefreshMessageSession.
+// If the current session token is expired, it refreshes the session and tries one more time.
 func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -188,8 +189,7 @@ func (c *MessageSessionClient) getMessage(ctx context.Context, lastMessageID int
 
 // DeleteMessage deletes a message from the runner scale set message queue.
 // This should typically be done after processing the message and acts as an acknowledgment.
-// If the current session token is expired, it returns a MessageQueueTokenExpiredError.
-// In these cases the caller should refresh the session with RefreshMessageSession.
+// If the current session token is expired, it refreshes the session and tries one more time.
 func (c *MessageSessionClient) DeleteMessage(ctx context.Context, messageID int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

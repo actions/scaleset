@@ -24,13 +24,13 @@ type commonClient struct {
 	httpClientOption
 }
 
-func newCommonClient(systemInfo SystemInfo, httpClienhttpClientOption httpClientOption) *commonClient {
+func newCommonClient(systemInfo SystemInfo, httpClientOption httpClientOption) *commonClient {
 	c := &commonClient{
-		httpClientOption: httpClienhttpClientOption,
+		httpClientOption: httpClientOption,
 	}
 	c.setSystemInfo(systemInfo)
 
-	retryableHTTPClient, err := httpClienhttpClientOption.newRetryableHTTPClient()
+	retryableHTTPClient, err := httpClientOption.newRetryableHTTPClient()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create retryable HTTP client: %v", err))
 	}
