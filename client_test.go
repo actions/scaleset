@@ -1126,11 +1126,10 @@ type actionsServerOption func(*actionsServer)
 type actionsServer struct {
 	*httptest.Server
 
-	token   string
-	session *RunnerScaleSetSession
+	token string
 }
 
-func (srv *actionsServer) testRunnerScaleSetSession() RunnerScaleSetSession {
+func (s *actionsServer) testRunnerScaleSetSession() RunnerScaleSetSession {
 	session := RunnerScaleSetSession{
 		SessionID: uuid.New(),
 		OwnerName: "foo",
@@ -1138,8 +1137,8 @@ func (srv *actionsServer) testRunnerScaleSetSession() RunnerScaleSetSession {
 			ID:   1,
 			Name: "ScaleSet",
 		},
-		MessageQueueURL:         srv.URL,
-		MessageQueueAccessToken: srv.token,
+		MessageQueueURL:         s.URL,
+		MessageQueueAccessToken: s.token,
 		Statistics: &RunnerScaleSetStatistic{
 			TotalAvailableJobs:     0,
 			TotalAcquiredJobs:      0,
