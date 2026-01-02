@@ -78,3 +78,25 @@ Scaling logic uses the statistics & job events to decide how many new JIT config
 - Treat JIT configs as secrets until consumed.
 
 ---
+
+## Requirements
+
+- Go 1.25 or later
+
+---
+
+## License
+
+This project is licensed under the terms of the MIT open source license. Please refer to [LICENSE](./LICENSE) for the full terms.
+
+---
+
+## Maintainers
+
+See [CODEOWNERS](./.github/CODEOWNERS) for the list of maintainers.
+
+---
+
+## Support
+
+Please refer to [SUPPORT.md](./SUPPORT.md) for information on how to get help with this project.
