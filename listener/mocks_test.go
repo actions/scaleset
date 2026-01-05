@@ -8,7 +8,6 @@ import (
 	"context"
 
 	"github.com/actions/scaleset"
-	"github.com/google/uuid"
 	mock "github.com/stretchr/testify/mock"
 )
 
@@ -39,91 +38,17 @@ func (_m *MockClient) EXPECT() *MockClient_Expecter {
 	return &MockClient_Expecter{mock: &_m.Mock}
 }
 
-// CreateMessageSession provides a mock function for the type MockClient
-func (_mock *MockClient) CreateMessageSession(ctx context.Context, runnerScaleSetID int, owner string) (*scaleset.RunnerScaleSetSession, error) {
-	ret := _mock.Called(ctx, runnerScaleSetID, owner)
-
-	if len(ret) == 0 {
-		panic("no return value specified for CreateMessageSession")
-	}
-
-	var r0 *scaleset.RunnerScaleSetSession
-	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int, string) (*scaleset.RunnerScaleSetSession, error)); ok {
-		return returnFunc(ctx, runnerScaleSetID, owner)
-	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int, string) *scaleset.RunnerScaleSetSession); ok {
-		r0 = returnFunc(ctx, runnerScaleSetID, owner)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*scaleset.RunnerScaleSetSession)
-		}
-	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, int, string) error); ok {
-		r1 = returnFunc(ctx, runnerScaleSetID, owner)
-	} else {
-		r1 = ret.Error(1)
-	}
-	return r0, r1
-}
-
-// MockClient_CreateMessageSession_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'CreateMessageSession'
-type MockClient_CreateMessageSession_Call struct {
-	*mock.Call
-}
-
-// CreateMessageSession is a helper method to define mock.On call
-//   - ctx context.Context
-//   - runnerScaleSetID int
-//   - owner string
-func (_e *MockClient_Expecter) CreateMessageSession(ctx interface{}, runnerScaleSetID interface{}, owner interface{}) *MockClient_CreateMessageSession_Call {
-	return &MockClient_CreateMessageSession_Call{Call: _e.mock.On("CreateMessageSession", ctx, runnerScaleSetID, owner)}
-}
-
-func (_c *MockClient_CreateMessageSession_Call) Run(run func(ctx context.Context, runnerScaleSetID int, owner string)) *MockClient_CreateMessageSession_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 context.Context
-		if args[0] != nil {
-			arg0 = args[0].(context.Context)
-		}
-		var arg1 int
-		if args[1] != nil {
-			arg1 = args[1].(int)
-		}
-		var arg2 string
-		if args[2] != nil {
-			arg2 = args[2].(string)
-		}
-		run(
-			arg0,
-			arg1,
-			arg2,
-		)
-	})
-	return _c
-}
-
-func (_c *MockClient_CreateMessageSession_Call) Return(runnerScaleSetSession *scaleset.RunnerScaleSetSession, err error) *MockClient_CreateMessageSession_Call {
-	_c.Call.Return(runnerScaleSetSession, err)
-	return _c
-}
-
-func (_c *MockClient_CreateMessageSession_Call) RunAndReturn(run func(ctx context.Context, runnerScaleSetID int, owner string) (*scaleset.RunnerScaleSetSession, error)) *MockClient_CreateMessageSession_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
 // DeleteMessage provides a mock function for the type MockClient
-func (_mock *MockClient) DeleteMessage(ctx context.Context, messageQueueURL string, messageQueueAccessToken string, messageID int) error {
-	ret := _mock.Called(ctx, messageQueueURL, messageQueueAccessToken, messageID)
+func (_mock *MockClient) DeleteMessage(ctx context.Context, messageID int) error {
+	ret := _mock.Called(ctx, messageID)
 
 	if len(ret) == 0 {
 		panic("no return value specified for DeleteMessage")
 	}
 
 	var r0 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, int) error); ok {
-		r0 = returnFunc(ctx, messageQueueURL, messageQueueAccessToken, messageID)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int) error); ok {
+		r0 = returnFunc(ctx, messageID)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -137,36 +62,24 @@ type MockClient_DeleteMessage_Call struct {
 
 // DeleteMessage is a helper method to define mock.On call
 //   - ctx context.Context
-//   - messageQueueURL string
-//   - messageQueueAccessToken string
 //   - messageID int
-func (_e *MockClient_Expecter) DeleteMessage(ctx interface{}, messageQueueURL interface{}, messageQueueAccessToken interface{}, messageID interface{}) *MockClient_DeleteMessage_Call {
-	return &MockClient_DeleteMessage_Call{Call: _e.mock.On("DeleteMessage", ctx, messageQueueURL, messageQueueAccessToken, messageID)}
+func (_e *MockClient_Expecter) DeleteMessage(ctx interface{}, messageID interface{}) *MockClient_DeleteMessage_Call {
+	return &MockClient_DeleteMessage_Call{Call: _e.mock.On("DeleteMessage", ctx, messageID)}
 }
 
-func (_c *MockClient_DeleteMessage_Call) Run(run func(ctx context.Context, messageQueueURL string, messageQueueAccessToken string, messageID int)) *MockClient_DeleteMessage_Call {
+func (_c *MockClient_DeleteMessage_Call) Run(run func(ctx context.Context, messageID int)) *MockClient_DeleteMessage_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
 			arg0 = args[0].(context.Context)
 		}
-		var arg1 string
+		var arg1 int
 		if args[1] != nil {
-			arg1 = args[1].(string)
-		}
-		var arg2 string
-		if args[2] != nil {
-			arg2 = args[2].(string)
-		}
-		var arg3 int
-		if args[3] != nil {
-			arg3 = args[3].(int)
+			arg1 = args[1].(int)
 		}
 		run(
 			arg0,
 			arg1,
-			arg2,
-			arg3,
 		)
 	})
 	return _c
@@ -177,77 +90,14 @@ func (_c *MockClient_DeleteMessage_Call) Return(err error) *MockClient_DeleteMes
 	return _c
 }
 
-func (_c *MockClient_DeleteMessage_Call) RunAndReturn(run func(ctx context.Context, messageQueueURL string, messageQueueAccessToken string, messageID int) error) *MockClient_DeleteMessage_Call {
-	_c.Call.Return(run)
-	return _c
-}
-
-// DeleteMessageSession provides a mock function for the type MockClient
-func (_mock *MockClient) DeleteMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error {
-	ret := _mock.Called(ctx, runnerScaleSetID, sessionID)
-
-	if len(ret) == 0 {
-		panic("no return value specified for DeleteMessageSession")
-	}
-
-	var r0 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int, uuid.UUID) error); ok {
-		r0 = returnFunc(ctx, runnerScaleSetID, sessionID)
-	} else {
-		r0 = ret.Error(0)
-	}
-	return r0
-}
-
-// MockClient_DeleteMessageSession_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DeleteMessageSession'
-type MockClient_DeleteMessageSession_Call struct {
-	*mock.Call
-}
-
-// DeleteMessageSession is a helper method to define mock.On call
-//   - ctx context.Context
-//   - runnerScaleSetID int
-//   - sessionID uuid.UUID
-func (_e *MockClient_Expecter) DeleteMessageSession(ctx interface{}, runnerScaleSetID interface{}, sessionID interface{}) *MockClient_DeleteMessageSession_Call {
-	return &MockClient_DeleteMessageSession_Call{Call: _e.mock.On("DeleteMessageSession", ctx, runnerScaleSetID, sessionID)}
-}
-
-func (_c *MockClient_DeleteMessageSession_Call) Run(run func(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID)) *MockClient_DeleteMessageSession_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 context.Context
-		if args[0] != nil {
-			arg0 = args[0].(context.Context)
-		}
-		var arg1 int
-		if args[1] != nil {
-			arg1 = args[1].(int)
-		}
-		var arg2 uuid.UUID
-		if args[2] != nil {
-			arg2 = args[2].(uuid.UUID)
-		}
-		run(
-			arg0,
-			arg1,
-			arg2,
-		)
-	})
-	return _c
-}
-
-func (_c *MockClient_DeleteMessageSession_Call) Return(err error) *MockClient_DeleteMessageSession_Call {
-	_c.Call.Return(err)
-	return _c
-}
-
-func (_c *MockClient_DeleteMessageSession_Call) RunAndReturn(run func(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) error) *MockClient_DeleteMessageSession_Call {
+func (_c *MockClient_DeleteMessage_Call) RunAndReturn(run func(ctx context.Context, messageID int) error) *MockClient_DeleteMessage_Call {
 	_c.Call.Return(run)
 	return _c
 }
 
 // GetMessage provides a mock function for the type MockClient
-func (_mock *MockClient) GetMessage(ctx context.Context, messageQueueURL string, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error) {
-	ret := _mock.Called(ctx, messageQueueURL, messageQueueAccessToken, lastMessageID, maxCapacity)
+func (_mock *MockClient) GetMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error) {
+	ret := _mock.Called(ctx, lastMessageID, maxCapacity)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetMessage")
@@ -255,18 +105,18 @@ func (_mock *MockClient) GetMessage(ctx context.Context, messageQueueURL string,
 
 	var r0 *scaleset.RunnerScaleSetMessage
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, int, int) (*scaleset.RunnerScaleSetMessage, error)); ok {
-		return returnFunc(ctx, messageQueueURL, messageQueueAccessToken, lastMessageID, maxCapacity)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int, int) (*scaleset.RunnerScaleSetMessage, error)); ok {
+		return returnFunc(ctx, lastMessageID, maxCapacity)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, int, int) *scaleset.RunnerScaleSetMessage); ok {
-		r0 = returnFunc(ctx, messageQueueURL, messageQueueAccessToken, lastMessageID, maxCapacity)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int, int) *scaleset.RunnerScaleSetMessage); ok {
+		r0 = returnFunc(ctx, lastMessageID, maxCapacity)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*scaleset.RunnerScaleSetMessage)
 		}
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, string, string, int, int) error); ok {
-		r1 = returnFunc(ctx, messageQueueURL, messageQueueAccessToken, lastMessageID, maxCapacity)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, int, int) error); ok {
+		r1 = returnFunc(ctx, lastMessageID, maxCapacity)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -280,42 +130,30 @@ type MockClient_GetMessage_Call struct {
 
 // GetMessage is a helper method to define mock.On call
 //   - ctx context.Context
-//   - messageQueueURL string
-//   - messageQueueAccessToken string
 //   - lastMessageID int
 //   - maxCapacity int
-func (_e *MockClient_Expecter) GetMessage(ctx interface{}, messageQueueURL interface{}, messageQueueAccessToken interface{}, lastMessageID interface{}, maxCapacity interface{}) *MockClient_GetMessage_Call {
-	return &MockClient_GetMessage_Call{Call: _e.mock.On("GetMessage", ctx, messageQueueURL, messageQueueAccessToken, lastMessageID, maxCapacity)}
+func (_e *MockClient_Expecter) GetMessage(ctx interface{}, lastMessageID interface{}, maxCapacity interface{}) *MockClient_GetMessage_Call {
+	return &MockClient_GetMessage_Call{Call: _e.mock.On("GetMessage", ctx, lastMessageID, maxCapacity)}
 }
 
-func (_c *MockClient_GetMessage_Call) Run(run func(ctx context.Context, messageQueueURL string, messageQueueAccessToken string, lastMessageID int, maxCapacity int)) *MockClient_GetMessage_Call {
+func (_c *MockClient_GetMessage_Call) Run(run func(ctx context.Context, lastMessageID int, maxCapacity int)) *MockClient_GetMessage_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
 			arg0 = args[0].(context.Context)
 		}
-		var arg1 string
+		var arg1 int
 		if args[1] != nil {
-			arg1 = args[1].(string)
+			arg1 = args[1].(int)
 		}
-		var arg2 string
+		var arg2 int
 		if args[2] != nil {
-			arg2 = args[2].(string)
-		}
-		var arg3 int
-		if args[3] != nil {
-			arg3 = args[3].(int)
-		}
-		var arg4 int
-		if args[4] != nil {
-			arg4 = args[4].(int)
+			arg2 = args[2].(int)
 		}
 		run(
 			arg0,
 			arg1,
 			arg2,
-			arg3,
-			arg4,
 		)
 	})
 	return _c
@@ -326,81 +164,51 @@ func (_c *MockClient_GetMessage_Call) Return(runnerScaleSetMessage *scaleset.Run
 	return _c
 }
 
-func (_c *MockClient_GetMessage_Call) RunAndReturn(run func(ctx context.Context, messageQueueURL string, messageQueueAccessToken string, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)) *MockClient_GetMessage_Call {
+func (_c *MockClient_GetMessage_Call) RunAndReturn(run func(ctx context.Context, lastMessageID int, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)) *MockClient_GetMessage_Call {
 	_c.Call.Return(run)
 	return _c
 }
 
-// RefreshMessageSession provides a mock function for the type MockClient
-func (_mock *MockClient) RefreshMessageSession(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*scaleset.RunnerScaleSetSession, error) {
-	ret := _mock.Called(ctx, runnerScaleSetID, sessionID)
+// Session provides a mock function for the type MockClient
+func (_mock *MockClient) Session() scaleset.RunnerScaleSetSession {
+	ret := _mock.Called()
 
 	if len(ret) == 0 {
-		panic("no return value specified for RefreshMessageSession")
+		panic("no return value specified for Session")
 	}
 
-	var r0 *scaleset.RunnerScaleSetSession
-	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int, uuid.UUID) (*scaleset.RunnerScaleSetSession, error)); ok {
-		return returnFunc(ctx, runnerScaleSetID, sessionID)
-	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, int, uuid.UUID) *scaleset.RunnerScaleSetSession); ok {
-		r0 = returnFunc(ctx, runnerScaleSetID, sessionID)
+	var r0 scaleset.RunnerScaleSetSession
+	if returnFunc, ok := ret.Get(0).(func() scaleset.RunnerScaleSetSession); ok {
+		r0 = returnFunc()
 	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*scaleset.RunnerScaleSetSession)
-		}
+		r0 = ret.Get(0).(scaleset.RunnerScaleSetSession)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, int, uuid.UUID) error); ok {
-		r1 = returnFunc(ctx, runnerScaleSetID, sessionID)
-	} else {
-		r1 = ret.Error(1)
-	}
-	return r0, r1
+	return r0
 }
 
-// MockClient_RefreshMessageSession_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RefreshMessageSession'
-type MockClient_RefreshMessageSession_Call struct {
+// MockClient_Session_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Session'
+type MockClient_Session_Call struct {
 	*mock.Call
 }
 
-// RefreshMessageSession is a helper method to define mock.On call
-//   - ctx context.Context
-//   - runnerScaleSetID int
-//   - sessionID uuid.UUID
-func (_e *MockClient_Expecter) RefreshMessageSession(ctx interface{}, runnerScaleSetID interface{}, sessionID interface{}) *MockClient_RefreshMessageSession_Call {
-	return &MockClient_RefreshMessageSession_Call{Call: _e.mock.On("RefreshMessageSession", ctx, runnerScaleSetID, sessionID)}
+// Session is a helper method to define mock.On call
+func (_e *MockClient_Expecter) Session() *MockClient_Session_Call {
+	return &MockClient_Session_Call{Call: _e.mock.On("Session")}
 }
 
-func (_c *MockClient_RefreshMessageSession_Call) Run(run func(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID)) *MockClient_RefreshMessageSession_Call {
+func (_c *MockClient_Session_Call) Run(run func()) *MockClient_Session_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 context.Context
-		if args[0] != nil {
-			arg0 = args[0].(context.Context)
-		}
-		var arg1 int
-		if args[1] != nil {
-			arg1 = args[1].(int)
-		}
-		var arg2 uuid.UUID
-		if args[2] != nil {
-			arg2 = args[2].(uuid.UUID)
-		}
-		run(
-			arg0,
-			arg1,
-			arg2,
-		)
+		run()
 	})
 	return _c
 }
 
-func (_c *MockClient_RefreshMessageSession_Call) Return(runnerScaleSetSession *scaleset.RunnerScaleSetSession, err error) *MockClient_RefreshMessageSession_Call {
-	_c.Call.Return(runnerScaleSetSession, err)
+func (_c *MockClient_Session_Call) Return(runnerScaleSetSession scaleset.RunnerScaleSetSession) *MockClient_Session_Call {
+	_c.Call.Return(runnerScaleSetSession)
 	return _c
 }
 
-func (_c *MockClient_RefreshMessageSession_Call) RunAndReturn(run func(ctx context.Context, runnerScaleSetID int, sessionID uuid.UUID) (*scaleset.RunnerScaleSetSession, error)) *MockClient_RefreshMessageSession_Call {
+func (_c *MockClient_Session_Call) RunAndReturn(run func() scaleset.RunnerScaleSetSession) *MockClient_Session_Call {
 	_c.Call.Return(run)
 	return _c
 }

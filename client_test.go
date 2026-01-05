@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +23,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http/httpproxy"
 )
 
 const exampleRequestID = "5ddf2050-dae0-013c-9159-04421ad31b68"
@@ -77,7 +75,7 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 			client, err := newClient(
 				testSystemInfo,
 				scenario.configURL,
-				nil,
+				actionsAuth{token: "token"},
 			)
 			require.NoError(t, err)
 
@@ -91,7 +89,7 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 		client, err := newClient(
 			testSystemInfo,
 			"http://localhost/my-org",
-			nil,
+			actionsAuth{token: "token"},
 		)
 		require.NoError(t, err)
 
@@ -111,7 +109,7 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 
 func TestNewActionsServiceRequest(t *testing.T) {
 	ctx := context.Background()
-	defaultCreds := &actionsAuth{token: "token"}
+	defaultCreds := actionsAuth{token: "token"}
 
 	t.Run("manages authentication", func(t *testing.T) {
 		t.Run("client is brand new", func(t *testing.T) {
@@ -289,14 +287,14 @@ func TestNewActionsServiceRequest(t *testing.T) {
 		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path", nil)
 		require.NoError(t, err)
 
-		assert.Equal(t, *client.userAgent.Load(), req.Header.Get("User-Agent"))
+		assert.Equal(t, client.userAgent, req.Header.Get("User-Agent"))
 		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 	})
 }
 
 func TestGetRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -354,7 +352,7 @@ func TestGetRunner(t *testing.T) {
 
 func TestGetRunnerByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -434,7 +432,7 @@ func TestGetRunnerByName(t *testing.T) {
 
 func TestDeleteRunner(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -487,7 +485,7 @@ func TestDeleteRunner(t *testing.T) {
 
 func TestGetRunnerGroupByName(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -539,7 +537,7 @@ func TestGetRunnerGroupByName(t *testing.T) {
 
 func TestGetRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -694,7 +692,7 @@ func TestGetRunnerScaleSet(t *testing.T) {
 
 func TestGetRunnerScaleSetByID(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -826,7 +824,7 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 
 func TestCreateRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -924,7 +922,7 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 
 func TestUpdateRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -977,7 +975,7 @@ func TestUpdateRunnerScaleSet(t *testing.T) {
 
 func TestDeleteRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -1019,526 +1017,9 @@ func TestDeleteRunnerScaleSet(t *testing.T) {
 	})
 }
 
-func TestCreateMessageSession(t *testing.T) {
-	ctx := context.Background()
-	auth := &actionsAuth{
-		token: "token",
-	}
-
-	t.Run("CreateMessageSession unmarshals correctly", func(t *testing.T) {
-		owner := "foo"
-		runnerScaleSet := RunnerScaleSet{
-			ID:            1,
-			Name:          "ScaleSet",
-			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: RunnerSetting{},
-		}
-
-		want := &RunnerScaleSetSession{
-			OwnerName: "foo",
-			RunnerScaleSet: &RunnerScaleSet{
-				ID:   1,
-				Name: "ScaleSet",
-			},
-			MessageQueueURL:         "http://fake.github.com/123",
-			MessageQueueAccessToken: "fake.jwt.here",
-		}
-
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			resp := []byte(`{
-					"ownerName": "foo",
-					"runnerScaleSet": {
-						"id": 1,
-						"name": "ScaleSet"
-					},
-					"messageQueueUrl": "http://fake.github.com/123",
-					"messageQueueAccessToken": "fake.jwt.here"
-				}`)
-			w.Write(resp)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		got, err := client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
-		require.NoError(t, err)
-		assert.Equal(t, want, got)
-	})
-
-	t.Run("CreateMessageSession unmarshals errors into ActionsError", func(t *testing.T) {
-		owner := "foo"
-		runnerScaleSet := RunnerScaleSet{
-			ID:            1,
-			Name:          "ScaleSet",
-			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: RunnerSetting{},
-		}
-
-		want := &ActionsError{
-			ActivityID: exampleRequestID,
-			StatusCode: http.StatusBadRequest,
-			Err: &actionsExceptionError{
-				ExceptionName: "CSharpExceptionNameHere",
-				Message:       "could not do something",
-			},
-		}
-
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(headerActionsActivityID, exampleRequestID)
-			w.WriteHeader(http.StatusBadRequest)
-			resp := []byte(`{"typeName": "CSharpExceptionNameHere","message": "could not do something"}`)
-			w.Write(resp)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		_, err = client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
-		require.NotNil(t, err)
-
-		errorTypeForComparison := &ActionsError{}
-		assert.True(
-			t,
-			errors.As(err, &errorTypeForComparison),
-			"CreateMessageSession expected to be able to parse the error into ActionsError type: %v",
-			err,
-		)
-
-		assert.Equal(t, want, errorTypeForComparison)
-	})
-
-	t.Run("CreateMessageSession call is retried the correct amount of times", func(t *testing.T) {
-		owner := "foo"
-		runnerScaleSet := RunnerScaleSet{
-			ID:            1,
-			Name:          "ScaleSet",
-			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: RunnerSetting{},
-		}
-
-		gotRetries := 0
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-			gotRetries++
-		}))
-
-		retryMax := 3
-		retryWaitMax := 1 * time.Microsecond
-
-		wantRetries := retryMax + 1
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
-		)
-		require.NoError(t, err)
-
-		_, err = client.CreateMessageSession(ctx, runnerScaleSet.ID, owner)
-		assert.NotNil(t, err)
-		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
-	})
-}
-
-func TestDeleteMessageSession(t *testing.T) {
-	ctx := context.Background()
-	auth := &actionsAuth{
-		token: "token",
-	}
-
-	t.Run("DeleteMessageSession call is retried the correct amount of times", func(t *testing.T) {
-		runnerScaleSet := RunnerScaleSet{
-			ID:            1,
-			Name:          "ScaleSet",
-			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: RunnerSetting{},
-		}
-
-		gotRetries := 0
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-			gotRetries++
-		}))
-
-		retryMax := 3
-		retryWaitMax := 1 * time.Microsecond
-
-		wantRetries := retryMax + 1
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
-		)
-		require.NoError(t, err)
-
-		sessionID := uuid.New()
-
-		err = client.DeleteMessageSession(ctx, runnerScaleSet.ID, sessionID)
-		assert.NotNil(t, err)
-		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
-	})
-}
-
-func TestRefreshMessageSession(t *testing.T) {
-	auth := &actionsAuth{
-		token: "token",
-	}
-
-	t.Run("RefreshMessageSession call is retried the correct amount of times", func(t *testing.T) {
-		runnerScaleSet := RunnerScaleSet{
-			ID:            1,
-			Name:          "ScaleSet",
-			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
-			RunnerSetting: RunnerSetting{},
-		}
-
-		gotRetries := 0
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-			gotRetries++
-		}))
-
-		retryMax := 3
-		retryWaitMax := 1 * time.Microsecond
-
-		wantRetries := retryMax + 1
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
-		)
-		require.NoError(t, err)
-
-		sessionID := uuid.New()
-
-		_, err = client.RefreshMessageSession(context.Background(), runnerScaleSet.ID, sessionID)
-		assert.NotNil(t, err)
-		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
-	})
-}
-
-func TestGetMessage(t *testing.T) {
-	ctx := context.Background()
-	auth := &actionsAuth{
-		token: "token",
-	}
-
-	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
-	runnerScaleSetMessage := &RunnerScaleSetMessage{
-		MessageID: 1,
-	}
-
-	t.Run("Get Runner Scale Set Message", func(t *testing.T) {
-		want := runnerScaleSetMessage
-		response := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
-		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Write(response)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			s.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		got, err := client.GetMessage(ctx, s.URL, token, 0, 10)
-		require.NoError(t, err)
-		assert.Equal(t, want, got)
-	})
-
-	t.Run("GetMessage sets the last message id if not 0", func(t *testing.T) {
-		want := runnerScaleSetMessage
-		response := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
-		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			q := r.URL.Query()
-			assert.Equal(t, "1", q.Get("lastMessageId"))
-			w.Write(response)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			s.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		got, err := client.GetMessage(ctx, s.URL, token, 1, 10)
-		require.NoError(t, err)
-		assert.Equal(t, want, got)
-	})
-
-	t.Run("Default retries on server error", func(t *testing.T) {
-		retryMax := 1
-
-		actualRetry := 0
-		expectedRetry := retryMax + 1
-
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			actualRetry++
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Millisecond),
-		)
-		require.NoError(t, err)
-
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
-		assert.NotNil(t, err)
-		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
-	})
-
-	t.Run("Message token expired", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
-		require.NotNil(t, err)
-
-		var expectedErr *ActionsError
-		require.True(t, errors.As(err, &expectedErr))
-
-		assert.True(t, expectedErr.IsMessageQueueTokenExpired())
-	})
-
-	t.Run("Status code not found", func(t *testing.T) {
-		want := ActionsError{
-			Err:        errors.New("unknown exception"),
-			StatusCode: 404,
-		}
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
-		require.NotNil(t, err)
-		assert.Equal(t, want.Error(), err.Error())
-	})
-
-	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Header().Set("Content-Type", "text/plain")
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 10)
-		assert.NotNil(t, err)
-	})
-
-	t.Run("Capacity error handling", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			hc := r.Header.Get(HeaderScaleSetMaxCapacity)
-			c, err := strconv.Atoi(hc)
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, c, 0)
-
-			w.WriteHeader(http.StatusBadRequest)
-			w.Header().Set("Content-Type", "text/plain")
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		_, err = client.GetMessage(ctx, server.URL, token, 0, 0)
-		assert.Error(t, err)
-		var expectedErr *ActionsError
-		assert.ErrorAs(t, err, &expectedErr)
-		assert.Equal(t, http.StatusBadRequest, expectedErr.StatusCode)
-	})
-}
-
-func TestDeleteMessage(t *testing.T) {
-	ctx := context.Background()
-	auth := &actionsAuth{
-		token: "token",
-	}
-
-	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiaWF0IjoxNTE2MjM5MDIyLCJleHAiOjI1MTYyMzkwMjJ9.tlrHslTmDkoqnc4Kk9ISoKoUNDfHo-kjlH-ByISBqzE"
-	runnerScaleSetMessage := &RunnerScaleSetMessage{
-		MessageID: 1,
-	}
-
-	t.Run("Delete existing message", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
-		assert.Nil(t, err)
-	})
-
-	t.Run("Message token expired", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		err = client.DeleteMessage(ctx, server.URL, token, 0)
-		require.NotNil(t, err)
-		var expectedErr *ActionsError
-		require.ErrorAs(t, err, &expectedErr)
-		assert.True(t, expectedErr.IsMessageQueueTokenExpired())
-	})
-
-	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Header().Set("Content-Type", "text/plain")
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
-		require.NotNil(t, err)
-		var expectedErr *ActionsError
-		assert.True(t, errors.As(err, &expectedErr))
-	},
-	)
-
-	t.Run("Default retries on server error", func(t *testing.T) {
-		actualRetry := 0
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			actualRetry++
-		}))
-
-		retryMax := 1
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
-		)
-		require.NoError(t, err)
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID)
-		assert.NotNil(t, err)
-		expectedRetry := retryMax + 1
-		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
-	})
-
-	t.Run("No message found", func(t *testing.T) {
-		want := (*RunnerScaleSetMessage)(nil)
-		rsl, err := json.Marshal(want)
-		require.NoError(t, err)
-
-		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Write(rsl)
-		}))
-
-		client, err := newClient(
-			testSystemInfo,
-			server.configURLForOrg("my-org"),
-			auth,
-		)
-		require.NoError(t, err)
-
-		err = client.DeleteMessage(ctx, server.URL, token, runnerScaleSetMessage.MessageID+1)
-		var expectedErr *ActionsError
-		require.True(t, errors.As(err, &expectedErr))
-	})
-}
-
-func TestClientProxy(t *testing.T) {
-	serverCalled := false
-
-	proxy := testserver.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalled = true
-	}))
-
-	proxyConfig := &httpproxy.Config{
-		HTTPProxy: proxy.URL,
-	}
-	proxyFunc := func(req *http.Request) (*url.URL, error) {
-		return proxyConfig.ProxyFunc()(req.URL)
-	}
-
-	c, err := newClient(
-		testSystemInfo,
-		"http://github.com/org/repo",
-		nil,
-		WithProxy(proxyFunc),
-	)
-	require.NoError(t, err)
-
-	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
-	require.NoError(t, err)
-
-	_, err = c.do(req)
-	require.NoError(t, err)
-
-	assert.True(t, serverCalled)
-}
-
 func TestGenerateJitRunnerConfig(t *testing.T) {
 	ctx := context.Background()
-	auth := &actionsAuth{
+	auth := actionsAuth{
 		token: "token",
 	}
 
@@ -1590,62 +1071,9 @@ func TestGenerateJitRunnerConfig(t *testing.T) {
 	})
 }
 
-func TestClient_Do(t *testing.T) {
-	t.Run("trims byte order mark from response if present", func(t *testing.T) {
-		t.Run("when there is no body", func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			}))
-			defer server.Close()
+type serverCtxKey int
 
-			client, err := newClient(
-				testSystemInfo,
-				"https://localhost/org/repo",
-				&actionsAuth{token: "token"},
-			)
-			require.NoError(t, err)
-
-			req, err := http.NewRequest("GET", server.URL, nil)
-			require.NoError(t, err)
-
-			resp, err := client.do(req)
-			require.NoError(t, err)
-
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			assert.Empty(t, string(body))
-		})
-
-		responses := []string{
-			"\xef\xbb\xbf{\"foo\":\"bar\"}",
-			"{\"foo\":\"bar\"}",
-		}
-
-		for _, response := range responses {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(response))
-			}))
-			defer server.Close()
-
-			client, err := newClient(
-				testSystemInfo,
-				"https://localhost/org/repo",
-				&actionsAuth{token: "token"},
-			)
-			require.NoError(t, err)
-
-			req, err := http.NewRequest("GET", server.URL, nil)
-			require.NoError(t, err)
-
-			resp, err := client.do(req)
-			require.NoError(t, err)
-
-			body, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			assert.Equal(t, "{\"foo\":\"bar\"}", string(body))
-		}
-	})
-}
+const ctxKeyServer serverCtxKey = iota
 
 // newActionsServer returns a new httptest.Server that handles the
 // authentication requests neeeded to create a new client. Any requests not
@@ -1667,6 +1095,7 @@ func newActionsServer(t *testing.T, handler http.Handler, options ...actionsServ
 	}
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyServer, server))
 		// handle getRunnerRegistrationToken
 		if strings.HasSuffix(r.URL.Path, "/runners/registration-token") {
 			w.WriteHeader(http.StatusCreated)
@@ -1698,6 +1127,29 @@ type actionsServer struct {
 	*httptest.Server
 
 	token string
+}
+
+func (s *actionsServer) testRunnerScaleSetSession() RunnerScaleSetSession {
+	session := RunnerScaleSetSession{
+		SessionID: uuid.New(),
+		OwnerName: "foo",
+		RunnerScaleSet: &RunnerScaleSet{
+			ID:   1,
+			Name: "ScaleSet",
+		},
+		MessageQueueURL:         s.URL,
+		MessageQueueAccessToken: s.token,
+		Statistics: &RunnerScaleSetStatistic{
+			TotalAvailableJobs:     0,
+			TotalAcquiredJobs:      0,
+			TotalAssignedJobs:      0,
+			TotalRunningJobs:       0,
+			TotalRegisteredRunners: 0,
+			TotalBusyRunners:       0,
+			TotalIdleRunners:       0,
+		},
+	}
+	return session
 }
 
 func (s *actionsServer) configURLForOrg(org string) string {
@@ -1761,13 +1213,12 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 		)
 		require.NoError(t, err)
 		require.NotNil(t, client)
@@ -1796,10 +1247,6 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
-
 		cert, err := os.ReadFile(filepath.Join("testdata", "rootCA.crt"))
 		require.NoError(t, err)
 
@@ -1809,7 +1256,9 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 			WithRootCAs(pool),
 		)
 		require.NoError(t, err)
@@ -1829,10 +1278,6 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
-
 		cert, err := os.ReadFile(filepath.Join("testdata", "intermediate.crt"))
 		require.NoError(t, err)
 
@@ -1842,7 +1287,9 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 			WithRootCAs(pool),
 			WithRetryMax(0),
 		)
@@ -1857,14 +1304,12 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
 		configURL := server.URL + "/my-org"
 
-		auth := &actionsAuth{
-			token: "token",
-		}
-
 		client, err := newClient(
 			testSystemInfo,
 			configURL,
-			auth,
+			actionsAuth{
+				token: "token",
+			},
 			WithoutTLSVerify(),
 		)
 		require.NoError(t, err)
@@ -1885,55 +1330,6 @@ func startNewTLSTestServer(t *testing.T, certPath, keyPath string, handler http.
 	server.StartTLS()
 
 	return server
-}
-
-func TestUserAgent(t *testing.T) {
-	version, sha := detectModuleVersionAndCommit()
-	userAgentInfo := SystemInfo{
-		System:     "actions-runner-controller",
-		Version:    "0.1.0",
-		CommitSHA:  "1234567890abcdef",
-		ScaleSetID: 10,
-		Subsystem:  "test",
-	}
-
-	client, err := newClient(
-		testSystemInfo,
-		"https://github.com/org/repo",
-		&actionsAuth{token: "token"},
-	)
-	require.NoError(t, err, "failed to instantiate the client")
-	got := *client.userAgent.Load()
-	wantInfo := userAgent{
-		SystemInfo:     testSystemInfo,
-		BuildCommitSHA: sha,
-		BuildVersion:   version,
-	}
-	b, err := json.Marshal(wantInfo)
-	require.NoError(t, err, "failed to marshal expected user agent")
-	want := string(b)
-
-	assert.Equal(t, want, got)
-
-	client.SetSystemInfo(SystemInfo{
-		System:     "actions-runner-controller",
-		Version:    "0.1.0",
-		CommitSHA:  "1234567890abcdef",
-		ScaleSetID: 10,
-		Subsystem:  "test",
-	})
-
-	got = *client.userAgent.Load()
-	wantInfo = userAgent{
-		SystemInfo:     userAgentInfo,
-		BuildCommitSHA: sha,
-		BuildVersion:   version,
-	}
-	b, err = json.Marshal(wantInfo)
-	require.NoError(t, err, "failed to marshal expected user agent after SetSystemInfo")
-	want = string(b)
-
-	assert.Equal(t, want, got)
 }
 
 const samplePrivateKey = `-----BEGIN PRIVATE KEY-----
