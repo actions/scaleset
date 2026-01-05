@@ -131,6 +131,7 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 		default:
 		}
 
+		l.logger.Info("Getting next message", slog.Int("lastMessageID", lastMessageID))
 		msg, err := l.client.GetMessage(
 			ctx,
 			lastMessageID,
