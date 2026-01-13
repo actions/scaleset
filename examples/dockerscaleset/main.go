@@ -80,11 +80,9 @@ func run(ctx context.Context, c Config) error {
 		Labels: []scaleset.Label{
 			{
 				Name: c.ScaleSetName,
-				Type: "System",
 			},
 		},
 		RunnerSetting: scaleset.RunnerSetting{
-			Ephemeral:     true,
 			DisableUpdate: true,
 		},
 	})

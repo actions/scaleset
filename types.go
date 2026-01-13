@@ -17,11 +17,6 @@ const (
 	MessageTypeJobCompleted MessageType = "JobCompleted"
 )
 
-type JobAvailable struct {
-	AcquireJobURL string `json:"acquireJobUrl"`
-	JobMessageBase
-}
-
 type JobAssigned struct {
 	JobMessageBase
 }
@@ -134,8 +129,6 @@ type RunnerScaleSetStatistic struct {
 }
 
 type RunnerSetting struct {
-	Ephemeral     bool `json:"ephemeral,omitempty"`
-	IsElastic     bool `json:"isElastic,omitempty"`
 	DisableUpdate bool `json:"disableUpdate,omitempty"`
 }
 

@@ -415,10 +415,23 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	return &runnerGroupList.RunnerGroups[0], nil
 }
 
+// applyDefaultLabelTypes ensures that each label in the runner scale set has a Type set,
+// defaulting to "System" when the field is empty. This encapsulates the legacy API detail
+// so that callers do not need to manage label types explicitly.
+func applyDefaultLabelTypes(runnerScaleSet *RunnerScaleSet) {
+	for i := range runnerScaleSet.Labels {
+		if runnerScaleSet.Labels[i].Type == "" {
+			runnerScaleSet.Labels[i].Type = "System"
+		}
+	}
+}
+
 // CreateRunnerScaleSet creates a new runner scale set. Note that runner scale set names must be unique within a runner group.
 func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	applyDefaultLabelTypes(runnerScaleSet)
 
 	body, err := json.Marshal(runnerScaleSet)
 	if err != nil {
@@ -453,6 +466,8 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	applyDefaultLabelTypes(runnerScaleSet)
 
 	path := fmt.Sprintf("%s/%d", scaleSetEndpoint, runnerScaleSetID)
 
