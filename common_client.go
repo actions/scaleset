@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
@@ -44,29 +45,41 @@ func (c *commonClient) newRetryableHTTPClient() (*retryablehttp.Client, error) {
 }
 
 func (c *commonClient) do(req *http.Request) (*http.Response, error) {
-	resp, err := c.httpClient.Do(req)
-	switch {
-	case err == nil:
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("%s: failed to read the response body: %w", requestErrorMessage(req), err)
-		}
-		if err := resp.Body.Close(); err != nil {
-			return nil, fmt.Errorf("%s: failed to close the response body: %w", requestErrorMessage(req), err)
-		}
-
-		body = trimByteOrderMark(body)
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return resp, nil
-	case resp != nil:
-		return nil, fmt.Errorf("%s: failed to request with status %s: %w", requestErrorMessage(req), resp.Status, err)
-	default:
-		return nil, fmt.Errorf("%s: failed to request: %w", requestErrorMessage(req), err)
-	}
+	return sendRequest(c.httpClient, req)
 }
 
-func requestErrorMessage(req *http.Request) string {
-	return fmt.Sprintf("request %s %s failed", req.Method, req.URL.String())
+func sendRequest(c *http.Client, req *http.Request) (*http.Response, error) {
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, sendRequestError("received an error response from the server", req, resp, err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, sendRequestError("failed to read the response body", req, resp, err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, sendRequestError("failed to close the response body", req, resp, err)
+	}
+
+	body = trimByteOrderMark(body)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, nil
+}
+
+func sendRequestError(msg string, req *http.Request, resp *http.Response, err error) error {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "request %s %s failed: %s", req.Method, req.URL.String(), msg)
+	if resp != nil {
+		fmt.Fprintf(&sb, ": status=%q", resp.Status)
+		if resp.Header.Get(headerActionsActivityID) != "" {
+			fmt.Fprintf(&sb, " activityID=%q", resp.Header.Get(headerActionsActivityID))
+		}
+
+		if resp.Header.Get(headerGitHubRequestID) != "" {
+			fmt.Fprintf(&sb, " githubRequestID=%q", resp.Header.Get(headerGitHubRequestID))
+		}
+	}
+	return fmt.Errorf("%s: %w", sb.String(), err)
 }
 
 type httpClientOption struct {

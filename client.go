@@ -944,7 +944,7 @@ func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*ac
 	}
 	httpClient := retryableClient.StandardClient()
 
-	resp, err := httpClient.Do(req)
+	resp, err := sendRequest(httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
