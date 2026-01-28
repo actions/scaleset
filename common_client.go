@@ -45,21 +45,28 @@ func (c *commonClient) newRetryableHTTPClient() (*retryablehttp.Client, error) {
 
 func (c *commonClient) do(req *http.Request) (*http.Response, error) {
 	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("client request failed: %w", err)
-	}
+	switch {
+	case err == nil:
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("%s: failed to read the response body: %w", requestErrorMessage(req), err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			return nil, fmt.Errorf("%s: failed to close the response body: %w", requestErrorMessage(req), err)
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the response body: %w", err)
+		body = trimByteOrderMark(body)
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return resp, nil
+	case resp != nil:
+		return nil, fmt.Errorf("%s: failed to request with status %s: %w", requestErrorMessage(req), resp.Status, err)
+	default:
+		return nil, fmt.Errorf("%s: failed to request: %w", requestErrorMessage(req), err)
 	}
-	if err := resp.Body.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close the response body: %w", err)
-	}
+}
 
-	body = trimByteOrderMark(body)
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	return resp, nil
+func requestErrorMessage(req *http.Request) string {
+	return fmt.Sprintf("request %s %s failed", req.Method, req.URL.String())
 }
 
 type httpClientOption struct {
