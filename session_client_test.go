@@ -62,22 +62,13 @@ func TestCreateMessageSession(t *testing.T) {
 		assert.Equal(t, want, session)
 	})
 
-	t.Run("CreateMessageSession unmarshals errors into ActionsError", func(t *testing.T) {
+	t.Run("CreateMessageSession includes actions exception details", func(t *testing.T) {
 		owner := "foo"
 		runnerScaleSet := RunnerScaleSet{
 			ID:            1,
 			Name:          "ScaleSet",
 			CreatedOn:     time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
 			RunnerSetting: RunnerSetting{},
-		}
-
-		want := &ActionsError{
-			ActivityID: exampleRequestID,
-			StatusCode: http.StatusBadRequest,
-			Err: &actionsExceptionError{
-				ExceptionName: "CSharpExceptionNameHere",
-				Message:       "could not do something",
-			},
 		}
 
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -97,11 +88,14 @@ func TestCreateMessageSession(t *testing.T) {
 
 		sessionClient, err := client.MessageSessionClient(context.Background(), runnerScaleSet.ID, owner)
 		assert.Nil(t, sessionClient)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
+		assert.Contains(t, err.Error(), "activity_id=\""+exampleRequestID+"\"")
 
-		errorTypeForComparison := &ActionsError{}
-		assert.ErrorAs(t, err, &errorTypeForComparison)
-
-		assert.Equal(t, want, errorTypeForComparison)
+		var ex actionsExceptionError
+		assert.True(t, errors.As(err, &ex))
+		assert.Equal(t, "CSharpExceptionNameHere", ex.ExceptionName)
+		assert.Equal(t, "could not do something", ex.Message)
 	})
 
 	t.Run("CreateMessageSession call is retried the correct amount of times", func(t *testing.T) {
@@ -285,10 +279,7 @@ func TestGetMessage(t *testing.T) {
 
 		msg, err := sessionClient.GetMessage(ctx, 0, 10)
 		assert.Nil(t, msg)
-
-		var expectedErr *ActionsError
-		require.ErrorAs(t, err, &expectedErr)
-		assert.True(t, expectedErr.IsMessageQueueTokenExpired(), "expected error to be of type MessageQueueTokenExpiredError but got: %v", err)
+		assert.ErrorIs(t, err, MessageQueueTokenExpiredError, "expected error to be MessageQueueTokenExpiredError but got: %v", err)
 	})
 
 	t.Run("Message token refreshed", func(t *testing.T) {
@@ -345,10 +336,6 @@ func TestGetMessage(t *testing.T) {
 	})
 
 	t.Run("Status code not found", func(t *testing.T) {
-		want := ActionsError{
-			Err:        errors.New("unknown exception"),
-			StatusCode: 404,
-		}
 		var handleSessionRequest http.HandlerFunc
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "sessions") {
@@ -371,21 +358,22 @@ func TestGetMessage(t *testing.T) {
 
 		msg, err := sessionClient.GetMessage(ctx, 0, 10)
 		assert.Nil(t, msg)
-		var got *ActionsError
-		require.ErrorAs(t, err, &got)
-		assert.Equal(t, want.StatusCode, got.StatusCode)
-		assert.Equal(t, want.Err.Error(), got.Err.Error())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "status=\"404 Not Found\"")
+		assert.Contains(t, err.Error(), "unknown error")
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
 		var handleSessionRequest http.HandlerFunc
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "sessions") {
 				handleSessionRequest(w, r)
 				return
 			}
-			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
 		}))
 		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
 
@@ -402,9 +390,12 @@ func TestGetMessage(t *testing.T) {
 		msg, err := sessionClient.GetMessage(ctx, 0, 10)
 		assert.Nil(t, msg)
 		assert.NotNil(t, err)
+		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
+		assert.Contains(t, err.Error(), plainBody)
 	})
 
 	t.Run("Capacity error handling", func(t *testing.T) {
+		plainBody := "capacity error"
 		var handleSessionRequest http.HandlerFunc
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "sessions") {
@@ -415,9 +406,9 @@ func TestGetMessage(t *testing.T) {
 			c, err := strconv.Atoi(hc)
 			require.NoError(t, err)
 			assert.GreaterOrEqual(t, c, 0)
-
-			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
 		}))
 		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
 
@@ -434,9 +425,8 @@ func TestGetMessage(t *testing.T) {
 		msg, err := sessionClient.GetMessage(ctx, 0, 0)
 		assert.Nil(t, msg)
 		assert.Error(t, err)
-		var expectedErr *ActionsError
-		assert.ErrorAs(t, err, &expectedErr)
-		assert.Equal(t, http.StatusBadRequest, expectedErr.StatusCode)
+		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
+		assert.Contains(t, err.Error(), plainBody)
 	})
 }
 
@@ -506,9 +496,7 @@ func TestDeleteMessage(t *testing.T) {
 
 		err = sessionClient.DeleteMessage(ctx, 0)
 		require.NotNil(t, err)
-		var expectedErr *ActionsError
-		require.ErrorAs(t, err, &expectedErr)
-		assert.True(t, expectedErr.IsMessageQueueTokenExpired())
+		assert.ErrorIs(t, err, MessageQueueTokenExpiredError, "expected error to be MessageQueueTokenExpiredError but got: %v", err)
 	})
 
 	t.Run("message token refreshed", func(t *testing.T) {
@@ -563,14 +551,16 @@ func TestDeleteMessage(t *testing.T) {
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
 		var handleSessionRequest http.HandlerFunc
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "sessions") {
 				handleSessionRequest(w, r)
 				return
 			}
-			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
 		}))
 		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
 
@@ -586,10 +576,9 @@ func TestDeleteMessage(t *testing.T) {
 
 		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
 		require.NotNil(t, err)
-		var expectedErr *ActionsError
-		assert.True(t, errors.As(err, &expectedErr))
-	},
-	)
+		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
+		assert.Contains(t, err.Error(), plainBody)
+	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {
 		actualRetry := 0
@@ -656,7 +645,7 @@ func TestDeleteMessage(t *testing.T) {
 		require.NoError(t, err)
 
 		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID+1)
-		var expectedErr *ActionsError
-		require.True(t, errors.As(err, &expectedErr))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status code")
 	})
 }

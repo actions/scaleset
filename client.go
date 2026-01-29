@@ -334,11 +334,11 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var runnerScaleSet RunnerScaleSet
+	var runnerScaleSet *RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&runnerScaleSet); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set: %w", err))
 	}
-	return &runnerScaleSet, nil
+	return runnerScaleSet, nil
 }
 
 // GetRunnerGroupByName fetches a runner group by its name.
@@ -864,13 +864,19 @@ func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*ac
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 && resp.StatusCode > 299 {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	var actionsServiceAdminConnection actionsServiceAdminConnection
 	if err := json.NewDecoder(resp.Body).Decode(&actionsServiceAdminConnection); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode actions service admin connection: %w", err))
+	}
+	if actionsServiceAdminConnection.ActionsServiceURL == nil || *actionsServiceAdminConnection.ActionsServiceURL == "" {
+		return nil, fmt.Errorf("actions service admin connection missing url")
+	}
+	if actionsServiceAdminConnection.AdminToken == nil || *actionsServiceAdminConnection.AdminToken == "" {
+		return nil, fmt.Errorf("actions service admin connection missing token")
 	}
 
 	return &actionsServiceAdminConnection, nil
@@ -947,7 +953,13 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 		return nil
 	}
 
-	c.logger.Info("refreshing token", "githubConfigUrl", c.config.configURL.String())
+	configURL := ""
+	if c.config.configURL != nil {
+		configURL = c.config.configURL.String()
+	}
+	if c.logger != nil {
+		c.logger.Info("refreshing token", "githubConfigUrl", configURL)
+	}
 	rt, err := c.getRunnerRegistrationToken(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get runner registration token on refresh: %w", err)
@@ -956,6 +968,9 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 	adminConnInfo, err := c.getActionsServiceAdminConnection(ctx, rt)
 	if err != nil {
 		return fmt.Errorf("failed to get actions service admin connection on refresh: %w", err)
+	}
+	if adminConnInfo == nil || adminConnInfo.ActionsServiceURL == nil || adminConnInfo.AdminToken == nil {
+		return fmt.Errorf("failed to get actions service admin connection on refresh: missing url or token")
 	}
 
 	c.actionsServiceURL = *adminConnInfo.ActionsServiceURL

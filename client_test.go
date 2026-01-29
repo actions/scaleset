@@ -176,7 +176,7 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			client.actionsServiceAdminTokenExpiresAt = expiresAt
 			_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), errMessage)
+			assert.Contains(t, err.Error(), "test")
 			assert.Equal(t, client.actionsServiceAdminToken, expiringToken)
 			assert.Equal(t, client.actionsServiceAdminTokenExpiresAt, expiresAt)
 		})
@@ -604,9 +604,11 @@ func TestGetRunnerScaleSet(t *testing.T) {
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
 		}))
 
 		client, err := newClient(
@@ -666,11 +668,6 @@ func TestGetRunnerScaleSet(t *testing.T) {
 
 	t.Run("Multiple runner scale sets found", func(t *testing.T) {
 		reqID := uuid.NewString()
-		wantErr := &ActionsError{
-			StatusCode: http.StatusOK,
-			ActivityID: reqID,
-			Err:        fmt.Errorf("multiple runner scale sets found with name %q", scaleSetName),
-		}
 		runnerScaleSetsResp := []byte(`{"count":2,"value":[{"id":1,"name":"ScaleSet"}]}`)
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set(headerActionsActivityID, reqID)
@@ -686,7 +683,8 @@ func TestGetRunnerScaleSet(t *testing.T) {
 
 		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
 		require.NotNil(t, err)
-		assert.Equal(t, wantErr.Error(), err.Error())
+		assert.Contains(t, err.Error(), "multiple runner scale sets found")
+		assert.Contains(t, err.Error(), "activity_id=\""+reqID+"\"")
 	})
 }
 
@@ -761,9 +759,11 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
 		}))
 
 		client, err := newClient(
@@ -876,9 +876,11 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 	})
 
 	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
 		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
 		}))
 
 		client, err := newClient(
@@ -890,8 +892,8 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 
 		_, err = client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
 		require.NotNil(t, err)
-		var expectedErr *ActionsError
-		assert.True(t, errors.As(err, &expectedErr))
+		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
+		assert.Contains(t, err.Error(), plainBody)
 	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {

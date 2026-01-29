@@ -41,7 +41,7 @@ func (e actionsExceptionError) Error() string {
 // includes useful metadata like activity IDs and request IDs, and handles well-known error cases.
 func newRequestResponseError(req *http.Request, resp *http.Response, err error) error {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "request %s %s faile", req.Method, req.URL.String())
+	fmt.Fprintf(&sb, "request %s %s failed", req.Method, req.URL.String())
 
 	if resp == nil {
 		return fmt.Errorf("%s: %w", sb.String(), err)
@@ -58,7 +58,7 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 	}
 	sb.WriteRune(')')
 
-	if resp.ContentLength == 0 {
+	if resp.Body == nil || resp.ContentLength == 0 {
 		return fmt.Errorf("%s: %w: unknown error", sb.String(), err)
 	}
 
@@ -66,8 +66,11 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 	if bodyErr != nil {
 		return fmt.Errorf("%s: %w: failed to read error response body: %w", sb.String(), err, bodyErr)
 	}
+	if len(body) == 0 {
+		return fmt.Errorf("%s: %w: unknown error", sb.String(), err)
+	}
 
-	var scalesetErr *scalesetError
+	var scalesetErr scalesetError
 	if errors.As(err, &scalesetErr) {
 		return fmt.Errorf("%s: %w: %s", sb.String(), err, string(body))
 	}
@@ -86,9 +89,9 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 	case strings.Contains(exception.ExceptionName, "AgentExistsException"):
 		return fmt.Errorf("%s: %w: %s", sb.String(), RunnerExistsError, exception.Message)
 	case strings.Contains(exception.ExceptionName, "AgentNotFoundException"):
-		return fmt.Errorf("%s: %w: %s", RunnerNotFoundError, exception.Message)
+		return fmt.Errorf("%s: %w: %s", sb.String(), RunnerNotFoundError, exception.Message)
 	case strings.Contains(exception.ExceptionName, "JobStillRunningException"):
-		return fmt.Errorf("%s: %w: %s", JobStillRunningError, exception.Message)
+		return fmt.Errorf("%s: %w: %s", sb.String(), JobStillRunningError, exception.Message)
 	default:
 		return fmt.Errorf("%s: %w: %w", sb.String(), err, exception)
 	}
