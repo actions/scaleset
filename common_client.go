@@ -9,10 +9,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
+)
+
+const (
+	headerActionsActivityID = "ActivityId"
+	headerGitHubRequestID   = "X-GitHub-Request-Id"
 )
 
 type commonClient struct {
@@ -48,38 +52,26 @@ func (c *commonClient) do(req *http.Request) (*http.Response, error) {
 	return sendRequest(c.httpClient, req)
 }
 
+// sendRequest ensures that the request is sent and the response body is fully read and closed.
+// It trims the BOM when present in the response body.
+//
+// Make sure to use this function instead of http.Client.Do directly to avoid issues.
 func sendRequest(c *http.Client, req *http.Request) (*http.Response, error) {
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, sendRequestError("received an error response from the server", req, resp, err)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", err))
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, sendRequestError("failed to read the response body", req, resp, err)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", err))
 	}
 	if err := resp.Body.Close(); err != nil {
-		return nil, sendRequestError("failed to close the response body", req, resp, err)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
 	}
 
 	body = trimByteOrderMark(body)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return resp, nil
-}
-
-func sendRequestError(msg string, req *http.Request, resp *http.Response, err error) error {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "request %s %s failed: %s", req.Method, req.URL.String(), msg)
-	if resp != nil {
-		fmt.Fprintf(&sb, ": status=%q", resp.Status)
-		if resp.Header.Get(headerActionsActivityID) != "" {
-			fmt.Fprintf(&sb, " activityID=%q", resp.Header.Get(headerActionsActivityID))
-		}
-
-		if resp.Header.Get(headerGitHubRequestID) != "" {
-			fmt.Fprintf(&sb, " githubRequestID=%q", resp.Header.Get(headerGitHubRequestID))
-		}
-	}
-	return fmt.Errorf("%s: %w", sb.String(), err)
 }
 
 type httpClientOption struct {

@@ -104,8 +104,7 @@ func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int
 		return message, nil
 	}
 
-	expiredError := &ActionsError{}
-	if !errors.As(err, &expiredError) || !expiredError.IsMessageQueueTokenExpired() {
+	if !errors.Is(err, MessageQueueTokenExpiredError) {
 		return nil, fmt.Errorf("failed to get next message: %w", err)
 	}
 
@@ -148,43 +147,23 @@ func (c *MessageSessionClient) getMessage(ctx context.Context, lastMessageID int
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusAccepted {
+	switch resp.StatusCode {
+	case http.StatusAccepted:
 		return nil, nil
-	}
 
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode != http.StatusUnauthorized {
-			return nil, ParseActionsErrorFromResponse(resp)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		body = trimByteOrderMark(body)
+	case http.StatusOK:
+		message, err := parseRunnerScaleSetMessageResponse(resp.Body)
 		if err != nil {
-			return nil, &ActionsError{
-				ActivityID: resp.Header.Get(headerActionsActivityID),
-				StatusCode: resp.StatusCode,
-				Err:        err,
-			}
+			return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to parse message response: %w", err))
 		}
-		return nil, &ActionsError{
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			StatusCode: resp.StatusCode,
-			Err: &messageQueueTokenExpiredError{
-				message: string(body),
-			},
-		}
-	}
+		return message, nil
 
-	message, err := parseRunnerScaleSetMessageResponse(resp.Body)
-	if err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
-	}
+	case http.StatusUnauthorized:
+		return nil, newRequestResponseError(req, resp, MessageQueueTokenExpiredError)
 
-	return message, nil
+	default:
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code %s", resp.Status))
+	}
 }
 
 // DeleteMessage deletes a message from the runner scale set message queue.
@@ -199,8 +178,7 @@ func (c *MessageSessionClient) DeleteMessage(ctx context.Context, messageID int)
 		return nil
 	}
 
-	expiredError := &ActionsError{}
-	if !errors.As(err, &expiredError) || !expiredError.IsMessageQueueTokenExpired() {
+	if !errors.Is(err, MessageQueueTokenExpiredError) {
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
@@ -239,25 +217,10 @@ func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageID int)
 	}
 
 	if resp.StatusCode != http.StatusUnauthorized {
-		return ParseActionsErrorFromResponse(resp)
+		return newRequestResponseError(req, resp, fmt.Errorf("unexpected status code %s", resp.Status))
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	body = trimByteOrderMark(body)
-	if err != nil {
-		return &ActionsError{
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			StatusCode: resp.StatusCode,
-			Err:        err,
-		}
-	}
-	return &ActionsError{
-		ActivityID: resp.Header.Get(headerActionsActivityID),
-		StatusCode: resp.StatusCode,
-		Err: &messageQueueTokenExpiredError{
-			message: string(body),
-		},
-	}
+	return newRequestResponseError(req, resp, MessageQueueTokenExpiredError)
 }
 
 func (c *MessageSessionClient) Session() RunnerScaleSetSession {
@@ -284,39 +247,17 @@ func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, pat
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == expectedResponseStatusCode {
-		if responseUnmarshalTarget == nil {
-			return nil
-		}
+	if resp.StatusCode != expectedResponseStatusCode {
+		return newRequestResponseError(req, resp, fmt.Errorf("unexpected status code %s", resp.Status))
+	}
 
-		if err := json.NewDecoder(resp.Body).Decode(responseUnmarshalTarget); err != nil {
-			return &ActionsError{
-				StatusCode: resp.StatusCode,
-				ActivityID: resp.Header.Get(headerActionsActivityID),
-				Err:        err,
-			}
-		}
-
+	if responseUnmarshalTarget == nil {
 		return nil
 	}
 
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return ParseActionsErrorFromResponse(resp)
+	if err := json.NewDecoder(resp.Body).Decode(responseUnmarshalTarget); err != nil {
+		return newRequestResponseError(req, resp, fmt.Errorf("failed to unmarshal response body: %w", err))
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	body = trimByteOrderMark(body)
-	if err != nil {
-		return &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
-	}
-
-	return fmt.Errorf("unexpected status code: %w", &ActionsError{
-		StatusCode: resp.StatusCode,
-		ActivityID: resp.Header.Get(headerActionsActivityID),
-		Err:        errors.New(string(body)),
-	})
+	return nil
 }

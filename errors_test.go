@@ -178,7 +178,7 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		}
 		response.Header.Add(headerActionsActivityID, "activity-id")
 
-		err := ParseActionsErrorFromResponse(response)
+		err := parseErrorResponse(response)
 		require.Error(t, err)
 		assert.Equal(t, "activity-id", err.(*ActionsError).ActivityID)
 		assert.Equal(t, 404, err.(*ActionsError).StatusCode)
@@ -196,7 +196,7 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		response.Header.Add(headerActionsActivityID, "activity-id")
 		response.Header.Add("Content-Type", "text/plain")
 
-		err := ParseActionsErrorFromResponse(response)
+		err := parseErrorResponse(response)
 		require.Error(t, err)
 		var actionsError *ActionsError
 		assert.ErrorAs(t, err, &actionsError)
@@ -216,7 +216,7 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		response.Header.Add(headerActionsActivityID, "activity-id")
 		response.Header.Add("Content-Type", "application/json")
 
-		err := ParseActionsErrorFromResponse(response)
+		err := parseErrorResponse(response)
 		require.Error(t, err)
 		var actionsError *ActionsError
 		assert.ErrorAs(t, err, &actionsError)
@@ -240,7 +240,7 @@ func TestParseActionsErrorFromResponse(t *testing.T) {
 		response.Header.Add(headerActionsActivityID, "activity-id")
 		response.Header.Add("Content-Type", "application/json")
 
-		err := ParseActionsErrorFromResponse(response)
+		err := parseErrorResponse(response)
 		require.Error(t, err)
 
 		var actionsExceptionError *actionsExceptionError
