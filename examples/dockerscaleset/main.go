@@ -23,6 +23,7 @@ func init() {
 	flags.IntVar(&cfg.MaxRunners, "max-runners", 10, "Maximum number of runners")
 	flags.IntVar(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
 	flags.StringVar(&cfg.ScaleSetName, "name", "", "REQUIRED: Name of your scale set")
+	flags.StringSliceVar(&cfg.Labels, "labels", nil, "Labels for workflow targeting (comma-separated or repeated). Defaults to --name if not provided.")
 	flags.StringVar(&cfg.RunnerGroup, "runner-group", scaleset.DefaultRunnerGroup, "Name of the runner group your scale set should belong to")
 	flags.StringVar(&cfg.GitHubApp.ClientID, "app-client-id", "", "GitHub App client id")
 	flags.Int64Var(&cfg.GitHubApp.InstallationID, "app-installation-id", 0, "GitHub App installation ID")
@@ -77,11 +78,7 @@ func run(ctx context.Context, c Config) error {
 	scaleSet, err := scalesetClient.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
 		Name:          c.ScaleSetName,
 		RunnerGroupID: runnerGroupID,
-		Labels: []scaleset.Label{
-			{
-				Name: c.ScaleSetName,
-			},
-		},
+		Labels:        c.BuildLabels(),
 		RunnerSetting: scaleset.RunnerSetting{
 			DisableUpdate: true,
 		},
