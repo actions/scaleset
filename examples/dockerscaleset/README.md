@@ -40,6 +40,7 @@ You'll then need:
 |------|----------|-------------|
 | `--url` | Yes | Registration target (org, repo, or enterprise URL, e.g. `https://github.com/org/repo`). |
 | `--name` | Yes | Runner scale set name (must be unique within the runner group). |
+| `--labels` | No | Labels for workflow targeting (comma-separated or repeated). Defaults to `--name` if not provided. |
 | `--max-runners` | No | Upper bound of concurrently provisioned runners (default 10). |
 | `--min-runners` | No | Lower bound to maintain (default 0). |
 | `--runner-group` | No | Runner group name (default `default`). |

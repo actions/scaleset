@@ -15,6 +15,7 @@ type Config struct {
 	MaxRunners      int
 	MinRunners      int
 	ScaleSetName    string
+	Labels          []string
 	RunnerGroup     string
 	GitHubApp       scaleset.GitHubAppAuth
 	Token           string
@@ -46,6 +47,11 @@ func (c *Config) Validate() error {
 
 	if c.ScaleSetName == "" {
 		return fmt.Errorf("scale set name is required")
+	}
+	for i, label := range c.Labels {
+		if strings.TrimSpace(label) == "" {
+			return fmt.Errorf("label at index %d is empty", i)
+		}
 	}
 	if c.MaxRunners < c.MinRunners {
 		return fmt.Errorf("max runners cannot be less than min-runners")
@@ -119,4 +125,17 @@ func (c *Config) Logger() *slog.Logger {
 	default:
 		return slog.New(slog.DiscardHandler)
 	}
+}
+
+// BuildLabels returns the labels to use for the runner scale set.
+// If custom labels are provided, those are used; otherwise, the scale set name is used as the label.
+func (c *Config) BuildLabels() []scaleset.Label {
+	if len(c.Labels) > 0 {
+		labels := make([]scaleset.Label, len(c.Labels))
+		for i, name := range c.Labels {
+			labels[i] = scaleset.Label{Name: strings.TrimSpace(name)}
+		}
+		return labels
+	}
+	return []scaleset.Label{{Name: c.ScaleSetName}}
 }
