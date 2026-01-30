@@ -14,6 +14,11 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 )
 
+const (
+	headerActionsActivityID = "ActivityId"
+	headerGitHubRequestID   = "X-GitHub-Request-Id"
+)
+
 type commonClient struct {
 	httpClient *http.Client
 
@@ -44,17 +49,24 @@ func (c *commonClient) newRetryableHTTPClient() (*retryablehttp.Client, error) {
 }
 
 func (c *commonClient) do(req *http.Request) (*http.Response, error) {
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("client request failed: %w", err)
-	}
+	return sendRequest(c.httpClient, req)
+}
 
+// sendRequest ensures that the request is sent and the response body is fully read and closed.
+// It trims the BOM when present in the response body.
+//
+// Make sure to use this function instead of http.Client.Do directly to avoid issues.
+func sendRequest(c *http.Client, req *http.Request) (*http.Response, error) {
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", err))
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read the response body: %w", err)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", err))
 	}
 	if err := resp.Body.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close the response body: %w", err)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
 	}
 
 	body = trimByteOrderMark(body)

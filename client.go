@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -296,30 +295,22 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var runnerScaleSetList *runnerScaleSetsResponse
+	var runnerScaleSetList runnerScaleSetsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&runnerScaleSetList); err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set list: %w", err))
 	}
-	if runnerScaleSetList.Count == 0 {
+
+	switch runnerScaleSetList.Count {
+	case 1:
+		return &runnerScaleSetList.RunnerScaleSets[0], nil
+	case 0:
 		return nil, nil
+	default:
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("multiple runner scale sets found with name %q", runnerScaleSetName))
 	}
-
-	if runnerScaleSetList.Count > 1 {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        fmt.Errorf("multiple runner scale sets found with name %q", runnerScaleSetName),
-		}
-	}
-
-	return &runnerScaleSetList.RunnerScaleSets[0], nil
 }
 
 // GetRunnerScaleSetByID fetches a runner scale set by its ID.
@@ -340,16 +331,12 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	var runnerScaleSet *RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&runnerScaleSet); err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set: %w", err))
 	}
 	return runnerScaleSet, nil
 }
@@ -371,48 +358,22 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, &ActionsError{
-				StatusCode: resp.StatusCode,
-				ActivityID: resp.Header.Get(headerActionsActivityID),
-				Err:        err,
-			}
-		}
-		return nil, fmt.Errorf("unexpected status code: %w", &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        errors.New(string(body)),
-		})
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var runnerGroupList *RunnerGroupList
-	err = json.NewDecoder(resp.Body).Decode(&runnerGroupList)
-	if err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+	var runnerGroupList RunnerGroupList
+	if err := json.NewDecoder(resp.Body).Decode(&runnerGroupList); err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner group list: %w", err))
 	}
 
-	if runnerGroupList.Count == 0 {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        fmt.Errorf("no runner group found with name %q", runnerGroup),
-		}
+	switch runnerGroupList.Count {
+	case 1:
+		return &runnerGroupList.RunnerGroups[0], nil
+	case 0:
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("no runner group found with name %q", runnerGroup))
+	default:
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("multiple runner group found with name %q", runnerGroup))
 	}
-
-	if runnerGroupList.Count > 1 {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        fmt.Errorf("multiple runner group found with name %q", runnerGroup),
-		}
-	}
-
-	return &runnerGroupList.RunnerGroups[0], nil
 }
 
 // applyDefaultLabelTypes ensures that each label in the runner scale set has a Type set,
@@ -449,17 +410,15 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
-	var createdRunnerScaleSet *RunnerScaleSet
+
+	var createdRunnerScaleSet RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&createdRunnerScaleSet); err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode created runner scale set: %w", err))
 	}
-	return createdRunnerScaleSet, nil
+
+	return &createdRunnerScaleSet, nil
 }
 
 // UpdateRunnerScaleSet updates an existing runner scale set.
@@ -487,18 +446,14 @@ func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var updatedRunnerScaleSet *RunnerScaleSet
+	var updatedRunnerScaleSet RunnerScaleSet
 	if err := json.NewDecoder(resp.Body).Decode(&updatedRunnerScaleSet); err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode updated runner scale set: %w", err))
 	}
-	return updatedRunnerScaleSet, nil
+	return &updatedRunnerScaleSet, nil
 }
 
 // DeleteRunnerScaleSet deletes a runner scale set by its ID.
@@ -519,7 +474,7 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return ParseActionsErrorFromResponse(resp)
+		return newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	return nil
@@ -644,17 +599,14 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	var runnerJitConfig *RunnerScaleSetJitRunnerConfig
 	if err := json.NewDecoder(resp.Body).Decode(&runnerJitConfig); err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner JIT config: %w", err))
 	}
+
 	return runnerJitConfig, nil
 }
 
@@ -677,16 +629,12 @@ func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	var runnerReference *RunnerReference
 	if err := json.NewDecoder(resp.Body).Decode(&runnerReference); err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner reference: %w", err))
 	}
 
 	return runnerReference, nil
@@ -711,31 +659,22 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ParseActionsErrorFromResponse(resp)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	var runnerList *RunnerReferenceList
 	if err := json.NewDecoder(resp.Body).Decode(&runnerList); err != nil {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner reference list: %w", err))
 	}
 
-	if runnerList.Count == 0 {
+	switch runnerList.Count {
+	case 1:
+		return &runnerList.RunnerReferences[0], nil
+	case 0:
 		return nil, nil
+	default:
+		return nil, fmt.Errorf("multiple runners found with name %q", runnerName)
 	}
-
-	if runnerList.Count > 1 {
-		return nil, &ActionsError{
-			StatusCode: resp.StatusCode,
-			ActivityID: resp.Header.Get(headerActionsActivityID),
-			Err:        fmt.Errorf("multiple runner found with name %s", runnerName),
-		}
-	}
-
-	return &runnerList.RunnerReferences[0], nil
 }
 
 // RemoveRunner removes a runner by its ID.
@@ -757,7 +696,7 @@ func (c *Client) RemoveRunner(ctx context.Context, runnerID int64) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return ParseActionsErrorFromResponse(resp)
+		return newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	return nil
@@ -805,24 +744,12 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read the body: %w", err)
-		}
-		return nil, &GitHubAPIError{
-			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(headerGitHubRequestID),
-			Err:        errors.New(string(body)),
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to get runner registration token (%v)", resp.Status))
 	}
 
 	var registrationToken *registrationToken
 	if err := json.NewDecoder(resp.Body).Decode(&registrationToken); err != nil {
-		return nil, &GitHubAPIError{
-			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(headerGitHubRequestID),
-			Err:        err,
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner registration token: %w", err))
 	}
 
 	return registrationToken, nil
@@ -858,28 +785,15 @@ func (c *Client) fetchAccessToken(ctx context.Context, creds *GitHubAppAuth) (*a
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		errMsg := fmt.Sprintf("failed to get access token for GitHub App auth (%v)", resp.Status)
-		if body, err := io.ReadAll(resp.Body); err == nil {
-			errMsg = fmt.Sprintf("%s: %s", errMsg, string(body))
-		}
-
-		return nil, &GitHubAPIError{
-			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(headerGitHubRequestID),
-			Err:        errors.New(errMsg),
-		}
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to get access token for GitHub App auth (%v)", resp.Status))
 	}
 
 	// Format: https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
-	var accessToken *accessToken
-	if err = json.NewDecoder(resp.Body).Decode(&accessToken); err != nil {
-		return nil, &GitHubAPIError{
-			StatusCode: resp.StatusCode,
-			RequestID:  resp.Header.Get(headerGitHubRequestID),
-			Err:        err,
-		}
+	var accessToken accessToken
+	if err := json.NewDecoder(resp.Body).Decode(&accessToken); err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode access token for GitHub App auth: %w", err))
 	}
-	return accessToken, nil
+	return &accessToken, nil
 }
 
 type actionsServiceAdminConnection struct {
@@ -944,38 +858,28 @@ func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*ac
 	}
 	httpClient := retryableClient.StandardClient()
 
-	resp, err := httpClient.Do(req)
+	resp, err := sendRequest(httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
-		var actionsServiceAdminConnection *actionsServiceAdminConnection
-		if err := json.NewDecoder(resp.Body).Decode(&actionsServiceAdminConnection); err != nil {
-			return nil, &GitHubAPIError{
-				StatusCode: resp.StatusCode,
-				RequestID:  resp.Header.Get(headerGitHubRequestID),
-				Err:        err,
-			}
-		}
-
-		return actionsServiceAdminConnection, nil
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var innerErr error
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		innerErr = err
-	} else {
-		innerErr = errors.New(string(body))
+	var actionsServiceAdminConnection actionsServiceAdminConnection
+	if err := json.NewDecoder(resp.Body).Decode(&actionsServiceAdminConnection); err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode actions service admin connection: %w", err))
+	}
+	if actionsServiceAdminConnection.ActionsServiceURL == nil || *actionsServiceAdminConnection.ActionsServiceURL == "" {
+		return nil, fmt.Errorf("actions service admin connection missing url")
+	}
+	if actionsServiceAdminConnection.AdminToken == nil || *actionsServiceAdminConnection.AdminToken == "" {
+		return nil, fmt.Errorf("actions service admin connection missing token")
 	}
 
-	return nil, &GitHubAPIError{
-		StatusCode: resp.StatusCode,
-		RequestID:  resp.Header.Get(headerGitHubRequestID),
-		Err:        innerErr,
-	}
+	return &actionsServiceAdminConnection, nil
 }
 
 func createRegistrationTokenPath(config *gitHubConfig) (string, error) {
@@ -1049,7 +953,13 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 		return nil
 	}
 
-	c.logger.Info("refreshing token", "githubConfigUrl", c.config.configURL.String())
+	configURL := ""
+	if c.config.configURL != nil {
+		configURL = c.config.configURL.String()
+	}
+	if c.logger != nil {
+		c.logger.Info("refreshing token", "githubConfigUrl", configURL)
+	}
 	rt, err := c.getRunnerRegistrationToken(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get runner registration token on refresh: %w", err)
@@ -1058,6 +968,9 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 	adminConnInfo, err := c.getActionsServiceAdminConnection(ctx, rt)
 	if err != nil {
 		return fmt.Errorf("failed to get actions service admin connection on refresh: %w", err)
+	}
+	if adminConnInfo == nil || adminConnInfo.ActionsServiceURL == nil || adminConnInfo.AdminToken == nil {
+		return fmt.Errorf("failed to get actions service admin connection on refresh: missing url or token")
 	}
 
 	c.actionsServiceURL = *adminConnInfo.ActionsServiceURL

@@ -9,137 +9,90 @@ import (
 	"strings"
 )
 
-// Header names for request IDs
-const (
-	headerActionsActivityID = "ActivityId"
-	headerGitHubRequestID   = "X-GitHub-Request-Id"
+type scalesetError string
+
+func (e scalesetError) Error() string {
+	return string(e)
+}
+
+var (
+	RunnerNotFoundError           = scalesetError("runner not found")
+	RunnerExistsError             = scalesetError("runner exists")
+	JobStillRunningError          = scalesetError("job still running")
+	MessageQueueTokenExpiredError = scalesetError("message queue token expired")
 )
-
-type GitHubAPIError struct {
-	StatusCode int
-	RequestID  string
-	Err        error
-}
-
-func (e *GitHubAPIError) Error() string {
-	return fmt.Sprintf("github api error: StatusCode %d, RequestID %q: %v", e.StatusCode, e.RequestID, e.Err)
-}
-
-func (e *GitHubAPIError) Unwrap() error {
-	return e.Err
-}
-
-type ActionsError struct {
-	ActivityID string
-	StatusCode int
-	Err        error
-}
-
-func (e *ActionsError) Error() string {
-	return fmt.Sprintf("actions error: StatusCode %d, ActivityId %q: %v", e.StatusCode, e.ActivityID, e.Err)
-}
-
-func (e *ActionsError) Unwrap() error {
-	return e.Err
-}
-
-func (e *ActionsError) IsAgentNotFound() bool {
-	return e.isException("AgentNotFoundException")
-}
-
-func (e *ActionsError) IsJobStillRunning() bool {
-	return e.isException("JobStillRunningException")
-}
-
-func (e *ActionsError) IsMessageQueueTokenExpired() bool {
-	if e == nil {
-		return false
-	}
-	var err *messageQueueTokenExpiredError
-	return errors.As(e.Err, &err)
-}
-
-func (e *ActionsError) IsAgentExists() bool {
-	return e.isException("AgentExistsException")
-}
-
-func (e *ActionsError) isException(target string) bool {
-	if e == nil {
-		return false
-	}
-	if ex, ok := e.Err.(*actionsExceptionError); ok {
-		return strings.Contains(ex.ExceptionName, target)
-	}
-	return false
-}
 
 type actionsExceptionError struct {
 	ExceptionName string `json:"typeName,omitempty"`
 	Message       string `json:"message,omitempty"`
 }
 
-func (e *actionsExceptionError) Error() string {
+func (e actionsExceptionError) Error() string {
 	return fmt.Sprintf("%s: %s", e.ExceptionName, e.Message)
 }
 
-func ParseActionsErrorFromResponse(response *http.Response) error {
-	if response.ContentLength == 0 {
-		return &ActionsError{
-			ActivityID: response.Header.Get(headerActionsActivityID),
-			StatusCode: response.StatusCode,
-			Err:        errors.New("unknown exception"),
-		}
+// newRequestResponseError creates a detailed error message based on the HTTP request and response,
+// including parsing the response body for known error formats.
+//
+// The sendRequest already parses errors using this method, so use this error if the client doesn't
+// return an error, but the error is happening on the application logic level.
+//
+// Prefer creating errors using this function instead of manually constructing error messages since it automatically
+// includes useful metadata like activity IDs and request IDs, and handles well-known error cases.
+func newRequestResponseError(req *http.Request, resp *http.Response, err error) error {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "request %s %s failed", req.Method, req.URL.String())
+
+	if resp == nil {
+		return fmt.Errorf("%s: %w", sb.String(), err)
 	}
 
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return &ActionsError{
-			ActivityID: response.Header.Get(headerActionsActivityID),
-			StatusCode: response.StatusCode,
-			Err:        err,
-		}
+	sb.WriteRune('(')
+	fmt.Fprintf(&sb, "status=%q", resp.Status)
+	if resp.Header.Get(headerActionsActivityID) != "" {
+		fmt.Fprintf(&sb, ", activity_id=%q", resp.Header.Get(headerActionsActivityID))
 	}
 
-	body = trimByteOrderMark(body)
-	contentType := response.Header.Get("Content-Type")
+	if resp.Header.Get(headerGitHubRequestID) != "" {
+		fmt.Fprintf(&sb, ", github_request_id=%q", resp.Header.Get(headerGitHubRequestID))
+	}
+	sb.WriteRune(')')
+
+	if resp.Body == nil || resp.ContentLength == 0 {
+		return fmt.Errorf("%s: %w: unknown error", sb.String(), err)
+	}
+
+	body, bodyErr := io.ReadAll(resp.Body)
+	if bodyErr != nil {
+		return fmt.Errorf("%s: %w: failed to read error response body: %w", sb.String(), err, bodyErr)
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("%s: %w: unknown error", sb.String(), err)
+	}
+
+	var scalesetErr scalesetError
+	if errors.As(err, &scalesetErr) {
+		return fmt.Errorf("%s: %w: %s", sb.String(), err, string(body))
+	}
+
+	contentType := resp.Header.Get("Content-Type")
 	if len(contentType) > 0 && strings.Contains(contentType, "text/plain") {
-		message := string(body)
-		return &ActionsError{
-			ActivityID: response.Header.Get(headerActionsActivityID),
-			StatusCode: response.StatusCode,
-			Err:        errors.New(message),
-		}
+		return fmt.Errorf("%s: %w: %s", sb.String(), err, string(body))
 	}
 
 	var exception actionsExceptionError
 	if err := json.Unmarshal(body, &exception); err != nil {
-		return &ActionsError{
-			ActivityID: response.Header.Get(headerActionsActivityID),
-			StatusCode: response.StatusCode,
-			Err:        err,
-		}
+		return fmt.Errorf("%s: %w: failed to unmarshal error response body: %q", sb.String(), err, string(body))
 	}
 
-	return &ActionsError{
-		ActivityID: response.Header.Get(headerActionsActivityID),
-		StatusCode: response.StatusCode,
-		Err:        &exception,
-	}
-}
-
-type messageQueueTokenExpiredError struct {
-	message string
-}
-
-func (e *messageQueueTokenExpiredError) Error() string {
-	return fmt.Sprintf("message queue token expired: %s", e.message)
-}
-
-// NewMessageQueueTokenExpiredError creates a new MessageQueueTokenExpiredError.
-//
-// This function is mostly used by tests.
-func NewMessageQueueTokenExpiredError(message string) error {
-	return &messageQueueTokenExpiredError{
-		message: message,
+	switch {
+	case strings.Contains(exception.ExceptionName, "AgentExistsException"):
+		return fmt.Errorf("%s: %w: %s", sb.String(), RunnerExistsError, exception.Message)
+	case strings.Contains(exception.ExceptionName, "AgentNotFoundException"):
+		return fmt.Errorf("%s: %w: %s", sb.String(), RunnerNotFoundError, exception.Message)
+	case strings.Contains(exception.ExceptionName, "JobStillRunningException"):
+		return fmt.Errorf("%s: %w: %s", sb.String(), JobStillRunningError, exception.Message)
+	default:
+		return fmt.Errorf("%s: %w: %w", sb.String(), err, exception)
 	}
 }
