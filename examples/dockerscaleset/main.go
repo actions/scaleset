@@ -74,6 +74,8 @@ func run(ctx context.Context, c Config) error {
 		runnerGroupID = runnerGroup.ID
 	}
 
+	slog.Info("creating scale set")
+
 	// Create the runner scale set
 	scaleSet, err := scalesetClient.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
 		Name:          c.ScaleSetName,
@@ -84,8 +86,11 @@ func run(ctx context.Context, c Config) error {
 		},
 	})
 	if err != nil {
+		slog.Error("failed to create", err)
 		return fmt.Errorf("failed to create runner scale set: %w", err)
 	}
+
+	slog.Info("created")
 
 	// Set the user agent for the scaleset client now that we have the scale set ID
 	scalesetClient.SetSystemInfo(systemInfo(scaleSet.ID))
