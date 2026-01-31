@@ -95,19 +95,19 @@ func run(ctx context.Context, c Config) error {
 	// Set the user agent for the scaleset client now that we have the scale set ID
 	scalesetClient.SetSystemInfo(systemInfo(scaleSet.ID))
 
-	defer func() {
-		logger.Info(
-			"Deleting runner scale set",
-			slog.Int("scaleSetID", scaleSet.ID),
-		)
-		if err := scalesetClient.DeleteRunnerScaleSet(context.WithoutCancel(ctx), scaleSet.ID); err != nil {
-			slog.Error(
-				"Failed to delete runner scale set",
-				slog.Int("scaleSetID", scaleSet.ID),
-				slog.String("error", err.Error()),
-			)
-		}
-	}()
+	// defer func() {
+	// 	logger.Info(
+	// 		"Deleting runner scale set",
+	// 		slog.Int("scaleSetID", scaleSet.ID),
+	// 	)
+	// 	if err := scalesetClient.DeleteRunnerScaleSet(context.WithoutCancel(ctx), scaleSet.ID); err != nil {
+	// 		slog.Error(
+	// 			"Failed to delete runner scale set",
+	// 			slog.Int("scaleSetID", scaleSet.ID),
+	// 			slog.String("error", err.Error()),
+	// 		)
+	// 	}
+	// }()
 
 	dockerClient, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
