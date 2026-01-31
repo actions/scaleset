@@ -78,7 +78,7 @@ func run(ctx context.Context, c Config) error {
 	scaleSet, err := scalesetClient.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
 		Name:          c.ScaleSetName,
 		RunnerGroupID: runnerGroupID,
-		Labels:        c.BuildLabels(),
+		Labels:        []scaleset.Label{},
 		RunnerSetting: scaleset.RunnerSetting{
 			DisableUpdate: true,
 		},
