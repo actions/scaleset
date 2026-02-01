@@ -1,10 +1,10 @@
-# GitHub Actions Runner Scale Set Client (Private Preview)
+# GitHub Actions Runner Scale Set Client (Public Preview)
 
-> Status: **Private Preview** – While the API is stable, interfaces and examples in this repository may change.
+> Status: **Public Preview** – While the API is stable, interfaces and examples in this repository may change.
 
 This repository provides a standalone Go client for the GitHub Actions **Runner Scale Set** APIs. It is extracted from the `actions-runner-controller` project so that platform teams, integrators, and infrastructure providers can build **their own custom autoscaling solutions** for GitHub Actions runners.
 
-You do *not* need to adopt the full controller (and Kubernetes) to take advantage of scale sets. This package contains all the primitives you need: create/update/delete scale sets, generate just‑in‑time (JIT) runner configs, and manage message sessions.
+You don't need to adopt the full controller or Kubernetes to take advantage of scale sets. The client supports the same platforms as the GitHub Actions runner, including containers and virtual machines running Windows, Linux, and macOS. This package contains all the primitives you need: create, update, and delete scale sets; generate just-in-time (JIT) runner configs; and manage message sessions.
 
 ---
 
