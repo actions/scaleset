@@ -124,6 +124,7 @@ func TestUserAgent(t *testing.T) {
 		SystemInfo:     testSystemInfo,
 		BuildCommitSHA: sha,
 		BuildVersion:   version,
+		Kind:           "scaleset",
 	}
 	b, err := json.Marshal(wantInfo)
 	require.NoError(t, err, "failed to marshal expected user agent")
@@ -144,6 +145,7 @@ func TestUserAgent(t *testing.T) {
 		SystemInfo:     userAgentInfo,
 		BuildCommitSHA: sha,
 		BuildVersion:   version,
+		Kind:           "scaleset",
 	}
 	b, err = json.Marshal(wantInfo)
 	require.NoError(t, err, "failed to marshal expected user agent after SetSystemInfo")
