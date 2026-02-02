@@ -137,6 +137,7 @@ func (c *commonClient) setUserAgent() {
 		SystemInfo:     c.systemInfo,
 		BuildVersion:   buildInfo.version,
 		BuildCommitSHA: buildInfo.commitSHA,
+		Kind:           "scaleset",
 	})
 	c.userAgent = string(b)
 }

@@ -126,9 +126,9 @@ type ProxyFunc func(req *http.Request) (*url.URL, error)
 type SystemInfo struct {
 	// System is the name of the scale set implementation
 	System string `json:"system"`
-	// Version is the version of the controller
+	// Version is the version of the client
 	Version string `json:"version"`
-	// CommitSHA is the git commit SHA of the controller
+	// CommitSHA is the git commit SHA of the client
 	CommitSHA string `json:"commit_sha"`
 	// ScaleSetID is the ID of the scale set
 	ScaleSetID int `json:"scale_set_id"`
@@ -222,6 +222,7 @@ type userAgent struct {
 	SystemInfo
 	BuildVersion   string `json:"build_version"`
 	BuildCommitSHA string `json:"build_commit_sha"`
+	Kind           string `json:"kind"`
 }
 
 func (c *Client) newGitHubAPIRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
