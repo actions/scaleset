@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -834,6 +835,8 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 	if err != nil {
 		return nil, fmt.Errorf("failed to get actions service admin connection: %w", err)
 	}
+
+	slog.Info("got connection", *adminConnection.ActionsServiceURL, c.userAgent)
 
 	return adminConnection, nil
 }

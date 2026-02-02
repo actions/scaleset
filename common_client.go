@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -132,12 +133,13 @@ func (c *commonClient) setSystemInfo(info SystemInfo) {
 }
 
 func (c *commonClient) setUserAgent() {
-	// b, _ := json.Marshal(userAgent{
-	// 	SystemInfo:     c.systemInfo,
-	// 	BuildVersion:   buildInfo.version,
-	// 	BuildCommitSHA: buildInfo.commitSHA,
-	// })
-	c.userAgent = "dockerscaleset"
+	b, _ := json.Marshal(userAgent{
+		SystemInfo:     c.systemInfo,
+		BuildVersion:   buildInfo.version,
+		BuildCommitSHA: buildInfo.commitSHA,
+	})
+	c.userAgent = string(b)
+	slog.Info("user agent", "useragent", c.userAgent)
 }
 
 // HTTPOption defines a functional option for configuring the Client.
