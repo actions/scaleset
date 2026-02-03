@@ -1,0 +1,1364 @@
+package scaleset
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/actions/scaleset/internal/testserver"
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const exampleRequestID = "5ddf2050-dae0-013c-9159-04421ad31b68"
+
+var testSystemInfo = SystemInfo{
+	System:     "test",
+	Subsystem:  "subtest",
+	Version:    "test-version",
+	CommitSHA:  "test-sha",
+	ScaleSetID: 1,
+}
+
+func TestNewGitHubAPIRequest(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("uses the right host/path prefix", func(t *testing.T) {
+		scenarios := []struct {
+			configURL string
+			path      string
+			expected  string
+		}{
+			{
+				configURL: "https://github.com/org/repo",
+				path:      "/app/installations/123/access_tokens",
+				expected:  "https://api.github.com/app/installations/123/access_tokens",
+			},
+			{
+				configURL: "https://www.github.com/org/repo",
+				path:      "/app/installations/123/access_tokens",
+				expected:  "https://api.github.com/app/installations/123/access_tokens",
+			},
+			{
+				configURL: "http://github.localhost/org/repo",
+				path:      "/app/installations/123/access_tokens",
+				expected:  "http://api.github.localhost/app/installations/123/access_tokens",
+			},
+			{
+				configURL: "https://my-instance.com/org/repo",
+				path:      "/app/installations/123/access_tokens",
+				expected:  "https://my-instance.com/api/v3/app/installations/123/access_tokens",
+			},
+			{
+				configURL: "http://localhost/org/repo",
+				path:      "/app/installations/123/access_tokens",
+				expected:  "http://localhost/api/v3/app/installations/123/access_tokens",
+			},
+		}
+
+		for _, scenario := range scenarios {
+			client, err := newClient(
+				testSystemInfo,
+				scenario.configURL,
+				actionsAuth{token: "token"},
+			)
+			require.NoError(t, err)
+
+			req, err := client.newGitHubAPIRequest(ctx, http.MethodGet, scenario.path, nil)
+			require.NoError(t, err)
+			assert.Equal(t, scenario.expected, req.URL.String())
+		}
+	})
+
+	t.Run("sets the body we pass", func(t *testing.T) {
+		client, err := newClient(
+			testSystemInfo,
+			"http://localhost/my-org",
+			actionsAuth{token: "token"},
+		)
+		require.NoError(t, err)
+
+		req, err := client.newGitHubAPIRequest(
+			ctx,
+			http.MethodGet,
+			"/app/installations/123/access_tokens",
+			strings.NewReader("the-body"),
+		)
+		require.NoError(t, err)
+
+		b, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "the-body", string(b))
+	})
+}
+
+func TestNewActionsServiceRequest(t *testing.T) {
+	ctx := context.Background()
+	defaultCreds := actionsAuth{token: "token"}
+
+	t.Run("manages authentication", func(t *testing.T) {
+		t.Run("client is brand new", func(t *testing.T) {
+			token := defaultActionsToken(t)
+			server := testserver.New(t, nil, testserver.WithActionsToken(token))
+
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+			)
+			require.NoError(t, err)
+
+			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			require.NoError(t, err)
+
+			assert.Equal(t, "Bearer "+token, req.Header.Get("Authorization"))
+		})
+
+		t.Run("admin token is about to expire", func(t *testing.T) {
+			newToken := defaultActionsToken(t)
+			server := testserver.New(t, nil, testserver.WithActionsToken(newToken))
+
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+			)
+			require.NoError(t, err)
+			client.actionsServiceAdminToken = "expiring-token"
+			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(59 * time.Second)
+
+			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			require.NoError(t, err)
+
+			assert.Equal(t, "Bearer "+newToken, req.Header.Get("Authorization"))
+		})
+
+		t.Run("admin token refresh failure", func(t *testing.T) {
+			newToken := defaultActionsToken(t)
+			errMessage := `{"message":"test"}`
+			unauthorizedHandler := func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(errMessage))
+			}
+			server := testserver.New(
+				t,
+				nil,
+				testserver.WithActionsToken("random-token"),
+				testserver.WithActionsToken(newToken),
+				testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler),
+			)
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+				WithRetryWaitMax(1*time.Millisecond),
+			)
+			require.NoError(t, err)
+			expiringToken := "expiring-token"
+			expiresAt := time.Now().Add(59 * time.Second)
+			client.actionsServiceAdminToken = expiringToken
+			client.actionsServiceAdminTokenExpiresAt = expiresAt
+			_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "test")
+			assert.Equal(t, client.actionsServiceAdminToken, expiringToken)
+			assert.Equal(t, client.actionsServiceAdminTokenExpiresAt, expiresAt)
+		})
+
+		t.Run("admin token refresh retry", func(t *testing.T) {
+			newToken := defaultActionsToken(t)
+			errMessage := `{"message":"test"}`
+
+			srv := "http://github.com/my-org"
+			resp := &actionsServiceAdminConnection{
+				AdminToken:        &newToken,
+				ActionsServiceURL: &srv,
+			}
+			failures := 0
+			unauthorizedHandler := func(w http.ResponseWriter, r *http.Request) {
+				if failures < 4 {
+					failures++
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(errMessage))
+					return
+				}
+
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(resp)
+			}
+			server := testserver.New(
+				t,
+				nil,
+				testserver.WithActionsToken("random-token"),
+				testserver.WithActionsToken(newToken),
+				testserver.WithActionsRegistrationTokenHandler(unauthorizedHandler),
+			)
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+				WithRetryWaitMax(1*time.Millisecond),
+			)
+			require.NoError(t, err)
+			expiringToken := "expiring-token"
+			expiresAt := time.Now().Add(59 * time.Second)
+			client.actionsServiceAdminToken = expiringToken
+			client.actionsServiceAdminTokenExpiresAt = expiresAt
+
+			_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			require.NoError(t, err)
+			assert.Equal(t, client.actionsServiceAdminToken, newToken)
+			assert.Equal(t, client.actionsServiceURL, srv)
+			assert.NotEqual(t, client.actionsServiceAdminTokenExpiresAt, expiresAt)
+		})
+
+		t.Run("token is currently valid", func(t *testing.T) {
+			tokenThatShouldNotBeFetched := defaultActionsToken(t)
+			server := testserver.New(t, nil, testserver.WithActionsToken(tokenThatShouldNotBeFetched))
+
+			client, err := newClient(
+				testSystemInfo,
+				server.ConfigURLForOrg("my-org"),
+				defaultCreds,
+			)
+			require.NoError(t, err)
+			client.actionsServiceAdminToken = "healthy-token"
+			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(1 * time.Hour)
+
+			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
+			require.NoError(t, err)
+
+			assert.Equal(t, "Bearer healthy-token", req.Header.Get("Authorization"))
+		})
+	})
+
+	t.Run("builds the right URL including api version", func(t *testing.T) {
+		server := testserver.New(t, nil)
+
+		client, err := newClient(
+			testSystemInfo,
+			server.ConfigURLForOrg("my-org"),
+			defaultCreds,
+		)
+		require.NoError(t, err)
+
+		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path?name=banana", nil)
+		require.NoError(t, err)
+
+		serverURL, err := url.Parse(server.URL)
+		require.NoError(t, err)
+
+		result := req.URL
+		assert.Equal(t, serverURL.Host, result.Host)
+		assert.Equal(t, "/tenant/123/my/path", result.Path)
+		assert.Equal(t, "banana", result.Query().Get("name"))
+		assert.Equal(t, "6.0-preview", result.Query().Get("api-version"))
+	})
+
+	t.Run("populates header", func(t *testing.T) {
+		server := testserver.New(t, nil)
+
+		client, err := newClient(
+			testSystemInfo,
+			server.ConfigURLForOrg("my-org"),
+			defaultCreds,
+		)
+		require.NoError(t, err)
+
+		client.SetSystemInfo(testSystemInfo)
+
+		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/my/path", nil)
+		require.NoError(t, err)
+
+		assert.Equal(t, client.userAgent, req.Header.Get("User-Agent"))
+		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+	})
+}
+
+func TestGetRunner(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	t.Run("Get Runner", func(t *testing.T) {
+		runnerID := 1
+		want := &RunnerReference{
+			ID:   runnerID,
+			Name: "self-hosted-ubuntu",
+		}
+		response := []byte(`{"id": 1, "name": "self-hosted-ubuntu"}`)
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(response)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunner(ctx, runnerID)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Default retries on server error", func(t *testing.T) {
+		runnerID := 1
+		retryWaitMax := 1 * time.Millisecond
+		retryMax := 1
+
+		actualRetry := 0
+		expectedRetry := retryMax + 1
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			actualRetry++
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunner(ctx, runnerID)
+		require.Error(t, err)
+		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+}
+
+func TestGetRunnerByName(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	t.Run("Get Runner by Name", func(t *testing.T) {
+		runnerID := 1
+		runnerName := "self-hosted-ubuntu"
+		want := &RunnerReference{
+			ID:   runnerID,
+			Name: runnerName,
+		}
+		response := []byte(`{"count": 1, "value": [{"id": 1, "name": "self-hosted-ubuntu"}]}`)
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(response)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerByName(ctx, runnerName)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Get Runner by name with not exist runner", func(t *testing.T) {
+		runnerName := "self-hosted-ubuntu"
+		response := []byte(`{"count": 0, "value": []}`)
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(response)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerByName(ctx, runnerName)
+		require.NoError(t, err)
+		assert.Nil(t, got)
+	})
+
+	t.Run("Default retries on server error", func(t *testing.T) {
+		runnerName := "self-hosted-ubuntu"
+
+		retryWaitMax := 1 * time.Millisecond
+		retryMax := 1
+
+		actualRetry := 0
+		expectedRetry := retryMax + 1
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			actualRetry++
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerByName(ctx, runnerName)
+		require.Error(t, err)
+		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+}
+
+func TestDeleteRunner(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	t.Run("Delete Runner", func(t *testing.T) {
+		var runnerID int64 = 1
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		err = client.RemoveRunner(ctx, runnerID)
+		assert.NoError(t, err)
+	})
+
+	t.Run("Default retries on server error", func(t *testing.T) {
+		var runnerID int64 = 1
+
+		retryWaitMax := 1 * time.Millisecond
+		retryMax := 1
+
+		actualRetry := 0
+		expectedRetry := retryMax + 1
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			actualRetry++
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
+		require.NoError(t, err)
+
+		err = client.RemoveRunner(ctx, runnerID)
+		require.Error(t, err)
+		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+}
+
+func TestGetRunnerGroupByName(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	t.Run("Get RunnerGroup by Name", func(t *testing.T) {
+		runnerGroupID := 1
+		runnerGroupName := "test-runner-group"
+		want := &RunnerGroup{
+			ID:   runnerGroupID,
+			Name: runnerGroupName,
+		}
+		response := []byte(`{"count": 1, "value": [{"id": 1, "name": "test-runner-group"}]}`)
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(response)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerGroupByName(ctx, runnerGroupName)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Get RunnerGroup by name with not exist runner group", func(t *testing.T) {
+		runnerGroupName := "test-runner-group"
+		response := []byte(`{"count": 0, "value": []}`)
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(response)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerGroupByName(ctx, runnerGroupName)
+		assert.ErrorContains(t, err, "no runner group found with name")
+		assert.Nil(t, got)
+	})
+}
+
+func TestGetRunnerScaleSet(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	scaleSetName := "ScaleSet"
+	runnerScaleSet := RunnerScaleSet{ID: 1, Name: scaleSetName}
+
+	t.Run("Get existing scale set", func(t *testing.T) {
+		want := &runnerScaleSet
+		runnerScaleSetsResp := []byte(`{"count":1,"value":[{"id":1,"name":"ScaleSet"}]}`)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write(runnerScaleSetsResp)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("GetRunnerScaleSet calls correct url", func(t *testing.T) {
+		runnerScaleSetsResp := []byte(`{"count":1,"value":[{"id":1,"name":"ScaleSet"}]}`)
+		url := url.URL{}
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(runnerScaleSetsResp)
+			url = *r.URL
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		require.NoError(t, err)
+
+		expectedPath := "/tenant/123/_apis/runtime/runnerscalesets"
+		assert.Equal(t, expectedPath, url.Path)
+		assert.Equal(t, scaleSetName, url.Query().Get("name"))
+		assert.Equal(t, "6.0-preview", url.Query().Get("api-version"))
+	})
+
+	t.Run("Status code not found", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		assert.NotNil(t, err)
+	})
+
+	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		assert.NotNil(t, err)
+	})
+
+	t.Run("Default retries on server error", func(t *testing.T) {
+		actualRetry := 0
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			actualRetry++
+		}))
+
+		retryMax := 1
+		retryWaitMax := 1 * time.Microsecond
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		assert.NotNil(t, err)
+		expectedRetry := retryMax + 1
+		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+
+	t.Run("RunnerScaleSet count is zero", func(t *testing.T) {
+		want := (*RunnerScaleSet)(nil)
+		runnerScaleSetsResp := []byte(`{"count":0,"value":[{"id":1,"name":"ScaleSet"}]}`)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write(runnerScaleSetsResp)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Multiple runner scale sets found", func(t *testing.T) {
+		reqID := uuid.NewString()
+		runnerScaleSetsResp := []byte(`{"count":2,"value":[{"id":1,"name":"ScaleSet"}]}`)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(headerActionsActivityID, reqID)
+			w.Write(runnerScaleSetsResp)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error(), "multiple runner scale sets found")
+		assert.Contains(t, err.Error(), "activity_id=\""+reqID+"\"")
+	})
+}
+
+func TestGetRunnerScaleSetByID(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	scaleSetCreationDateTime := time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	runnerScaleSet := RunnerScaleSet{ID: 1, Name: "ScaleSet", CreatedOn: scaleSetCreationDateTime, RunnerSetting: RunnerSetting{}}
+
+	t.Run("Get existing scale set by Id", func(t *testing.T) {
+		want := &runnerScaleSet
+		rsl, err := json.Marshal(want)
+		require.NoError(t, err)
+		sservere := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write(rsl)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			sservere.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("GetRunnerScaleSetByID calls correct url", func(t *testing.T) {
+		rsl, err := json.Marshal(&runnerScaleSet)
+		require.NoError(t, err)
+
+		url := url.URL{}
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(rsl)
+			url = *r.URL
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
+		require.NoError(t, err)
+
+		expectedPath := fmt.Sprintf("/tenant/123/_apis/runtime/runnerscalesets/%d", runnerScaleSet.ID)
+		assert.Equal(t, expectedPath, url.Path)
+		assert.Equal(t, "6.0-preview", url.Query().Get("api-version"))
+	})
+
+	t.Run("Status code not found", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
+		assert.NotNil(t, err)
+	})
+
+	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
+		assert.NotNil(t, err)
+	})
+
+	t.Run("Default retries on server error", func(t *testing.T) {
+		actualRetry := 0
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			actualRetry++
+		}))
+
+		retryMax := 1
+		retryWaitMax := 1 * time.Microsecond
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
+		require.NotNil(t, err)
+		expectedRetry := retryMax + 1
+		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+
+	t.Run("No RunnerScaleSet found", func(t *testing.T) {
+		want := (*RunnerScaleSet)(nil)
+		rsl, err := json.Marshal(want)
+		require.NoError(t, err)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write(rsl)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GetRunnerScaleSetByID(ctx, runnerScaleSet.ID)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+}
+
+func TestCreateRunnerScaleSet(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	scaleSetCreationDateTime := time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	runnerScaleSet := RunnerScaleSet{ID: 1, Name: "ScaleSet", CreatedOn: scaleSetCreationDateTime, RunnerSetting: RunnerSetting{}}
+
+	t.Run("Create runner scale set", func(t *testing.T) {
+		want := &runnerScaleSet
+		rsl, err := json.Marshal(want)
+		require.NoError(t, err)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write(rsl)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("CreateRunnerScaleSet calls correct url", func(t *testing.T) {
+		rsl, err := json.Marshal(&runnerScaleSet)
+		require.NoError(t, err)
+		url := url.URL{}
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(rsl)
+			url = *r.URL
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
+		require.NoError(t, err)
+
+		expectedPath := "/tenant/123/_apis/runtime/runnerscalesets"
+		assert.Equal(t, expectedPath, url.Path)
+		assert.Equal(t, "6.0-preview", url.Query().Get("api-version"))
+	})
+
+	t.Run("Error when Content-Type is text/plain", func(t *testing.T) {
+		plainBody := "example plain text error"
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(plainBody))
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
+		assert.Contains(t, err.Error(), plainBody)
+	})
+
+	t.Run("Default retries on server error", func(t *testing.T) {
+		actualRetry := 0
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			actualRetry++
+		}))
+
+		retryMax := 1
+		retryWaitMax := 1 * time.Microsecond
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(retryWaitMax),
+		)
+		require.NoError(t, err)
+
+		_, err = client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
+		require.NotNil(t, err)
+		expectedRetry := retryMax + 1
+		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+}
+
+func TestUpdateRunnerScaleSet(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	scaleSetCreationDateTime := time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	runnerScaleSet := RunnerScaleSet{ID: 1, Name: "ScaleSet", RunnerGroupID: 1, RunnerGroupName: "group", CreatedOn: scaleSetCreationDateTime, RunnerSetting: RunnerSetting{}}
+
+	t.Run("Update runner scale set", func(t *testing.T) {
+		want := &runnerScaleSet
+		rsl, err := json.Marshal(want)
+		require.NoError(t, err)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write(rsl)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.UpdateRunnerScaleSet(ctx, 1, &RunnerScaleSet{RunnerGroupID: 1})
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("UpdateRunnerScaleSet calls correct url", func(t *testing.T) {
+		rsl, err := json.Marshal(&runnerScaleSet)
+		require.NoError(t, err)
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			expectedPath := "/tenant/123/_apis/runtime/runnerscalesets/1"
+			assert.Equal(t, expectedPath, r.URL.Path)
+			assert.Equal(t, http.MethodPatch, r.Method)
+			assert.Equal(t, "6.0-preview", r.URL.Query().Get("api-version"))
+
+			w.Write(rsl)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.UpdateRunnerScaleSet(ctx, 1, &runnerScaleSet)
+		require.NoError(t, err)
+	})
+}
+
+func TestDeleteRunnerScaleSet(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	t.Run("Delete runner scale set", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Contains(t, r.URL.String(), "/_apis/runtime/runnerscalesets/10?api-version=6.0-preview")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		err = client.DeleteRunnerScaleSet(ctx, 10)
+		assert.NoError(t, err)
+	})
+
+	t.Run("Delete calls with error", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Contains(t, r.URL.String(), "/_apis/runtime/runnerscalesets/10?api-version=6.0-preview")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"message": "test error"}`))
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		err = client.DeleteRunnerScaleSet(ctx, 10)
+		assert.ErrorContains(t, err, "test error")
+	})
+}
+
+func TestGenerateJitRunnerConfig(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	t.Run("Get JIT Config for Runner", func(t *testing.T) {
+		want := &RunnerScaleSetJitRunnerConfig{}
+		response := []byte(`{"count":1,"value":[{"id":1,"name":"scale-set-name"}]}`)
+
+		runnerSettings := &RunnerScaleSetJitRunnerSetting{}
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write(response)
+		}))
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		got, err := client.GenerateJitRunnerConfig(ctx, runnerSettings, 1)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Default retries on server error", func(t *testing.T) {
+		runnerSettings := &RunnerScaleSetJitRunnerSetting{}
+
+		retryMax := 1
+		actualRetry := 0
+		expectedRetry := retryMax + 1
+
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			actualRetry++
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(1),
+			WithRetryWaitMax(1*time.Millisecond),
+		)
+		require.NoError(t, err)
+
+		_, err = client.GenerateJitRunnerConfig(ctx, runnerSettings, 1)
+		assert.NotNil(t, err)
+		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+}
+
+type serverCtxKey int
+
+const ctxKeyServer serverCtxKey = iota
+
+// newActionsServer returns a new httptest.Server that handles the
+// authentication requests neeeded to create a new client. Any requests not
+// made to the /actions/runners/registration-token or
+// /actions/runner-registration endpoints will be handled by the provided
+// handler. The returned server is started and will be automatically closed
+// when the test ends.
+func newActionsServer(t *testing.T, handler http.Handler, options ...actionsServerOption) *actionsServer {
+	s := httptest.NewServer(nil)
+	server := &actionsServer{
+		Server: s,
+	}
+	t.Cleanup(func() {
+		server.Close()
+	})
+
+	for _, option := range options {
+		option(server)
+	}
+
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyServer, server))
+		// handle getRunnerRegistrationToken
+		if strings.HasSuffix(r.URL.Path, "/runners/registration-token") {
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"token":"token"}`))
+			return
+		}
+
+		// handle getActionsServiceAdminConnection
+		if strings.HasSuffix(r.URL.Path, "/actions/runner-registration") {
+			if server.token == "" {
+				server.token = defaultActionsToken(t)
+			}
+
+			w.Write([]byte(`{"url":"` + s.URL + `/tenant/123/","token":"` + server.token + `"}`))
+			return
+		}
+
+		handler.ServeHTTP(w, r)
+	})
+
+	server.Config.Handler = h
+
+	return server
+}
+
+type actionsServerOption func(*actionsServer)
+
+type actionsServer struct {
+	*httptest.Server
+
+	token string
+}
+
+func (s *actionsServer) testRunnerScaleSetSession() RunnerScaleSetSession {
+	session := RunnerScaleSetSession{
+		SessionID: uuid.New(),
+		OwnerName: "foo",
+		RunnerScaleSet: &RunnerScaleSet{
+			ID:   1,
+			Name: "ScaleSet",
+		},
+		MessageQueueURL:         s.URL,
+		MessageQueueAccessToken: s.token,
+		Statistics: &RunnerScaleSetStatistic{
+			TotalAvailableJobs:     0,
+			TotalAcquiredJobs:      0,
+			TotalAssignedJobs:      0,
+			TotalRunningJobs:       0,
+			TotalRegisteredRunners: 0,
+			TotalBusyRunners:       0,
+			TotalIdleRunners:       0,
+		},
+	}
+	return session
+}
+
+func (s *actionsServer) configURLForOrg(org string) string {
+	return s.URL + "/" + org
+}
+
+func defaultActionsToken(t *testing.T) string {
+	claims := &jwt.RegisteredClaims{
+		IssuedAt:  jwt.NewNumericDate(time.Now().Add(-10 * time.Minute)),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
+		Issuer:    "123",
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(samplePrivateKey))
+	require.NoError(t, err)
+	tokenString, err := token.SignedString(privateKey)
+	require.NoError(t, err)
+	return tokenString
+}
+
+func TestServerWithSelfSignedCertificates(t *testing.T) {
+	ctx := context.Background()
+	// this handler is a very very barebones replica of actions api
+	// used during the creation of a a new client
+	var u string
+	h := func(w http.ResponseWriter, r *http.Request) {
+		// handle get registration token
+		if strings.HasSuffix(r.URL.Path, "/runners/registration-token") {
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"token":"token"}`))
+			return
+		}
+
+		// handle getActionsServiceAdminConnection
+		if strings.HasSuffix(r.URL.Path, "/actions/runner-registration") {
+			claims := &jwt.RegisteredClaims{
+				IssuedAt:  jwt.NewNumericDate(time.Now().Add(-1 * time.Minute)),
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)),
+				Issuer:    "123",
+			}
+
+			token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+			privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(samplePrivateKey))
+			require.NoError(t, err)
+			tokenString, err := token.SignedString(privateKey)
+			require.NoError(t, err)
+			w.Write([]byte(`{"url":"` + u + `","token":"` + tokenString + `"}`))
+			return
+		}
+
+		// default happy response for RemoveRunner
+		w.WriteHeader(http.StatusNoContent)
+	}
+
+	certPath := filepath.Join("testdata", "server.crt")
+	keyPath := filepath.Join("testdata", "server.key")
+
+	t.Run("client without ca certs", func(t *testing.T) {
+		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
+		u = server.URL
+		configURL := server.URL + "/my-org"
+
+		client, err := newClient(
+			testSystemInfo,
+			configURL,
+			actionsAuth{
+				token: "token",
+			},
+		)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		err = client.RemoveRunner(ctx, 1)
+		require.NotNil(t, err)
+
+		if runtime.GOOS == "linux" {
+			assert.True(t, errors.As(err, &x509.UnknownAuthorityError{}))
+		}
+
+		// on macOS we only get an untyped error from the system verifying the
+		// certificate
+		if runtime.GOOS == "darwin" {
+			assert.True(t, strings.HasSuffix(err.Error(), "certificate is not trusted"))
+		}
+	})
+
+	t.Run("client with ca certs", func(t *testing.T) {
+		server := startNewTLSTestServer(
+			t,
+			certPath,
+			keyPath,
+			http.HandlerFunc(h),
+		)
+		u = server.URL
+		configURL := server.URL + "/my-org"
+
+		cert, err := os.ReadFile(filepath.Join("testdata", "rootCA.crt"))
+		require.NoError(t, err)
+
+		pool := x509.NewCertPool()
+		require.True(t, pool.AppendCertsFromPEM(cert))
+
+		client, err := newClient(
+			testSystemInfo,
+			configURL,
+			actionsAuth{
+				token: "token",
+			},
+			WithRootCAs(pool),
+		)
+		require.NoError(t, err)
+		assert.NotNil(t, client)
+
+		err = client.RemoveRunner(ctx, 1)
+		assert.NoError(t, err)
+	})
+
+	t.Run("client with ca chain certs", func(t *testing.T) {
+		server := startNewTLSTestServer(
+			t,
+			filepath.Join("testdata", "leaf.crt"),
+			filepath.Join("testdata", "leaf.key"),
+			http.HandlerFunc(h),
+		)
+		u = server.URL
+		configURL := server.URL + "/my-org"
+
+		cert, err := os.ReadFile(filepath.Join("testdata", "intermediate.crt"))
+		require.NoError(t, err)
+
+		pool := x509.NewCertPool()
+		require.True(t, pool.AppendCertsFromPEM(cert))
+
+		client, err := newClient(
+			testSystemInfo,
+			configURL,
+			actionsAuth{
+				token: "token",
+			},
+			WithRootCAs(pool),
+			WithRetryMax(0),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		err = client.RemoveRunner(ctx, 1)
+		assert.NoError(t, err)
+	})
+
+	t.Run("client skipping tls verification", func(t *testing.T) {
+		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
+		configURL := server.URL + "/my-org"
+
+		client, err := newClient(
+			testSystemInfo,
+			configURL,
+			actionsAuth{
+				token: "token",
+			},
+			WithoutTLSVerify(),
+		)
+		require.NoError(t, err)
+		assert.NotNil(t, client)
+	})
+}
+
+func startNewTLSTestServer(t *testing.T, certPath, keyPath string, handler http.Handler) *httptest.Server {
+	server := httptest.NewUnstartedServer(handler)
+	t.Cleanup(func() {
+		server.Close()
+	})
+
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	require.NoError(t, err)
+
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	server.StartTLS()
+
+	return server
+}
+
+const samplePrivateKey = `-----BEGIN PRIVATE KEY-----
+MIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQC7tgquvNIp+Ik3
+rRVZ9r0zJLsSzTHqr2dA6EUUmpRiQ25MzjMqKqu0OBwvh/pZyfjSIkKrhIridNK4
+DWnPfPWHE2K3Muh0X2sClxtqiiFmXsvbiTzhUm5a+zCcv0pJCWYnKi0HmyXpAXjJ
+iN8mWliZN896verVYXWrod7EaAnuST4TiJeqZYW4bBBG81fPNc/UP4j6CKAW8nx9
+HtcX6ApvlHeCLZUTW/qhGLO0nLKoEOr3tXCPW5VjKzlm134Dl+8PN6f1wv6wMAoA
+lo7Ha5+c74jhPL6gHXg7cRaHQmuJCJrtl8qbLkFAulfkBixBw/6i11xoM/MOC64l
+TWmXqrxTAgMBAAECgf9zYlxfL+rdHRXCoOm7pUeSPL0dWaPFP12d/Z9LSlDAt/h6
+Pd+eqYEwhf795SAbJuzNp51Ls6LUGnzmLOdojKwfqJ51ahT1qbcBcMZNOcvtGqZ9
+xwLG993oyR49C361Lf2r8mKrdrR5/fW0B1+1s6A+eRFivqFOtsOc4V4iMeHYsCVJ
+hM7yMu0UfpolDJA/CzopsoGq3UuQlibUEUxKULza06aDjg/gBH3PnP+fQ1m0ovDY
+h0pX6SCq5fXVJFS+Pbpu7j2ePNm3mr0qQhrUONZq0qhGN/piCbBZe1CqWApyO7nA
+B95VChhL1eYs1BKvQePh12ap83woIUcW2mJF2F0CgYEA+aERTuKWEm+zVNKS9t3V
+qNhecCOpayKM9OlALIK/9W6KBS+pDsjQQteQAUAItjvLiDjd5KsrtSgjbSgr66IP
+b615Pakywe5sdnVGzSv+07KMzuFob9Hj6Xv9als9Y2geVhUZB2Frqve/UCjmC56i
+zuQTSele5QKCSSTFBV3423cCgYEAwIBv9ChsI+mse6vPaqSPpZ2n237anThMcP33
+aS0luYXqMWXZ0TQ/uSmCElY4G3xqNo8szzfy6u0HpldeUsEUsIcBNUV5kIIb8wKu
+Zmgcc8gBIjJkyUJI4wuz9G/fegEUj3u6Cttmmj4iWLzCRscRJdfGpqwRIhOGyXb9
+2Rur5QUCgYAGWIPaH4R1H4XNiDTYNbdyvV1ZOG7cHFq89xj8iK5cjNzRWO7RQ2WX
+7WbpwTj3ePmpktiBMaDA0C5mXfkP2mTOD/jfCmgR6f+z2zNbj9zAgO93at9+yDUl
+AFPm2j7rQgBTa+HhACb+h6HDZebDMNsuqzmaTWZuJ+wr89VWV5c17QKBgH3jwNNQ
+mCAIUidynaulQNfTOZIe7IMC7WK7g9CBmPkx7Y0uiXr6C25hCdJKFllLTP6vNWOy
+uCcQqf8LhgDiilBDifO3op9xpyuOJlWMYocJVkxx3l2L/rSU07PYcbKNAFAxXuJ4
+xym51qZnkznMN5ei/CPFxVKeqHgaXDpekVStAoGAV3pSWAKDXY/42XEHixrCTqLW
+kBxfaf3g7iFnl3u8+7Z/7Cb4ZqFcw0bRJseKuR9mFvBhcZxSErbMDEYrevefU9aM
+APeCxEyw6hJXgbWKoG7Fw2g2HP3ytCJ4YzH0zNitHjk/1h4BG7z8cEQILCSv5mN2
+etFcaQuTHEZyRhhJ4BU=
+-----END PRIVATE KEY-----`
