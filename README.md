@@ -1,6 +1,6 @@
 # GitHub Actions Runner Scale Set Client (Public Preview)
 
-> Status: **Private Preview** – While the API is stable, interfaces and examples in this repository may change.
+> Status: **Public Preview** – While the API is stable, interfaces and examples in this repository may change.
 
 This repository provides a standalone Go client for the GitHub Actions **Runner Scale Set** APIs. It is extracted from the `actions-runner-controller` project so that platform teams, integrators, and infrastructure providers can build **their own custom autoscaling solutions** for GitHub Actions runners.
 
