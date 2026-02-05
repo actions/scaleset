@@ -1,4 +1,4 @@
-# GitHub Actions Runner Scale Set Client (Private Preview)
+# GitHub Actions Runner Scale Set Client (Public Preview)
 
 > Status: **Private Preview** – While the API is stable, interfaces and examples in this repository may change.
 
