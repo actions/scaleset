@@ -546,7 +546,6 @@ func parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMess
 // It exposes client options that could be overwritten, providing ability to specify different retry policies or TLS settings, proxy, etc.
 func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int, owner string, options ...HTTPOption) (*MessageSessionClient, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Copy original options
 	httpClientOption := c.httpClientOption
@@ -567,6 +566,8 @@ func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int,
 		scaleSetID:   runnerScaleSetID,
 		session:      nil,
 	}
+	// Unlock the client to allow createMessageSession to call public methods that require locking
+	c.mu.Unlock()
 
 	if err := client.createMessageSession(ctx); err != nil {
 		return nil, fmt.Errorf("failed to create message session: %w", err)

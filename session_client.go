@@ -235,6 +235,9 @@ func (c *MessageSessionClient) Session() RunnerScaleSetSession {
 }
 
 func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
+	c.innerClient.mu.Lock()
+	defer c.innerClient.mu.Unlock()
+
 	req, err := c.innerClient.newActionsServiceRequest(ctx, method, path, requestData)
 	if err != nil {
 		return fmt.Errorf("failed to create new actions service request: %w", err)
