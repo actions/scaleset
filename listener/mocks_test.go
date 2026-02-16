@@ -16,7 +16,8 @@ import (
 func NewMockClient(t interface {
 	mock.TestingT
 	Cleanup(func())
-}) *MockClient {
+},
+) *MockClient {
 	mock := &MockClient{}
 	mock.Mock.Test(t)
 
@@ -218,7 +219,8 @@ func (_c *MockClient_Session_Call) RunAndReturn(run func() scaleset.RunnerScaleS
 func NewMockMetricsRecorder(t interface {
 	mock.TestingT
 	Cleanup(func())
-}) *MockMetricsRecorder {
+},
+) *MockMetricsRecorder {
 	mock := &MockMetricsRecorder{}
 	mock.Mock.Test(t)
 
@@ -360,8 +362,8 @@ func (_c *MockMetricsRecorder_RecordStatistics_Call) RunAndReturn(run func(stati
 	return _c
 }
 
-// RecordhDesiredRunners provides a mock function for the type MockMetricsRecorder
-func (_mock *MockMetricsRecorder) RecordhDesiredRunners(count int) {
+// RecordDesiredRunners provides a mock function for the type MockMetricsRecorder
+func (_mock *MockMetricsRecorder) RecordDesiredRunners(count int) {
 	_mock.Called(count)
 	return
 }
@@ -405,7 +407,8 @@ func (_c *MockMetricsRecorder_RecordhDesiredRunners_Call) RunAndReturn(run func(
 func NewMockScaler(t interface {
 	mock.TestingT
 	Cleanup(func())
-}) *MockScaler {
+},
+) *MockScaler {
 	mock := &MockScaler{}
 	mock.Mock.Test(t)
 

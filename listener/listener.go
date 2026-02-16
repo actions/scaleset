@@ -64,7 +64,7 @@ type MetricsRecorder interface {
 	RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic)
 	RecordJobStarted(msg *scaleset.JobStarted)
 	RecordJobCompleted(msg *scaleset.JobCompleted)
-	RecordhDesiredRunners(count int)
+	RecordDesiredRunners(count int)
 }
 
 type discardMetricsRecorder struct{}
@@ -72,7 +72,7 @@ type discardMetricsRecorder struct{}
 func (d *discardMetricsRecorder) RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic) {}
 func (d *discardMetricsRecorder) RecordJobStarted(msg *scaleset.JobStarted)                     {}
 func (d *discardMetricsRecorder) RecordJobCompleted(msg *scaleset.JobCompleted)                 {}
-func (d *discardMetricsRecorder) RecordhDesiredRunners(count int)                               {}
+func (d *discardMetricsRecorder) RecordDesiredRunners(count int)                                {}
 
 // Listener listens for messages from the scaleset service and handles them. It automatically handles session
 // creation/deletion/refreshing and message polling and acking.
@@ -92,8 +92,13 @@ type Listener struct {
 
 type Option func(*Listener)
 
+// WithMetricsRecorder sets the MetricsRecorder for the listener. If not set, a no-op recorder will be used.
+// If the nil is passed, the MetricsRecorder will not be updated and the existing one will be used (which is a no-op by default).
 func WithMetricsRecorder(recorder MetricsRecorder) Option {
 	return func(l *Listener) {
+		if recorder == nil {
+			return
+		}
 		l.metricsRecorder = recorder
 	}
 }
@@ -159,7 +164,7 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 		if err != nil {
 			return fmt.Errorf("handling initial message failed: %w", err)
 		}
-		l.metricsRecorder.RecordhDesiredRunners(desiredCount)
+		l.metricsRecorder.RecordDesiredRunners(desiredCount)
 	}
 
 	var lastMessageID int
@@ -222,7 +227,7 @@ func (l *Listener) handleMessage(ctx context.Context, handler Scaler, msg *scale
 	if err != nil {
 		return fmt.Errorf("failed to handle desired runner count: %w", err)
 	}
-	l.metricsRecorder.RecordhDesiredRunners(desiredCount)
+	l.metricsRecorder.RecordDesiredRunners(desiredCount)
 
 	return nil
 }

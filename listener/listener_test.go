@@ -91,7 +91,7 @@ func TestListener_Run(t *testing.T) {
 
 		metricsRecorder := NewMockMetricsRecorder(t)
 		metricsRecorder.On("RecordStatistics", initialStatistics).Once()
-		metricsRecorder.On("RecordhDesiredRunners", initialStatistics.TotalAssignedJobs).
+		metricsRecorder.On("RecordDesiredRunners", initialStatistics.TotalAssignedJobs).
 			Return(initialStatistics.TotalAssignedJobs, nil).
 			Run(func(mock.Arguments) { cancel() }).
 			Once()
@@ -145,7 +145,7 @@ func TestListener_Run(t *testing.T) {
 
 		client.On("Session").Return(session).Once()
 		metricsRecorder.On("RecordStatistics", initialStatistics).Once()
-		metricsRecorder.On("RecordhDesiredRunners", initialStatistics.TotalAssignedJobs).
+		metricsRecorder.On("RecordDesiredRunners", initialStatistics.TotalAssignedJobs).
 			Return(initialStatistics.TotalAssignedJobs, nil).
 			Once()
 		handler.On("HandleDesiredRunnerCount", mock.Anything, initialStatistics.TotalAssignedJobs).
@@ -163,7 +163,7 @@ func TestListener_Run(t *testing.T) {
 			Return(nil).
 			Once()
 
-		metricsRecorder.On("RecordhDesiredRunners", msg.Statistics.TotalAssignedJobs).
+		metricsRecorder.On("RecordDesiredRunners", msg.Statistics.TotalAssignedJobs).
 			Return(msg.Statistics.TotalAssignedJobs, nil).
 			Once()
 
