@@ -75,12 +75,20 @@ func sendRequest(c *http.Client, req *http.Request) (*http.Response, error) {
 }
 
 type httpClientOption struct {
-	logger                *slog.Logger
-	retryMax              int
-	retryWaitMax          time.Duration
+	logger *slog.Logger
+
+	// Options for built-in retryable HTTP client.
+	// Ignored if a custom retryable HTTP client is provided via WithRetryableHTTPClint.
+	retryMax     int
+	retryWaitMax time.Duration
+	timeout      time.Duration
+
+	// fields added to the transport if specified
 	rootCAs               *x509.CertPool
 	tlsInsecureSkipVerify bool
 	proxyFunc             ProxyFunc
+
+	retryableHTTPClient *retryablehttp.Client
 }
 
 func (o *httpClientOption) defaults() {
@@ -93,14 +101,25 @@ func (o *httpClientOption) defaults() {
 	if o.retryWaitMax == 0 {
 		o.retryWaitMax = 30 * time.Second
 	}
+	if o.timeout == 0 {
+		o.timeout = 5 * time.Minute
+	}
 }
 
 func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, error) {
-	retryClient := retryablehttp.NewClient()
-	retryClient.Logger = o.logger
-	retryClient.RetryMax = o.retryMax
-	retryClient.RetryWaitMax = o.retryWaitMax
-	retryClient.HTTPClient.Timeout = 5 * time.Minute // timeout must be > 1m to accomodate long polling
+	var retryClient *retryablehttp.Client
+	if o.retryableHTTPClient != nil {
+		retryClient = o.retryableHTTPClient
+	} else {
+		retryClient = retryablehttp.NewClient()
+		retryClient.RetryMax = o.retryMax
+		retryClient.RetryWaitMax = o.retryWaitMax
+		retryClient.HTTPClient.Timeout = o.timeout
+	}
+
+	if retryClient.Logger == nil {
+		retryClient.Logger = o.logger
+	}
 
 	transport, ok := retryClient.HTTPClient.Transport.(*http.Transport)
 	if !ok {
@@ -120,7 +139,9 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 
-	transport.Proxy = o.proxyFunc
+	if o.proxyFunc != nil {
+		transport.Proxy = o.proxyFunc
+	}
 
 	retryClient.HTTPClient.Transport = transport
 
@@ -144,6 +165,12 @@ func (c *commonClient) setUserAgent() {
 
 // HTTPOption defines a functional option for configuring the Client.
 type HTTPOption func(*httpClientOption)
+
+func WithRetryableHTTPClint(client *retryablehttp.Client) HTTPOption {
+	return func(c *httpClientOption) {
+		c.retryableHTTPClient = client
+	}
+}
 
 // WithLogger sets a custom logger for the Client.
 func WithLogger(logger slog.Logger) HTTPOption {
@@ -184,5 +211,12 @@ func WithoutTLSVerify() HTTPOption {
 func WithProxy(proxyFunc ProxyFunc) HTTPOption {
 	return func(c *httpClientOption) {
 		c.proxyFunc = proxyFunc
+	}
+}
+
+// WithTimeuot sets a timeout for the Client.
+func WithTimeout(duration time.Duration) HTTPOption {
+	return func(c *httpClientOption) {
+		c.timeout = duration
 	}
 }
