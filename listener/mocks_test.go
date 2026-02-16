@@ -16,8 +16,7 @@ import (
 func NewMockClient(t interface {
 	mock.TestingT
 	Cleanup(func())
-},
-) *MockClient {
+}) *MockClient {
 	mock := &MockClient{}
 	mock.Mock.Test(t)
 
@@ -219,8 +218,7 @@ func (_c *MockClient_Session_Call) RunAndReturn(run func() scaleset.RunnerScaleS
 func NewMockMetricsRecorder(t interface {
 	mock.TestingT
 	Cleanup(func())
-},
-) *MockMetricsRecorder {
+}) *MockMetricsRecorder {
 	mock := &MockMetricsRecorder{}
 	mock.Mock.Test(t)
 
@@ -240,6 +238,46 @@ type MockMetricsRecorder_Expecter struct {
 
 func (_m *MockMetricsRecorder) EXPECT() *MockMetricsRecorder_Expecter {
 	return &MockMetricsRecorder_Expecter{mock: &_m.Mock}
+}
+
+// RecordDesiredRunners provides a mock function for the type MockMetricsRecorder
+func (_mock *MockMetricsRecorder) RecordDesiredRunners(count int) {
+	_mock.Called(count)
+	return
+}
+
+// MockMetricsRecorder_RecordDesiredRunners_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RecordDesiredRunners'
+type MockMetricsRecorder_RecordDesiredRunners_Call struct {
+	*mock.Call
+}
+
+// RecordDesiredRunners is a helper method to define mock.On call
+//   - count int
+func (_e *MockMetricsRecorder_Expecter) RecordDesiredRunners(count interface{}) *MockMetricsRecorder_RecordDesiredRunners_Call {
+	return &MockMetricsRecorder_RecordDesiredRunners_Call{Call: _e.mock.On("RecordDesiredRunners", count)}
+}
+
+func (_c *MockMetricsRecorder_RecordDesiredRunners_Call) Run(run func(count int)) *MockMetricsRecorder_RecordDesiredRunners_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 int
+		if args[0] != nil {
+			arg0 = args[0].(int)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockMetricsRecorder_RecordDesiredRunners_Call) Return() *MockMetricsRecorder_RecordDesiredRunners_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockMetricsRecorder_RecordDesiredRunners_Call) RunAndReturn(run func(count int)) *MockMetricsRecorder_RecordDesiredRunners_Call {
+	_c.Run(run)
+	return _c
 }
 
 // RecordJobCompleted provides a mock function for the type MockMetricsRecorder
@@ -362,53 +400,12 @@ func (_c *MockMetricsRecorder_RecordStatistics_Call) RunAndReturn(run func(stati
 	return _c
 }
 
-// RecordDesiredRunners provides a mock function for the type MockMetricsRecorder
-func (_mock *MockMetricsRecorder) RecordDesiredRunners(count int) {
-	_mock.Called(count)
-	return
-}
-
-// MockMetricsRecorder_RecordhDesiredRunners_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RecordhDesiredRunners'
-type MockMetricsRecorder_RecordhDesiredRunners_Call struct {
-	*mock.Call
-}
-
-// RecordhDesiredRunners is a helper method to define mock.On call
-//   - count int
-func (_e *MockMetricsRecorder_Expecter) RecordhDesiredRunners(count interface{}) *MockMetricsRecorder_RecordhDesiredRunners_Call {
-	return &MockMetricsRecorder_RecordhDesiredRunners_Call{Call: _e.mock.On("RecordhDesiredRunners", count)}
-}
-
-func (_c *MockMetricsRecorder_RecordhDesiredRunners_Call) Run(run func(count int)) *MockMetricsRecorder_RecordhDesiredRunners_Call {
-	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 int
-		if args[0] != nil {
-			arg0 = args[0].(int)
-		}
-		run(
-			arg0,
-		)
-	})
-	return _c
-}
-
-func (_c *MockMetricsRecorder_RecordhDesiredRunners_Call) Return() *MockMetricsRecorder_RecordhDesiredRunners_Call {
-	_c.Call.Return()
-	return _c
-}
-
-func (_c *MockMetricsRecorder_RecordhDesiredRunners_Call) RunAndReturn(run func(count int)) *MockMetricsRecorder_RecordhDesiredRunners_Call {
-	_c.Run(run)
-	return _c
-}
-
 // NewMockScaler creates a new instance of MockScaler. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewMockScaler(t interface {
 	mock.TestingT
 	Cleanup(func())
-},
-) *MockScaler {
+}) *MockScaler {
 	mock := &MockScaler{}
 	mock.Mock.Test(t)
 
