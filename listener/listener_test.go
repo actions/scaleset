@@ -75,39 +75,37 @@ func TestListener_Run(t *testing.T) {
 		client := NewMockClient(t)
 
 		uuid := uuid.New()
+		initialStatistics := &scaleset.RunnerScaleSetStatistic{
+			TotalAssignedJobs: 2,
+		}
 		session := scaleset.RunnerScaleSetSession{
 			SessionID:               uuid,
 			OwnerName:               "example",
 			RunnerScaleSet:          &scaleset.RunnerScaleSet{},
 			MessageQueueURL:         "https://example.com",
 			MessageQueueAccessToken: "1234567890",
-			Statistics:              &scaleset.RunnerScaleSetStatistic{},
+			Statistics:              initialStatistics,
 		}
 
 		client.On("Session").Return(session).Once()
 
-		l, err := New(client, config)
+		metricsRecorder := NewMockMetricsRecorder(t)
+		metricsRecorder.On("RecordStatistics", initialStatistics).Once()
+		metricsRecorder.On("RecordDesiredRunners", initialStatistics.TotalAssignedJobs).
+			Return(initialStatistics.TotalAssignedJobs, nil).
+			Run(func(mock.Arguments) { cancel() }).
+			Once()
+
+		l, err := New(client, config, WithMetricsRecorder(metricsRecorder))
 		require.Nil(t, err)
 
-		var called bool
 		handler := NewMockScaler(t)
-		handler.On(
-			"HandleDesiredRunnerCount",
-			mock.Anything,
-			mock.Anything,
-		).
-			Return(0, nil).
-			Run(
-				func(mock.Arguments) {
-					called = true
-					cancel()
-				},
-			).
+		handler.On("HandleDesiredRunnerCount", mock.Anything, mock.Anything).
+			Return(initialStatistics.TotalAssignedJobs, nil).
 			Once()
 
 		err = l.Run(ctx, handler)
 		assert.ErrorIs(t, err, context.Canceled)
-		assert.True(t, called)
 	})
 
 	t.Run("cancel context after get message", func(t *testing.T) {
@@ -120,61 +118,60 @@ func TestListener_Run(t *testing.T) {
 			MaxRunners: 10,
 		}
 
-		client := NewMockClient(t)
 		uuid := uuid.New()
+		initialStatistics := &scaleset.RunnerScaleSetStatistic{
+			TotalAssignedJobs: 2,
+		}
+
 		session := scaleset.RunnerScaleSetSession{
 			SessionID:               uuid,
 			OwnerName:               "example",
 			RunnerScaleSet:          &scaleset.RunnerScaleSet{},
 			MessageQueueURL:         "https://example.com",
 			MessageQueueAccessToken: "1234567890",
-			Statistics:              &scaleset.RunnerScaleSetStatistic{},
+			Statistics:              initialStatistics,
 		}
 
 		msg := &scaleset.RunnerScaleSetMessage{
-			MessageID:  1,
-			Statistics: &scaleset.RunnerScaleSetStatistic{},
+			MessageID: 1,
+			Statistics: &scaleset.RunnerScaleSetStatistic{
+				TotalAssignedJobs: 3,
+			},
 		}
-		client.On("Session").Return(session).Once()
-		client.On(
-			"GetMessage",
-			ctx,
-			mock.Anything,
-			10,
-		).
-			Return(msg, nil).
-			Run(
-				func(mock.Arguments) {
-					cancel()
-				},
-			).
-			Once()
 
-		// Ensure delete message is called without cancel
-		client.On(
-			"DeleteMessage",
-			context.WithoutCancel(ctx),
-			mock.Anything,
-		).Return(nil).Once()
-
+		metricsRecorder := NewMockMetricsRecorder(t)
+		client := NewMockClient(t)
 		handler := NewMockScaler(t)
-		handler.On(
-			"HandleDesiredRunnerCount",
-			mock.Anything,
-			0,
-		).
-			Return(0, nil).
+
+		client.On("Session").Return(session).Once()
+		metricsRecorder.On("RecordStatistics", initialStatistics).Once()
+		metricsRecorder.On("RecordDesiredRunners", initialStatistics.TotalAssignedJobs).
+			Return(initialStatistics.TotalAssignedJobs, nil).
+			Once()
+		handler.On("HandleDesiredRunnerCount", mock.Anything, initialStatistics.TotalAssignedJobs).
+			Return(initialStatistics.TotalAssignedJobs, nil).
 			Once()
 
-		handler.On(
-			"HandleDesiredRunnerCount",
-			mock.Anything,
-			mock.Anything,
-		).
-			Return(0, nil).
+		client.On("GetMessage", ctx, mock.Anything, 10).
+			Return(msg, nil).
+			Run(func(mock.Arguments) { cancel() }).
 			Once()
 
-		l, err := New(client, config)
+		metricsRecorder.On("RecordStatistics", msg.Statistics).Once()
+		// Ensure delete message is called without cancel
+		client.On("DeleteMessage", context.WithoutCancel(ctx), mock.Anything).
+			Return(nil).
+			Once()
+
+		metricsRecorder.On("RecordDesiredRunners", msg.Statistics.TotalAssignedJobs).
+			Return(msg.Statistics.TotalAssignedJobs, nil).
+			Once()
+
+		handler.On("HandleDesiredRunnerCount", mock.Anything, msg.Statistics.TotalAssignedJobs).
+			Return(msg.Statistics.TotalAssignedJobs, nil).
+			Once()
+
+		l, err := New(client, config, WithMetricsRecorder(metricsRecorder))
 		require.Nil(t, err)
 
 		err = l.Run(ctx, handler)
