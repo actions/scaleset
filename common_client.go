@@ -81,12 +81,12 @@ type httpClientOption struct {
 	// Ignored if a custom retryable HTTP client is provided via WithRetryableHTTPClint.
 	retryMax     int
 	retryWaitMax time.Duration
-	timeout      time.Duration
 
 	// fields added to the transport if specified
 	rootCAs               *x509.CertPool
 	tlsInsecureSkipVerify bool
 	proxyFunc             ProxyFunc
+	timeout               time.Duration
 
 	retryableHTTPClient *retryablehttp.Client
 }
@@ -114,6 +114,9 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 		retryClient = retryablehttp.NewClient()
 		retryClient.RetryMax = o.retryMax
 		retryClient.RetryWaitMax = o.retryWaitMax
+	}
+
+	if retryClient.HTTPClient.Timeout == 0 {
 		retryClient.HTTPClient.Timeout = o.timeout
 	}
 
@@ -166,6 +169,8 @@ func (c *commonClient) setUserAgent() {
 // HTTPOption defines a functional option for configuring the Client.
 type HTTPOption func(*httpClientOption)
 
+// WithRetryableHTTPClint allows users to provide a custom retryable HTTP client.
+// If not set, a default client will be used with the specified retry and timeout settings.
 func WithRetryableHTTPClint(client *retryablehttp.Client) HTTPOption {
 	return func(c *httpClientOption) {
 		c.retryableHTTPClient = client
@@ -214,7 +219,7 @@ func WithProxy(proxyFunc ProxyFunc) HTTPOption {
 	}
 }
 
-// WithTimeuot sets a timeout for the Client.
+// WithTimeout sets a timeout for the Client.
 func WithTimeout(duration time.Duration) HTTPOption {
 	return func(c *httpClientOption) {
 		c.timeout = duration
