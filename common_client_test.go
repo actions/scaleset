@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/actions/scaleset/internal/testserver"
+	"github.com/hashicorp/go-retryablehttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http/httpproxy"
@@ -152,4 +154,89 @@ func TestUserAgent(t *testing.T) {
 	want = string(b)
 
 	assert.Equal(t, want, got)
+}
+
+// TestWithRetryableHTTPClient verifies that a custom retryable HTTP client
+// provided via WithRetryableHTTPClient is actually used instead of the built-in one
+func TestWithRetryableHTTPClient(t *testing.T) {
+	t.Run("uses custom retryable client instead of built-in", func(t *testing.T) {
+		attemptCount := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attemptCount++
+			if attemptCount == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"result": "success"}`))
+		}))
+		defer server.Close()
+
+		// Create a custom retryable HTTP client with specific retry configuration
+		customRetryClient := retryablehttp.NewClient()
+		customRetryClient.RetryMax = 3
+		customRetryClient.RetryWaitMax = 10 * time.Millisecond
+
+		// Create options with the custom retryable client
+		opts := defaultHTTPClientOption()
+		WithRetryableHTTPClint(customRetryClient)(&opts)
+
+		// Verify that the custom client is set in options
+		assert.NotNil(t, opts.retryableHTTPClient)
+		assert.Equal(t, customRetryClient, opts.retryableHTTPClient)
+
+		// Create the common client with custom retryable client
+		client := newCommonClient(testSystemInfo, opts)
+
+		// Make a request that will trigger a retry
+		req, err := http.NewRequest("GET", server.URL, nil)
+		require.NoError(t, err)
+
+		resp, err := client.do(req)
+		require.NoError(t, err)
+
+		// Should succeed after retry
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, 2, attemptCount)
+
+		// Verify that the client used is the custom one by checking newRetryableHTTPClient
+		retrievedRetryClient, err := client.newRetryableHTTPClient()
+		require.NoError(t, err)
+		assert.Equal(t, customRetryClient, retrievedRetryClient, "should return the custom retryable client")
+	})
+
+	t.Run("respects custom client's retry configuration over built-in defaults", func(t *testing.T) {
+		attemptCount := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attemptCount++
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+
+		// Create custom client with limited retries
+		customRetryClient := retryablehttp.NewClient()
+		customRetryClient.RetryMax = 1 // Only 1 retry (2 total attempts)
+		customRetryClient.RetryWaitMax = 5 * time.Millisecond
+
+		opts := defaultHTTPClientOption()
+		WithRetryableHTTPClint(customRetryClient)(&opts)
+
+		client := newCommonClient(testSystemInfo, opts)
+
+		req, err := http.NewRequest("GET", server.URL, nil)
+		require.NoError(t, err)
+
+		resp, err := client.do(req)
+		// When all retries are exhausted with a retryable error, the client gives up
+		// and an error is returned
+		if err != nil {
+			// Expected: request failed after exhausting retries
+			assert.Contains(t, err.Error(), "giving up after 2 attempt(s)")
+		} else {
+			// Or the final response is returned
+			assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		}
+		// Should have tried 1 initial + 1 retry = 2 times total
+		assert.Equal(t, 2, attemptCount)
+	})
 }
