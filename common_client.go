@@ -146,9 +146,13 @@ func (c *commonClient) setUserAgent() {
 type HTTPOption func(*httpClientOption)
 
 // WithLogger sets a custom logger for the Client.
-func WithLogger(logger slog.Logger) HTTPOption {
+// If nil is passed, a discard logger will be used.
+func WithLogger(logger *slog.Logger) HTTPOption {
 	return func(c *httpClientOption) {
-		c.logger = &logger
+		if logger == nil {
+			logger = slog.New(slog.DiscardHandler)
+		}
+		c.logger = logger
 	}
 }
 
