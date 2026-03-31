@@ -120,9 +120,7 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 		retryClient.HTTPClient.Timeout = o.timeout
 	}
 
-	if retryClient.Logger == nil {
-		retryClient.Logger = o.logger
-	}
+	retryClient.Logger = o.logger
 
 	transport, ok := retryClient.HTTPClient.Transport.(*http.Transport)
 	if !ok {
