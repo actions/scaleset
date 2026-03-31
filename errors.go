@@ -20,6 +20,10 @@ var (
 	RunnerExistsError             = scalesetError("runner exists")
 	JobStillRunningError          = scalesetError("job still running")
 	MessageQueueTokenExpiredError = scalesetError("message queue token expired")
+	// BadRequest is used when the error is not from the HTTP client, but from the application logic,
+	// such as invalid request body, missing required parameters, etc. It indicates that the request was malformed or invalid.
+	BadRequest   = scalesetError("bad request")
+	Unauthorized = scalesetError("unauthorized")
 )
 
 type actionsExceptionError struct {
@@ -87,12 +91,23 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 
 	switch {
 	case strings.Contains(exception.ExceptionName, "AgentExistsException"):
-		return fmt.Errorf("%s: %w: %s", sb.String(), RunnerExistsError, exception.Message)
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), RunnerExistsError, exception.Message))
 	case strings.Contains(exception.ExceptionName, "AgentNotFoundException"):
-		return fmt.Errorf("%s: %w: %s", sb.String(), RunnerNotFoundError, exception.Message)
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), RunnerNotFoundError, exception.Message))
 	case strings.Contains(exception.ExceptionName, "JobStillRunningException"):
-		return fmt.Errorf("%s: %w: %s", sb.String(), JobStillRunningError, exception.Message)
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), JobStillRunningError, exception.Message))
 	default:
-		return fmt.Errorf("%s: %w: %w", sb.String(), err, exception)
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %w", sb.String(), err, exception))
+	}
+}
+
+func wrapResponseErrorType(resp *http.Response, err error) error {
+	switch resp.StatusCode {
+	case http.StatusBadRequest:
+		return fmt.Errorf("%w: %w", BadRequest, err)
+	case http.StatusUnauthorized:
+		return fmt.Errorf("%w: %w", Unauthorized, err)
+	default:
+		return err
 	}
 }
