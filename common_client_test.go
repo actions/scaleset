@@ -204,7 +204,9 @@ func TestWithLogger(t *testing.T) {
 		client, err := opts.newRetryableHTTPClient()
 		require.NoError(t, err)
 		assert.NotNil(t, client.Logger, "retryable client should have logger set")
-		assert.Equal(t, handler, client.Logger.(*slog.Logger).Handler(), "retryable client logger should be the custom logger from WithLogger")
+		logger, ok := client.Logger.(*slog.Logger)
+		require.True(t, ok, "retryable client logger should be a *slog.Logger")
+		assert.Equal(t, handler, logger.Handler(), "retryable client logger should be the custom logger from WithLogger")
 	})
 }
 
