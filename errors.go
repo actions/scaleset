@@ -20,9 +20,9 @@ var (
 	RunnerExistsError             = scalesetError("runner exists")
 	JobStillRunningError          = scalesetError("job still running")
 	MessageQueueTokenExpiredError = scalesetError("message queue token expired")
-	// BadRequest is used when the error is not from the HTTP client, but from the application logic,
-	// such as invalid request body, missing required parameters, etc. It indicates that the request was malformed or invalid.
+	// Top level errors carying the http status code meanings.
 	BadRequest   = scalesetError("bad request")
+	NotFound     = scalesetError("not found")
 	Unauthorized = scalesetError("unauthorized")
 )
 
@@ -107,6 +107,8 @@ func wrapResponseErrorType(resp *http.Response, err error) error {
 		return fmt.Errorf("%w: %w", BadRequest, err)
 	case http.StatusUnauthorized:
 		return fmt.Errorf("%w: %w", Unauthorized, err)
+	case http.StatusNotFound:
+		return fmt.Errorf("%w: %w", NotFound, err)
 	default:
 		return err
 	}
