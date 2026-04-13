@@ -49,6 +49,7 @@ func (c *Config) Validate() error {
 type Client interface {
 	GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error)
 	DeleteMessage(ctx context.Context, messageID int) error
+	AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error)
 	Session() scaleset.RunnerScaleSetSession
 }
 
@@ -210,6 +211,12 @@ func (l *Listener) handleMessage(ctx context.Context, handler Scaler, msg *scale
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
+	if len(msg.JobAvailableMessages) > 0 {
+		if err := l.acquireAvailableJobs(ctx, msg.JobAvailableMessages); err != nil {
+			return fmt.Errorf("failed to acquire available jobs: %w", err)
+		}
+	}
+
 	for _, jobStarted := range msg.JobStartedMessages {
 		l.metricsRecorder.RecordJobStarted(jobStarted)
 		if err := handler.HandleJobStarted(ctx, jobStarted); err != nil {
@@ -229,6 +236,23 @@ func (l *Listener) handleMessage(ctx context.Context, handler Scaler, msg *scale
 	}
 	l.metricsRecorder.RecordDesiredRunners(desiredCount)
 
+	return nil
+}
+
+func (l *Listener) acquireAvailableJobs(ctx context.Context, jobsAvailable []*scaleset.JobAvailable) error {
+	ids := make([]int64, 0, len(jobsAvailable))
+	for _, job := range jobsAvailable {
+		ids = append(ids, job.RunnerRequestID)
+	}
+
+	l.logger.Info("Acquiring jobs", slog.Int("count", len(ids)))
+
+	acquired, err := l.client.AcquireJobs(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("acquiring jobs: %w", err)
+	}
+
+	l.logger.Info("Jobs acquired", slog.Int("count", len(acquired)))
 	return nil
 }
 

@@ -38,6 +38,74 @@ func (_m *MockClient) EXPECT() *MockClient_Expecter {
 	return &MockClient_Expecter{mock: &_m.Mock}
 }
 
+// AcquireJobs provides a mock function for the type MockClient
+func (_mock *MockClient) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
+	ret := _mock.Called(ctx, requestIDs)
+
+	if len(ret) == 0 {
+		panic("no return value specified for AcquireJobs")
+	}
+
+	var r0 []int64
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, []int64) ([]int64, error)); ok {
+		return returnFunc(ctx, requestIDs)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, []int64) []int64); ok {
+		r0 = returnFunc(ctx, requestIDs)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]int64)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, []int64) error); ok {
+		r1 = returnFunc(ctx, requestIDs)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockClient_AcquireJobs_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'AcquireJobs'
+type MockClient_AcquireJobs_Call struct {
+	*mock.Call
+}
+
+// AcquireJobs is a helper method to define mock.On call
+//   - ctx context.Context
+//   - requestIDs []int64
+func (_e *MockClient_Expecter) AcquireJobs(ctx interface{}, requestIDs interface{}) *MockClient_AcquireJobs_Call {
+	return &MockClient_AcquireJobs_Call{Call: _e.mock.On("AcquireJobs", ctx, requestIDs)}
+}
+
+func (_c *MockClient_AcquireJobs_Call) Run(run func(ctx context.Context, requestIDs []int64)) *MockClient_AcquireJobs_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 []int64
+		if args[1] != nil {
+			arg1 = args[1].([]int64)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockClient_AcquireJobs_Call) Return(int64s []int64, err error) *MockClient_AcquireJobs_Call {
+	_c.Call.Return(int64s, err)
+	return _c
+}
+
+func (_c *MockClient_AcquireJobs_Call) RunAndReturn(run func(ctx context.Context, requestIDs []int64) ([]int64, error)) *MockClient_AcquireJobs_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // DeleteMessage provides a mock function for the type MockClient
 func (_mock *MockClient) DeleteMessage(ctx context.Context, messageID int) error {
 	ret := _mock.Called(ctx, messageID)
