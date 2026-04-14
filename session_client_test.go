@@ -649,3 +649,231 @@ func TestDeleteMessage(t *testing.T) {
 		assert.Contains(t, err.Error(), "unexpected status code")
 	})
 }
+
+func TestAcquireJobs(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{
+		token: "token",
+	}
+
+	t.Run("Acquire jobs successfully", func(t *testing.T) {
+		requestIDs := []int64{1, 2}
+		want := []int64{1, 2}
+		response := []byte(`{"count":2,"value":[1,2]}`)
+
+		var handleSessionRequest http.HandlerFunc
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "acquirejobs") {
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Contains(t, r.URL.Path, "acquirejobs")
+				assert.True(t, strings.HasPrefix(r.Header.Get("Authorization"), "Bearer"), "expected Bearer authorization header")
+
+				var gotIDs []int64
+				err := json.NewDecoder(r.Body).Decode(&gotIDs)
+				require.NoError(t, err)
+				assert.Equal(t, requestIDs, gotIDs)
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write(response)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				handleSessionRequest(w, r)
+				return
+			}
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		got, err := sessionClient.AcquireJobs(ctx, requestIDs)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Message token expired", func(t *testing.T) {
+		var handleSessionRequest http.HandlerFunc
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "acquirejobs") {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			// create session
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
+			// refresh
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				handleSessionRequest(w, r)
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		got, err := sessionClient.AcquireJobs(ctx, []int64{1})
+		assert.Nil(t, got)
+		assert.ErrorIs(t, err, MessageQueueTokenExpiredError, "expected error to be MessageQueueTokenExpiredError but got: %v", err)
+	})
+
+	t.Run("Message token refreshed", func(t *testing.T) {
+		want := []int64{1, 2}
+		afterRefreshResponse := []byte(`{"count":2,"value":[1,2]}`)
+
+		var handleSessionRequest http.HandlerFunc
+		type state int
+		const (
+			createSession state = iota
+			firstAcquire
+			refreshToken
+			secondAcquire
+		)
+		currentState := createSession
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "acquirejobs") {
+				if currentState == firstAcquire {
+					w.WriteHeader(http.StatusUnauthorized)
+					currentState = refreshToken
+					return
+				}
+				require.Equal(t, secondAcquire, currentState)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(afterRefreshResponse)
+				return
+			}
+			// create session
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				require.Equal(t, createSession, currentState)
+				handleSessionRequest(w, r)
+				currentState = firstAcquire
+				return
+			}
+			// refresh
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				require.Equal(t, refreshToken, currentState)
+				handleSessionRequest(w, r)
+				currentState = secondAcquire
+				return
+			}
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		got, err := sessionClient.AcquireJobs(ctx, []int64{1, 2})
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Server error", func(t *testing.T) {
+		var handleSessionRequest http.HandlerFunc
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "acquirejobs") {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				handleSessionRequest(w, r)
+				return
+			}
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
+
+		retryMax := 1
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Nanosecond),
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MessageSessionClient(
+			ctx,
+			1,
+			"my-org",
+			WithRetryMax(retryMax),
+			WithRetryWaitMax(1*time.Nanosecond),
+		)
+		require.NoError(t, err)
+
+		got, err := sessionClient.AcquireJobs(ctx, []int64{1})
+		assert.Nil(t, got)
+		assert.NotNil(t, err)
+	})
+
+	t.Run("Empty request IDs", func(t *testing.T) {
+		response := []byte(`{"count":0,"value":[]}`)
+
+		var handleSessionRequest http.HandlerFunc
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "acquirejobs") {
+				assert.Equal(t, http.MethodPost, r.Method)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write(response)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				handleSessionRequest(w, r)
+				return
+			}
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		got, err := sessionClient.AcquireJobs(ctx, []int64{})
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}

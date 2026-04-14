@@ -12,10 +12,16 @@ type MessageType string
 
 // message types
 const (
+	MessageTypeJobAvailable MessageType = "JobAvailable"
 	MessageTypeJobAssigned  MessageType = "JobAssigned"
 	MessageTypeJobStarted   MessageType = "JobStarted"
 	MessageTypeJobCompleted MessageType = "JobCompleted"
 )
+
+type JobAvailable struct {
+	AcquireJobURL string `json:"acquireJobUrl"`
+	JobMessageBase
+}
 
 type JobAssigned struct {
 	JobMessageBase
@@ -99,6 +105,7 @@ type runnerScaleSetMessageResponse struct {
 type RunnerScaleSetMessage struct {
 	MessageID            int
 	Statistics           *RunnerScaleSetStatistic
+	JobAvailableMessages []*JobAvailable
 	JobAssignedMessages  []*JobAssigned
 	JobStartedMessages   []*JobStarted
 	JobCompletedMessages []*JobCompleted
@@ -107,6 +114,11 @@ type RunnerScaleSetMessage struct {
 type runnerScaleSetsResponse struct {
 	Count           int              `json:"count"`
 	RunnerScaleSets []RunnerScaleSet `json:"value"`
+}
+
+type acquireJobsResponse struct {
+	Count int     `json:"count"`
+	Value []int64 `json:"value"`
 }
 
 type RunnerScaleSetSession struct {

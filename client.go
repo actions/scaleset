@@ -510,6 +510,14 @@ func parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMess
 		}
 
 		switch messageType.MessageType {
+		case MessageTypeJobAvailable:
+			var jobAvailable JobAvailable
+			if err := json.Unmarshal(msg, &jobAvailable); err != nil {
+				return nil, fmt.Errorf("failed to decode job available: %w", err)
+			}
+
+			message.JobAvailableMessages = append(message.JobAvailableMessages, &jobAvailable)
+
 		case MessageTypeJobAssigned:
 			var jobAssigned JobAssigned
 			if err := json.Unmarshal(msg, &jobAssigned); err != nil {

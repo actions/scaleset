@@ -234,6 +234,67 @@ func (c *MessageSessionClient) Session() RunnerScaleSetSession {
 	return *c.session
 }
 
+// AcquireJobs acquires the given job request IDs from the runner scale set.
+// If the current session token is expired, it refreshes the session and tries one more time.
+func (c *MessageSessionClient) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ids, err := c.acquireJobs(ctx, requestIDs)
+	if err == nil {
+		return ids, nil
+	}
+
+	if !errors.Is(err, MessageQueueTokenExpiredError) {
+		return nil, fmt.Errorf("failed to acquire jobs: %w", err)
+	}
+
+	if err := c.refreshMessageSession(ctx); err != nil {
+		return nil, fmt.Errorf("failed to refresh message session: %w", err)
+	}
+
+	return c.acquireJobs(ctx, requestIDs)
+}
+
+func (c *MessageSessionClient) acquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
+	body, err := json.Marshal(requestIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request ids: %w", err)
+	}
+
+	path := fmt.Sprintf("/%s/%d/acquirejobs", scaleSetEndpoint, c.scaleSetID)
+
+	c.innerClient.mu.Lock()
+	req, err := c.innerClient.newActionsServiceRequest(ctx, http.MethodPost, path, bytes.NewBuffer(body))
+	c.innerClient.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create acquire jobs request: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
+
+	resp, err := c.commonClient.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to issue acquire jobs request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, newRequestResponseError(req, resp, MessageQueueTokenExpiredError)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code %s", resp.Status))
+	}
+
+	var result acquireJobsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode acquire jobs response: %w", err))
+	}
+
+	return result.Value, nil
+}
+
 func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
 	c.innerClient.mu.Lock()
 	defer c.innerClient.mu.Unlock()
