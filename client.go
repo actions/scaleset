@@ -314,6 +314,35 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 	}
 }
 
+// ListRunnerScaleSets returns every runner scale set in the given runner group.
+func (c *Client) ListRunnerScaleSets(ctx context.Context, runnerGroupID int) ([]RunnerScaleSet, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	path := fmt.Sprintf("/%s?runnerGroupId=%d", scaleSetEndpoint, runnerGroupID)
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to issue the request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
+	}
+
+	var list runnerScaleSetsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set list: %w", err))
+	}
+
+	return list.RunnerScaleSets, nil
+}
+
 // GetRunnerScaleSetByID fetches a runner scale set by its ID.
 func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int) (*RunnerScaleSet, error) {
 	c.mu.Lock()

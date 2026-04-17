@@ -1362,3 +1362,39 @@ kBxfaf3g7iFnl3u8+7Z/7Cb4ZqFcw0bRJseKuR9mFvBhcZxSErbMDEYrevefU9aM
 APeCxEyw6hJXgbWKoG7Fw2g2HP3ytCJ4YzH0zNitHjk/1h4BG7z8cEQILCSv5mN2
 etFcaQuTHEZyRhhJ4BU=
 -----END PRIVATE KEY-----`
+
+func TestListRunnerScaleSets(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{token: "token"}
+
+	expected := runnerScaleSetsResponse{
+		Count: 2,
+		RunnerScaleSets: []RunnerScaleSet{
+			{ID: 1, Name: "alpha", RunnerGroupID: 1},
+			{ID: 2, Name: "beta", RunnerGroupID: 1},
+		},
+	}
+
+	server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tenant/123/_apis/runtime/runnerscalesets" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("runnerGroupId") != "1" {
+			t.Errorf("runnerGroupId = %q", r.URL.Query().Get("runnerGroupId"))
+		}
+		if r.URL.Query().Get("name") != "" {
+			t.Errorf("expected no name filter, got %q", r.URL.Query().Get("name"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(expected)
+	}))
+
+	client, err := newClient(testSystemInfo, server.configURLForOrg("my-org"), auth)
+	require.NoError(t, err)
+
+	got, err := client.ListRunnerScaleSets(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "alpha", got[0].Name)
+	assert.Equal(t, "beta", got[1].Name)
+}
