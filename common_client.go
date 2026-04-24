@@ -1,4 +1,4 @@
-package scaleset
+1package scaleset
 
 import (
 	"bytes"
