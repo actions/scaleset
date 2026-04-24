@@ -3,6 +3,7 @@ package scaleset
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -154,6 +155,59 @@ func TestUserAgent(t *testing.T) {
 	want = string(b)
 
 	assert.Equal(t, want, got)
+}
+
+func TestWithLogger(t *testing.T) {
+	newJSONHandler := func() slog.Handler {
+		return slog.NewJSONHandler(
+			io.Discard,
+			&slog.HandlerOptions{
+				AddSource: true,
+				Level:     slog.LevelError,
+			},
+		)
+	}
+	t.Run("WithLogger(nil) sets a discard logger on raw httpClientOption", func(t *testing.T) {
+		opts := httpClientOption{}
+		WithLogger(nil)(&opts)
+		require.NotNil(t, opts.logger, "WithLogger(nil) should set a discard logger, not leave it nil")
+		assert.Equal(t, slog.DiscardHandler, opts.logger.Handler(), "WithLogger(nil) should set a discard logger handler")
+	})
+
+	t.Run("WithLogger(customLogger) assigns the provided logger", func(t *testing.T) {
+		handler := newJSONHandler()
+		customLogger := slog.New(handler)
+		opts := httpClientOption{}
+		WithLogger(customLogger)(&opts)
+		require.Equal(t, customLogger, opts.logger, "WithLogger should assign the provided logger")
+		assert.Equal(t, handler, opts.logger.Handler(), "WithLogger should set the provided logger handler")
+	})
+
+	t.Run("WithLogger(nil) propagates discard logger to retryable HTTP client", func(t *testing.T) {
+		opts := httpClientOption{}
+		WithLogger(nil)(&opts)
+		client, err := opts.newRetryableHTTPClient()
+		require.NoError(t, err)
+		assert.NotNil(t, client.Logger, "retryable client should have logger set from WithLogger(nil)")
+
+		logger, ok := client.Logger.(*slog.Logger)
+		require.True(t, ok, "retryable client logger should be a *slog.Logger")
+		assert.Same(t, opts.logger, logger, "retryable client logger should be the same logger set by WithLogger(nil)")
+		assert.Equal(t, slog.DiscardHandler, logger.Handler(), "retryable client logger should be a discard logger from WithLogger(nil)")
+	})
+
+	t.Run("WithLogger(customLogger) propagates custom logger to retryable HTTP client", func(t *testing.T) {
+		handler := newJSONHandler()
+		customLogger := slog.New(handler)
+		opts := httpClientOption{}
+		WithLogger(customLogger)(&opts)
+		client, err := opts.newRetryableHTTPClient()
+		require.NoError(t, err)
+		assert.NotNil(t, client.Logger, "retryable client should have logger set")
+		logger, ok := client.Logger.(*slog.Logger)
+		require.True(t, ok, "retryable client logger should be a *slog.Logger")
+		assert.Equal(t, handler, logger.Handler(), "retryable client logger should be the custom logger from WithLogger")
+	})
 }
 
 // TestWithRetryableHTTPClient verifies that a custom retryable HTTP client
