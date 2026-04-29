@@ -21,9 +21,10 @@ var (
 	JobStillRunningError          = scalesetError("job still running")
 	MessageQueueTokenExpiredError = scalesetError("message queue token expired")
 	// Top level errors carying the http status code meanings.
-	BadRequest   = scalesetError("bad request")
-	NotFound     = scalesetError("not found")
-	Unauthorized = scalesetError("unauthorized")
+	BadRequestError   = scalesetError("bad request")
+	NotFoundError     = scalesetError("not found")
+	UnauthorizedError = scalesetError("unauthorized")
+	ConflictError     = scalesetError("conflict")
 )
 
 type actionsExceptionError struct {
@@ -63,30 +64,30 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 	sb.WriteRune(')')
 
 	if resp.Body == nil || resp.ContentLength == 0 {
-		return fmt.Errorf("%s: %w: unknown error", sb.String(), err)
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: unknown error", sb.String(), err))
 	}
 
 	body, bodyErr := io.ReadAll(resp.Body)
 	if bodyErr != nil {
-		return fmt.Errorf("%s: %w: failed to read error response body: %w", sb.String(), err, bodyErr)
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: failed to read error response body: %w", sb.String(), err, bodyErr))
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("%s: %w: unknown error", sb.String(), err)
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: unknown error", sb.String(), err))
 	}
 
 	var scalesetErr scalesetError
 	if errors.As(err, &scalesetErr) {
-		return fmt.Errorf("%s: %w: %s", sb.String(), err, string(body))
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), err, string(body)))
 	}
 
 	contentType := resp.Header.Get("Content-Type")
 	if len(contentType) > 0 && strings.Contains(contentType, "text/plain") {
-		return fmt.Errorf("%s: %w: %s", sb.String(), err, string(body))
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), err, string(body)))
 	}
 
 	var exception actionsExceptionError
 	if err := json.Unmarshal(body, &exception); err != nil {
-		return fmt.Errorf("%s: %w: failed to unmarshal error response body: %q", sb.String(), err, string(body))
+		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: failed to unmarshal error response body: %q", sb.String(), err, string(body)))
 	}
 
 	switch {
@@ -104,11 +105,13 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 func wrapResponseErrorType(resp *http.Response, err error) error {
 	switch resp.StatusCode {
 	case http.StatusBadRequest:
-		return fmt.Errorf("%w: %w", BadRequest, err)
+		return fmt.Errorf("%w: %w", BadRequestError, err)
 	case http.StatusUnauthorized:
-		return fmt.Errorf("%w: %w", Unauthorized, err)
+		return fmt.Errorf("%w: %w", UnauthorizedError, err)
 	case http.StatusNotFound:
-		return fmt.Errorf("%w: %w", NotFound, err)
+		return fmt.Errorf("%w: %w", NotFoundError, err)
+	case http.StatusConflict:
+		return fmt.Errorf("%w: %w", ConflictError, err)
 	default:
 		return err
 	}
