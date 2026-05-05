@@ -12,7 +12,7 @@ You do *not* need to adopt the full controller (and Kubernetes) to take advantag
 
 A runner scale set is a group of self-hosted runners that autoscales based on workflow demand. Here's how it works:
 
-1. **Registration**: You create a scale set with a name, which also serves as the label workflows use to target it (e.g., `runs-on: my-scale-set`). Multiple labels can be assigned per scale set. Like regular self-hosted runners, scale sets can be registered at the repository, organization, or enterprise level.
+1. **Registration**: You create a scale set with a name, which also serves as the label workflows use to target it (e.g., `runs-on: my-scale-set`). Multiple labels can be assigned per scale set (on GHES, this requires enabling a feature flag — see [GitHub Enterprise Server](#github-enterprise-server)). Like regular self-hosted runners, scale sets can be registered at the repository, organization, or enterprise level.
 2. **Polling**: Your scale set client continuously polls the API, reporting its maximum capacity (how many runners it can produce).
 3. **Job matching**: GitHub matches jobs to your scale set based on the label and runner group policies, just like regular self-hosted runners.
 4. **Scaling signal**: The API responds with how many runners your scale set needs online (`statistics.TotalAssignedJobs`).
@@ -152,6 +152,23 @@ The client automatically exchanges credentials for a registration token + admin 
 You can find more details on required permissions in the [GitHub Docs](https://docs.github.com/en/actions/tutorials/use-actions-runner-controller/authenticate-to-the-api).
 
 GitHub Enterprise Server (GHES) is supported out of the box—just use your GHES URL when creating the client.
+
+### GitHub Enterprise Server
+
+#### Multiple labels per scale set
+
+Assigning more than one label to a scale set is supported on **GHES 3.18 and later** and requires the `DistributedTask.AllowRunnerScaleSetCustomLabels` feature flag to be enabled on the appliance. Without it, the scale set name is used as the only label, and any additional labels you provide are silently dropped.
+
+- **GHES 3.18 – 3.20:** the flag is **off by default**. A site admin needs to enable it on the appliance:
+
+  ```bash
+  # SSH into the GHES appliance as admin
+  ghe-actions-console -s actions
+  # In the LightRail prompt:
+  Set-FeatureFlag -FeatureName DistributedTask.AllowRunnerScaleSetCustomLabels -State On
+  ```
+
+- **GHES 3.21 and later:** the flag is **on by default**, no action required.
 
 ---
 
