@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -388,11 +389,27 @@ func applyDefaultLabelTypes(runnerScaleSet *RunnerScaleSet) {
 	}
 }
 
+func ensureLabels(runnerScaleSet *RunnerScaleSet) error {
+	if len(runnerScaleSet.Labels) > 0 {
+		return nil
+	}
+
+	if runnerScaleSet.Name == "" {
+		return errors.New("runner scale set must have a name or at least one label")
+	}
+
+	runnerScaleSet.Labels = []Label{{Name: runnerScaleSet.Name, Type: "System"}}
+	return nil
+}
+
 // CreateRunnerScaleSet creates a new runner scale set. Note that runner scale set names must be unique within a runner group.
 func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if err := ensureLabels(runnerScaleSet); err != nil {
+		return nil, fmt.Errorf("validating runner scale set: %w", err)
+	}
 	applyDefaultLabelTypes(runnerScaleSet)
 
 	body, err := json.Marshal(runnerScaleSet)

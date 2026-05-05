@@ -829,7 +829,13 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 	}
 
 	scaleSetCreationDateTime := time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
-	runnerScaleSet := RunnerScaleSet{ID: 1, Name: "ScaleSet", CreatedOn: scaleSetCreationDateTime, RunnerSetting: RunnerSetting{}}
+	runnerScaleSet := RunnerScaleSet{
+		ID:            1,
+		Name:          "ScaleSet",
+		Labels:        []Label{{Name: "ScaleSet", Type: "System"}},
+		CreatedOn:     scaleSetCreationDateTime,
+		RunnerSetting: RunnerSetting{},
+	}
 
 	t.Run("Create runner scale set", func(t *testing.T) {
 		want := &runnerScaleSet
@@ -919,6 +925,76 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 		require.NotNil(t, err)
 		expectedRetry := retryMax + 1
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
+	})
+
+	t.Run("populates labels with the scale set name when none are provided", func(t *testing.T) {
+		var sentBody RunnerScaleSet
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&sentBody))
+			rsl, err := json.Marshal(&runnerScaleSet)
+			require.NoError(t, err)
+			w.Write(rsl)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		input := &RunnerScaleSet{Name: "my-scale-set"}
+		_, err = client.CreateRunnerScaleSet(ctx, input)
+		require.NoError(t, err)
+
+		expectedLabels := []Label{{Name: "my-scale-set", Type: "System"}}
+		assert.Equal(t, expectedLabels, sentBody.Labels, "expected the request body to default labels to the scale set name")
+		assert.Equal(t, expectedLabels, input.Labels, "expected the input to be populated with the default label")
+	})
+
+	t.Run("returns an error when both name and labels are empty", func(t *testing.T) {
+		called := false
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		_, err = client.CreateRunnerScaleSet(ctx, &RunnerScaleSet{})
+		require.Error(t, err)
+		assert.False(t, called, "expected no request to be sent when validation fails")
+	})
+
+	t.Run("preserves caller-provided labels", func(t *testing.T) {
+		var sentBody RunnerScaleSet
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&sentBody))
+			rsl, err := json.Marshal(&runnerScaleSet)
+			require.NoError(t, err)
+			w.Write(rsl)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		input := &RunnerScaleSet{
+			Name:   "my-scale-set",
+			Labels: []Label{{Name: "linux"}, {Name: "x64"}},
+		}
+		_, err = client.CreateRunnerScaleSet(ctx, input)
+		require.NoError(t, err)
+
+		expectedLabels := []Label{{Name: "linux", Type: "System"}, {Name: "x64", Type: "System"}}
+		assert.Equal(t, expectedLabels, sentBody.Labels, "expected caller-provided labels to be preserved")
 	})
 }
 
