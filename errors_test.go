@@ -44,7 +44,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), nil, base)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "request GET https://example.com/org/repo failed")
-		assert.True(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, base)
 	})
 
 	t.Run("resp body is nil", func(t *testing.T) {
@@ -60,7 +60,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unknown error")
-		assert.True(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, base)
 	})
 
 	t.Run("empty body returns unknown error", func(t *testing.T) {
@@ -76,11 +76,12 @@ func TestNewRequestResponseError(t *testing.T) {
 
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
+		assert.ErrorIs(t, err, NotFoundError)
 		assert.Contains(t, err.Error(), "status=\"404 Not Found\"")
 		assert.Contains(t, err.Error(), "activity_id=\"activity-id\"")
 		assert.Contains(t, err.Error(), "github_request_id=\"request-id\"")
 		assert.Contains(t, err.Error(), "unknown error")
-		assert.True(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, base)
 	})
 
 	t.Run("read body failure includes read error", func(t *testing.T) {
@@ -96,7 +97,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to read error response body")
-		assert.True(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, base)
 		assert.Contains(t, err.Error(), "read failed")
 	})
 
@@ -113,7 +114,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unknown error")
-		assert.True(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, base)
 	})
 
 	t.Run("text/plain body is included", func(t *testing.T) {
@@ -132,7 +133,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), body)
-		assert.True(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, base)
 	})
 
 	t.Run("scalesetError in error chain uses raw body (no JSON parsing)", func(t *testing.T) {
@@ -149,7 +150,7 @@ func TestNewRequestResponseError(t *testing.T) {
 
 		err := newRequestResponseError(req(t), resp, wrapped)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, RunnerNotFoundError))
+		assert.ErrorIs(t, err, RunnerNotFoundError)
 		assert.Contains(t, err.Error(), body)
 	})
 
@@ -167,8 +168,9 @@ func TestNewRequestResponseError(t *testing.T) {
 
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, RunnerExistsError))
-		assert.False(t, errors.Is(err, base), "base error should not be wrapped for mapped exceptions")
+		assert.ErrorIs(t, err, RunnerExistsError)
+		assert.ErrorIs(t, err, ConflictError)
+		assert.NotErrorIs(t, err, base, "base error should not be wrapped for mapped exceptions")
 		assert.Contains(t, err.Error(), "runner already exists")
 	})
 
@@ -186,8 +188,8 @@ func TestNewRequestResponseError(t *testing.T) {
 
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, RunnerNotFoundError))
-		assert.False(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, RunnerNotFoundError)
+		assert.NotErrorIs(t, err, base)
 		assert.Contains(t, err.Error(), "missing")
 	})
 
@@ -205,8 +207,9 @@ func TestNewRequestResponseError(t *testing.T) {
 
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, JobStillRunningError))
-		assert.False(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, JobStillRunningError)
+		assert.ErrorIs(t, err, ConflictError)
+		assert.NotErrorIs(t, err, base)
 		assert.Contains(t, err.Error(), "still running")
 	})
 
@@ -226,7 +229,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to unmarshal error response body")
 		assert.Contains(t, err.Error(), "not-json")
-		assert.False(t, errors.Is(err, base), "base error is not wrapped on JSON unmarshal failures")
+		assert.NotErrorIs(t, err, base, "base error is not wrapped on JSON unmarshal failures")
 	})
 
 	t.Run("unknown json error wraps exception", func(t *testing.T) {
@@ -243,7 +246,7 @@ func TestNewRequestResponseError(t *testing.T) {
 
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, base))
+		assert.ErrorIs(t, err, base)
 
 		var ex actionsExceptionError
 		assert.True(t, errors.As(err, &ex))
