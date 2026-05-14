@@ -50,11 +50,8 @@ jobs:
         with:
           go-version-file: "go.mod"
           cache: false
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20
-        with:
-          only-new-issues: true
-          version: v2.5.0
+      - name: "Lint"
+        run: go tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint run ./...
 
   test:
     runs-on: ubuntu-latest
