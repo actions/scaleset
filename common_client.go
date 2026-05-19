@@ -85,6 +85,7 @@ type httpClientOption struct {
 	// fields added to the transport if specified
 	rootCAs               *x509.CertPool
 	tlsInsecureSkipVerify bool
+	tlsClientCertificates []tls.Certificate
 	proxyFunc             ProxyFunc
 	timeout               time.Duration
 
@@ -138,6 +139,10 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 
 	if o.tlsInsecureSkipVerify {
 		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
+
+	if len(o.tlsClientCertificates) > 0 {
+		transport.TLSClientConfig.Certificates = o.tlsClientCertificates
 	}
 
 	if o.proxyFunc != nil {
@@ -212,6 +217,24 @@ func WithoutTLSVerify() HTTPOption {
 	return func(c *httpClientOption) {
 		c.tlsInsecureSkipVerify = true
 	}
+}
+
+// WithTLSClientCertificate configures a TLS client certificate for mTLS authentication.
+// This is useful when connecting through proxies that require client certificate authentication.
+func WithTLSClientCertificate(cert tls.Certificate) HTTPOption {
+	return func(c *httpClientOption) {
+		c.tlsClientCertificates = append(c.tlsClientCertificates, cert)
+	}
+}
+
+// WithTLSClientCertificateFromFile loads a TLS client certificate and key from files
+// for mTLS authentication. This is a convenience function that wraps WithTLSClientCertificate.
+func WithTLSClientCertificateFromFile(certFile, keyFile string) (HTTPOption, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load client certificate: %w", err)
+	}
+	return WithTLSClientCertificate(cert), nil
 }
 
 // WithProxy sets a custom proxy function for the Client.
