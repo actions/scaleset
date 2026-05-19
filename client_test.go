@@ -220,6 +220,28 @@ func TestNewClientWithGitHubApp(t *testing.T) {
 	})
 }
 
+func TestNewClientWithBothTokenAndGitHubApp(t *testing.T) {
+	t.Run("returns error when both credentials are provided", func(t *testing.T) {
+		client, err := newClient(
+			testSystemInfo,
+			"https://github.com/my-org/my-repo",
+			actionsAuth{
+				token: "ghp_test_token",
+				app: &GitHubAppAuth{
+					ClientID:       "12345",
+					InstallationID: 67890,
+					PrivateKey:     samplePrivateKey,
+				},
+			},
+		)
+
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "invalid credentials")
+		assert.Contains(t, err.Error(), "cannot provide both GitHub App credentials and personal access token")
+	})
+}
+
 func TestNewActionsServiceRequest(t *testing.T) {
 	ctx := context.Background()
 	defaultCreds := actionsAuth{token: "token"}

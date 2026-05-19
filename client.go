@@ -112,10 +112,18 @@ type actionsAuth struct {
 	token string
 }
 
-// validate returns an error if both the GitHub App credentials and the personal access token are missing.
-func (a *actionsAuth) validate() error {
+// validate does the basic validation check, ensuring that
+// either GitHub App credentials or a personal access token is provided.
+// If GitHub App credentials are provided, it further validates the credentials.
+//
+// This method does not validate the credentials against GitHub, so it does not
+// check if the credentials are correct or have the necessary permissions.
+func (a actionsAuth) validate() error {
 	if a.token == "" && a.app == nil {
 		return fmt.Errorf("either GitHub App credentials or personal access token is required")
+	}
+	if a.token != "" && a.app != nil {
+		return fmt.Errorf("cannot provide both GitHub App credentials and personal access token")
 	}
 	if a.app != nil {
 		return a.app.Validate()
