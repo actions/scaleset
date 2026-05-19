@@ -142,7 +142,10 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 	}
 
 	if len(o.tlsClientCertificates) > 0 {
-		transport.TLSClientConfig.Certificates = o.tlsClientCertificates
+		transport.TLSClientConfig.Certificates = append(
+			transport.TLSClientConfig.Certificates,
+			o.tlsClientCertificates...,
+		)
 	}
 
 	if o.proxyFunc != nil {
@@ -220,15 +223,19 @@ func WithoutTLSVerify() HTTPOption {
 }
 
 // WithTLSClientCertificate configures a TLS client certificate for mTLS authentication.
-// This is useful when connecting through proxies that require client certificate authentication.
+// Note: The certificate is added to the TLS transport configuration and will be presented
+// during TLS handshakes for ALL connections made by this client, not just proxy connections.
+// If you need host-scoped certificate selection, consider using a custom transport with
+// tls.Config.GetClientCertificate instead.
 func WithTLSClientCertificate(cert tls.Certificate) HTTPOption {
 	return func(c *httpClientOption) {
 		c.tlsClientCertificates = append(c.tlsClientCertificates, cert)
 	}
 }
 
-// WithTLSClientCertificateFromFile loads a TLS client certificate and key from files
-// for mTLS authentication. This is a convenience function that wraps WithTLSClientCertificate.
+// WithTLSClientCertificateFromFile loads a TLS client certificate and key from files.
+// This is a convenience function that wraps WithTLSClientCertificate.
+// See WithTLSClientCertificate for important notes about certificate scope.
 func WithTLSClientCertificateFromFile(certFile, keyFile string) (HTTPOption, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
