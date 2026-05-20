@@ -1,12 +1,15 @@
 package scaleset
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -292,5 +295,69 @@ func TestWithRetryableHTTPClient(t *testing.T) {
 		}
 		// Should have tried 1 initial + 1 retry = 2 times total
 		assert.Equal(t, 2, attemptCount)
+	})
+}
+
+func TestWithTLSClientCertificate(t *testing.T) {
+	t.Run("applies client certificate to transport", func(t *testing.T) {
+		cert, err := tls.LoadX509KeyPair("testdata/leaf.crt", "testdata/leaf.key")
+		require.NoError(t, err)
+
+		opts := defaultHTTPClientOption()
+		WithTLSClientCertificate(cert)(&opts)
+
+		assert.Len(t, opts.tlsClientCertificates, 1)
+
+		client, err := opts.newRetryableHTTPClient()
+		require.NoError(t, err)
+
+		transport, ok := client.HTTPClient.Transport.(*http.Transport)
+		require.True(t, ok)
+		assert.Len(t, transport.TLSClientConfig.Certificates, 1)
+	})
+
+	t.Run("allows multiple certificates", func(t *testing.T) {
+		cert, err := tls.LoadX509KeyPair("testdata/leaf.crt", "testdata/leaf.key")
+		require.NoError(t, err)
+
+		opts := defaultHTTPClientOption()
+		WithTLSClientCertificate(cert)(&opts)
+		WithTLSClientCertificate(cert)(&opts)
+
+		assert.Len(t, opts.tlsClientCertificates, 2)
+	})
+}
+
+func TestWithTLSClientCertificateFromFile(t *testing.T) {
+	t.Run("loads certificate from files", func(t *testing.T) {
+		certFile := "testdata/leaf.crt"
+		keyFile := "testdata/leaf.key"
+
+		opt, err := WithTLSClientCertificateFromFile(certFile, keyFile)
+		require.NoError(t, err)
+
+		opts := defaultHTTPClientOption()
+		opt(&opts)
+
+		assert.Len(t, opts.tlsClientCertificates, 1)
+	})
+
+	t.Run("returns error for non-existent files", func(t *testing.T) {
+		_, err := WithTLSClientCertificateFromFile("nonexistent.crt", "nonexistent.key")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to load client certificate")
+	})
+
+	t.Run("returns error for invalid certificate", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		certFile := filepath.Join(tmpDir, "invalid.crt")
+		keyFile := filepath.Join(tmpDir, "invalid.key")
+
+		require.NoError(t, os.WriteFile(certFile, []byte("not a cert"), 0600))
+		require.NoError(t, os.WriteFile(keyFile, []byte("not a key"), 0600))
+
+		_, err := WithTLSClientCertificateFromFile(certFile, keyFile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to load client certificate")
 	})
 }
