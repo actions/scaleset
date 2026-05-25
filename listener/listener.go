@@ -63,6 +63,7 @@ type Client interface {
 // of the listener and the scaleset service.
 type MetricsRecorder interface {
 	RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic)
+	RecordJobAvailable(msg *scaleset.JobAvailable)
 	RecordJobStarted(msg *scaleset.JobStarted)
 	RecordJobCompleted(msg *scaleset.JobCompleted)
 	RecordDesiredRunners(count int)
@@ -71,6 +72,7 @@ type MetricsRecorder interface {
 type discardMetricsRecorder struct{}
 
 func (d *discardMetricsRecorder) RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic) {}
+func (d *discardMetricsRecorder) RecordJobAvailable(msg *scaleset.JobAvailable)                 {}
 func (d *discardMetricsRecorder) RecordJobStarted(msg *scaleset.JobStarted)                     {}
 func (d *discardMetricsRecorder) RecordJobCompleted(msg *scaleset.JobCompleted)                 {}
 func (d *discardMetricsRecorder) RecordDesiredRunners(count int)                                {}
@@ -212,6 +214,10 @@ func (l *Listener) handleMessage(ctx context.Context, handler Scaler, msg *scale
 	}
 
 	if len(msg.JobAvailableMessages) > 0 {
+		for _, jobAvailable := range msg.JobAvailableMessages {
+			l.metricsRecorder.RecordJobAvailable(jobAvailable)
+		}
+
 		if err := l.acquireAvailableJobs(ctx, msg.JobAvailableMessages); err != nil {
 			return fmt.Errorf("failed to acquire available jobs: %w", err)
 		}
