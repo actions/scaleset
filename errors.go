@@ -20,7 +20,7 @@ var (
 	RunnerExistsError             = scalesetError("runner exists")
 	JobStillRunningError          = scalesetError("job still running")
 	MessageQueueTokenExpiredError = scalesetError("message queue token expired")
-	// Top level errors carying the http status code meanings.
+	// Top-level errors carrying the HTTP status code meanings.
 	BadRequestError   = scalesetError("bad request")
 	NotFoundError     = scalesetError("not found")
 	UnauthorizedError = scalesetError("unauthorized")
