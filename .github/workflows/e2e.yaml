@@ -35,7 +35,7 @@ jobs:
           go-version-file: "go.mod"
       - name: Get configure token
         id: config-token
-        uses: peter-murray/workflow-application-token-action@d17e3a9a36850ea89f35db16c1067dd2b68ee343
+        uses: peter-murray/workflow-application-token-action@0e48752d10f9c54a8fbc6ceffeca53402347e893
         with:
           application_id: ${{ secrets.E2E_TESTS_ACCESS_CLIENT_ID }}
           application_private_key: ${{ secrets.E2E_TESTS_ACCESS_PK }}
