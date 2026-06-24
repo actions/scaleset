@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -333,6 +335,79 @@ func TestGetMessage(t *testing.T) {
 		got, err := sessionClient.GetMessage(ctx, 0, 10)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
+	})
+
+	t.Run("Concurrent expired token refreshes once", func(t *testing.T) {
+		const goroutines = 8
+
+		response := []byte(`{"messageId":1,"messageType":"RunnerScaleSetJobMessages"}`)
+		oldToken := "old-message-token"
+		newToken := "new-message-token"
+
+		var oldTokenRequests atomic.Int32
+		var refreshRequests atomic.Int32
+		allowRefresh := make(chan struct{})
+
+		var handleSessionRequest http.HandlerFunc
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "sessions") {
+				handleSessionRequest(w, r)
+				return
+			}
+
+			if strings.Contains(r.URL.Path, "/sessions/") {
+				if refreshRequests.Add(1) == 1 {
+					<-allowRefresh
+				}
+				handleSessionRequest(w, r)
+				return
+			}
+
+			switch r.Header.Get("Authorization") {
+			case "Bearer " + oldToken:
+				if oldTokenRequests.Add(1) == goroutines {
+					close(allowRefresh)
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+			case "Bearer " + newToken:
+				w.Write(response)
+			default:
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		}))
+
+		initialSession := server.testRunnerScaleSetSession()
+		initialSession.MessageQueueAccessToken = oldToken
+		refreshedSession := server.testRunnerScaleSetSession()
+		refreshedSession.SessionID = initialSession.SessionID
+		refreshedSession.MessageQueueAccessToken = newToken
+		handleSessionRequest = newTestSessionRequestHandler(t, initialSession)
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+		)
+		require.NoError(t, err)
+
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+		handleSessionRequest = newTestSessionRequestHandler(t, refreshedSession)
+
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				got, err := sessionClient.GetMessage(ctx, 0, 10)
+				require.NoError(t, err)
+				assert.Equal(t, runnerScaleSetMessage, got)
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(goroutines), oldTokenRequests.Load())
+		assert.Equal(t, int32(1), refreshRequests.Load())
 	})
 
 	t.Run("Status code not found", func(t *testing.T) {
