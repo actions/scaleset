@@ -305,7 +305,13 @@ func (t actionsServiceAdminToken) requestURL(path string, query url.Values) (str
 
 func joinURLPath(base, path string) string {
 	if base == "" {
-		return path
+		if path == "" {
+			return ""
+		}
+		if strings.HasPrefix(path, "/") {
+			return path
+		}
+		return "/" + path
 	}
 	if path == "" {
 		return strings.TrimRight(base, "/")
