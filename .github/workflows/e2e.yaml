@@ -27,7 +27,7 @@ jobs:
     env:
       E2E_WORKFLOW_TARGET_FILE: "basic.yaml"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: true
       - uses: actions/setup-go@v6
@@ -35,7 +35,7 @@ jobs:
           go-version-file: "go.mod"
       - name: Get configure token
         id: config-token
-        uses: peter-murray/workflow-application-token-action@d17e3a9a36850ea89f35db16c1067dd2b68ee343
+        uses: peter-murray/workflow-application-token-action@cb731e00cb6754f584507134ff389dfb3dc42bbc
         with:
           application_id: ${{ secrets.E2E_TESTS_ACCESS_CLIENT_ID }}
           application_private_key: ${{ secrets.E2E_TESTS_ACCESS_PK }}
