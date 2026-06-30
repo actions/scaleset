@@ -104,27 +104,29 @@ func (a *GitHubAppAuth) Validate() error {
 }
 
 type actionsAuth struct {
-	// app is the GitHub app credentials
-	app *GitHubAppAuth
-	// GitHub PAT
+	// token is a GitHub PAT (mutually exclusive with jwtProvider).
 	token string
+	// jwtProvider creates JWTs for GitHub App auth.
+	jwtProvider JWTProvider
+	// installationID is the GitHub App installation ID (used with jwtProvider).
+	installationID int64
 }
 
 // validate does the basic validation check, ensuring that
-// either GitHub App credentials or a personal access token is provided.
-// If GitHub App credentials are provided, it further validates the credentials.
+// either GitHub App credentials (a JWT provider with an installation ID)
+// or a personal access token is provided.
 //
 // This method does not validate the credentials against GitHub, so it does not
 // check if the credentials are correct or have the necessary permissions.
 func (a actionsAuth) validate() error {
-	if a.token == "" && a.app == nil {
+	if a.token == "" && a.jwtProvider == nil {
 		return fmt.Errorf("either GitHub App credentials or personal access token is required")
 	}
-	if a.token != "" && a.app != nil {
+	if a.token != "" && a.jwtProvider != nil {
 		return fmt.Errorf("cannot provide both GitHub App credentials and personal access token")
 	}
-	if a.app != nil {
-		return a.app.Validate()
+	if a.jwtProvider != nil && a.installationID == 0 {
+		return fmt.Errorf("app installation ID is required")
 	}
 	return nil
 }
@@ -163,11 +165,21 @@ type ClientWithGitHubAppConfig struct {
 
 // NewClientWithGitHubApp creates a new Client using GitHub App credentials.
 func NewClientWithGitHubApp(config ClientWithGitHubAppConfig, options ...HTTPOption) (*Client, error) {
+	if err := config.GitHubAppAuth.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid credentials: %w", err)
+	}
+
+	provider, err := newPEMJWTProvider(config.GitHubAppAuth.ClientID, config.GitHubAppAuth.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid credentials: %w", err)
+	}
+
 	return newClient(
 		config.SystemInfo,
 		config.GitHubConfigURL,
 		actionsAuth{
-			app: &config.GitHubAppAuth,
+			jwtProvider:    provider,
+			installationID: config.GitHubAppAuth.InstallationID,
 		},
 		options...,
 	)
@@ -187,6 +199,35 @@ func NewClientWithPersonalAccessToken(config NewClientWithPersonalAccessTokenCon
 		config.GitHubConfigURL,
 		actionsAuth{
 			token: config.PersonalAccessToken,
+		},
+		options...,
+	)
+}
+
+// ClientWithJWTProviderConfig contains the configuration for creating a new Client
+// using a custom JWTProvider for GitHub App authentication.
+type ClientWithJWTProviderConfig struct {
+	GitHubConfigURL string
+	InstallationID  int64
+	SystemInfo      SystemInfo
+}
+
+// NewClientWithJWTProvider creates a new Client using a custom JWTProvider for GitHub App
+// authentication. This enables KMS-backed signing where private key material never
+// leaves the secure boundary.
+func NewClientWithJWTProvider(config ClientWithJWTProviderConfig, provider JWTProvider, options ...HTTPOption) (*Client, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("JWT provider is required")
+	}
+	if config.InstallationID == 0 {
+		return nil, fmt.Errorf("installation ID is required")
+	}
+	return newClient(
+		config.SystemInfo,
+		config.GitHubConfigURL,
+		actionsAuth{
+			jwtProvider:    provider,
+			installationID: config.InstallationID,
 		},
 		options...,
 	)
@@ -818,7 +859,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	if c.creds.token != "" {
 		bearerToken = fmt.Sprintf("Bearer %v", c.creds.token)
 	} else {
-		accessToken, err := c.fetchAccessToken(ctx, c.creds.app)
+		accessToken, err := c.fetchAccessToken(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch access token: %w", err)
 		}
@@ -855,13 +896,13 @@ type accessToken struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func (c *Client) fetchAccessToken(ctx context.Context, creds *GitHubAppAuth) (*accessToken, error) {
-	accessTokenJWT, err := createJWTForGitHubApp(creds)
+func (c *Client) fetchAccessToken(ctx context.Context) (*accessToken, error) {
+	accessTokenJWT, err := c.creds.jwtProvider.Token(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create JWT for GitHub app: %w", err)
+		return nil, fmt.Errorf("failed to get JWT for GitHub App auth: %w", err)
 	}
 
-	path := fmt.Sprintf("/app/installations/%v/access_tokens", creds.InstallationID)
+	path := fmt.Sprintf("/app/installations/%v/access_tokens", c.creds.installationID)
 	req, err := c.newGitHubAPIRequest(ctx, http.MethodPost, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
@@ -993,30 +1034,6 @@ func createRegistrationTokenPath(config *gitHubConfig) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown scope for config url: %s", config.configURL)
 	}
-}
-
-func createJWTForGitHubApp(appAuth *GitHubAppAuth) (string, error) {
-	// Encode as JWT
-	// See https://docs.github.com/en/developers/apps/building-github-apps/authenticating-with-github-apps#authenticating-as-a-github-app
-
-	// Going back in time a bit helps with clock skew.
-	issuedAt := time.Now().Add(-60 * time.Second)
-	// Max expiration date is 10 minutes.
-	expiresAt := issuedAt.Add(9 * time.Minute)
-	claims := &jwt.RegisteredClaims{
-		IssuedAt:  jwt.NewNumericDate(issuedAt),
-		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		Issuer:    appAuth.ClientID,
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-
-	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(appAuth.PrivateKey))
-	if err != nil {
-		return "", fmt.Errorf("failed to parse RSA private key from PEM: %w", err)
-	}
-
-	return token.SignedString(privateKey)
 }
 
 // Returns slice of body without utf-8 byte order mark.
