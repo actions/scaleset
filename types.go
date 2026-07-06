@@ -84,8 +84,8 @@ type RunnerScaleSet struct {
 	RunnerGroupID      int                      `json:"runnerGroupId,omitempty"`
 	RunnerGroupName    string                   `json:"runnerGroupName,omitempty"`
 	Labels             []Label                  `json:"labels,omitempty"`
-	RunnerSetting      RunnerSetting            `json:"RunnerSetting,omitempty"`
-	CreatedOn          time.Time                `json:"createdOn,omitempty"`
+	RunnerSetting      RunnerSetting            `json:"RunnerSetting"`
+	CreatedOn          time.Time                `json:"createdOn"`
 	RunnerJitConfigURL string                   `json:"runnerJitConfigUrl,omitempty"`
 	Statistics         *RunnerScaleSetStatistic `json:"statistics,omitempty"`
 }
