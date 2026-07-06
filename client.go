@@ -110,6 +110,25 @@ type actionsAuth struct {
 	token string
 }
 
+// validate does the basic validation check, ensuring that
+// either GitHub App credentials or a personal access token is provided.
+// If GitHub App credentials are provided, it further validates the credentials.
+//
+// This method does not validate the credentials against GitHub, so it does not
+// check if the credentials are correct or have the necessary permissions.
+func (a actionsAuth) validate() error {
+	if a.token == "" && a.app == nil {
+		return fmt.Errorf("either GitHub App credentials or personal access token is required")
+	}
+	if a.token != "" && a.app != nil {
+		return fmt.Errorf("cannot provide both GitHub App credentials and personal access token")
+	}
+	if a.app != nil {
+		return a.app.Validate()
+	}
+	return nil
+}
+
 // ProxyFunc defines the function signature for a proxy function.
 type ProxyFunc func(req *http.Request) (*url.URL, error)
 
@@ -177,6 +196,10 @@ func newClient(systemInfo SystemInfo, githubConfigURL string, creds actionsAuth,
 	config, err := parseGitHubConfigFromURL(githubConfigURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse githubConfigURL: %w", err)
+	}
+
+	if err := creds.validate(); err != nil {
+		return nil, fmt.Errorf("invalid credentials: %w", err)
 	}
 
 	httpClientOption := httpClientOption{

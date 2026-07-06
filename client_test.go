@@ -107,6 +107,141 @@ func TestNewGitHubAPIRequest(t *testing.T) {
 	})
 }
 
+func TestNewClientWithPersonalAccessToken(t *testing.T) {
+	t.Run("creates client with PAT", func(t *testing.T) {
+		config := NewClientWithPersonalAccessTokenConfig{
+			GitHubConfigURL:     "https://github.com/my-org/my-repo",
+			PersonalAccessToken: "ghp_test_token",
+			SystemInfo:          testSystemInfo,
+		}
+
+		client, err := NewClientWithPersonalAccessToken(config)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		assert.Equal(t, "ghp_test_token", client.creds.token)
+		assert.Nil(t, client.creds.app)
+		assert.Equal(t, "my-org", client.config.organization)
+		assert.Equal(t, "my-repo", client.config.repository)
+		assert.Equal(t, testSystemInfo, client.SystemInfo())
+	})
+
+	t.Run("returns error when token is missing", func(t *testing.T) {
+		config := NewClientWithPersonalAccessTokenConfig{
+			GitHubConfigURL: "https://github.com/my-org/my-repo",
+			SystemInfo:      testSystemInfo,
+		}
+
+		client, err := NewClientWithPersonalAccessToken(config)
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "invalid credentials")
+		assert.Contains(t, err.Error(), "either GitHub App credentials or personal access token is required")
+	})
+}
+
+func TestNewClientWithGitHubApp(t *testing.T) {
+	t.Run("creates client with app auth", func(t *testing.T) {
+		config := ClientWithGitHubAppConfig{
+			GitHubConfigURL: "https://github.com/my-org/my-repo",
+			GitHubAppAuth: GitHubAppAuth{
+				ClientID:       "12345",
+				InstallationID: 67890,
+				PrivateKey:     samplePrivateKey,
+			},
+			SystemInfo: testSystemInfo,
+		}
+
+		client, err := NewClientWithGitHubApp(config)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		require.NotNil(t, client.creds.app)
+		assert.Equal(t, "12345", client.creds.app.ClientID)
+		assert.EqualValues(t, 67890, client.creds.app.InstallationID)
+		assert.Equal(t, samplePrivateKey, client.creds.app.PrivateKey)
+		assert.Equal(t, "", client.creds.token)
+		assert.Equal(t, "my-org", client.config.organization)
+		assert.Equal(t, "my-repo", client.config.repository)
+		assert.Equal(t, testSystemInfo, client.SystemInfo())
+	})
+
+	t.Run("returns error for missing app auth fields", func(t *testing.T) {
+		t.Run("missing client id", func(t *testing.T) {
+			config := ClientWithGitHubAppConfig{
+				GitHubConfigURL: "https://github.com/my-org/my-repo",
+				GitHubAppAuth: GitHubAppAuth{
+					InstallationID: 67890,
+					PrivateKey:     samplePrivateKey,
+				},
+				SystemInfo: testSystemInfo,
+			}
+
+			client, err := NewClientWithGitHubApp(config)
+			require.Error(t, err)
+			assert.Nil(t, client)
+			assert.Contains(t, err.Error(), "invalid credentials")
+			assert.Contains(t, err.Error(), "client ID is required")
+		})
+
+		t.Run("missing installation id", func(t *testing.T) {
+			config := ClientWithGitHubAppConfig{
+				GitHubConfigURL: "https://github.com/my-org/my-repo",
+				GitHubAppAuth: GitHubAppAuth{
+					ClientID:   "12345",
+					PrivateKey: samplePrivateKey,
+				},
+				SystemInfo: testSystemInfo,
+			}
+
+			client, err := NewClientWithGitHubApp(config)
+			require.Error(t, err)
+			assert.Nil(t, client)
+			assert.Contains(t, err.Error(), "invalid credentials")
+			assert.Contains(t, err.Error(), "app installation ID is required")
+		})
+
+		t.Run("missing private key", func(t *testing.T) {
+			config := ClientWithGitHubAppConfig{
+				GitHubConfigURL: "https://github.com/my-org/my-repo",
+				GitHubAppAuth: GitHubAppAuth{
+					ClientID:       "12345",
+					InstallationID: 67890,
+				},
+				SystemInfo: testSystemInfo,
+			}
+
+			client, err := NewClientWithGitHubApp(config)
+			require.Error(t, err)
+			assert.Nil(t, client)
+			assert.Contains(t, err.Error(), "invalid credentials")
+			assert.Contains(t, err.Error(), "app private key is required")
+		})
+	})
+}
+
+func TestNewClientWithBothTokenAndGitHubApp(t *testing.T) {
+	t.Run("returns error when both credentials are provided", func(t *testing.T) {
+		client, err := newClient(
+			testSystemInfo,
+			"https://github.com/my-org/my-repo",
+			actionsAuth{
+				token: "ghp_test_token",
+				app: &GitHubAppAuth{
+					ClientID:       "12345",
+					InstallationID: 67890,
+					PrivateKey:     samplePrivateKey,
+				},
+			},
+		)
+
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "invalid credentials")
+		assert.Contains(t, err.Error(), "cannot provide both GitHub App credentials and personal access token")
+	})
+}
+
 func TestNewActionsServiceRequest(t *testing.T) {
 	ctx := context.Background()
 	defaultCreds := actionsAuth{token: "token"}
