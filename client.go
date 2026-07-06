@@ -8,10 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,12 +41,12 @@ const HeaderScaleSetMaxCapacity = "X-ScaleSetMaxCapacity"
 
 // Client implements a GitHub Actions Scale Set client.
 type Client struct {
-	mu sync.Mutex // guards every public call
+	systemInfoMu sync.RWMutex
+	adminTokenMu sync.RWMutex
+	refreshMu    sync.Mutex
 
 	// admin session info
-	actionsServiceAdminToken          string
-	actionsServiceAdminTokenExpiresAt time.Time
-	actionsServiceURL                 string
+	actionsServiceAdminToken actionsServiceAdminToken
 
 	creds  actionsAuth
 	config gitHubConfig
@@ -69,12 +69,10 @@ type debugInfo struct {
 // including whether a proxy or custom root CA is configured, and the current system info.
 // This method is intended for diagnostic and troubleshooting purposes.
 func (c *Client) DebugInfo() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	info := debugInfo{
 		HasProxy:   c.proxyFunc != nil,
 		HasRootCA:  c.rootCAs != nil,
-		SystemInfo: c.userAgent,
+		SystemInfo: c.userAgentString(),
 	}
 
 	b, _ := json.Marshal(info)
@@ -206,17 +204,23 @@ func newClient(systemInfo SystemInfo, githubConfigURL string, creds actionsAuth,
 
 // SetSystemInfo updates the information about the system.
 func (c *Client) SetSystemInfo(info SystemInfo) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.systemInfoMu.Lock()
+	defer c.systemInfoMu.Unlock()
 	c.setSystemInfo(info)
 }
 
 // SystemInfo returns the current system info that the client
 // has configured.
 func (c *Client) SystemInfo() SystemInfo {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.systemInfoMu.RLock()
+	defer c.systemInfoMu.RUnlock()
 	return c.systemInfo
+}
+
+func (c *Client) userAgentString() string {
+	c.systemInfoMu.RLock()
+	defer c.systemInfoMu.RUnlock()
+	return c.userAgent
 }
 
 type userAgent struct {
@@ -233,59 +237,104 @@ func (c *Client) newGitHubAPIRequest(ctx context.Context, method, path string, b
 		return nil, fmt.Errorf("failed to create new GitHub API request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("User-Agent", c.userAgentString())
 
 	return req, nil
 }
 
 func (c *Client) newActionsServiceRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	err := c.updateTokenIfNeeded(ctx)
+	return c.newActionsServiceRequestWithQuery(ctx, method, path, nil, body)
+}
+
+func (c *Client) newActionsServiceRequestWithQuery(ctx context.Context, method, path string, query url.Values, body io.Reader) (*http.Request, error) {
+	adminToken, err := c.updateTokenIfNeeded(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue update token if needed: %w", err)
 	}
 
-	parsedPath, err := url.Parse(path)
+	u, err := adminToken.requestURL(path, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse path %q: %w", path, err)
+		return nil, err
 	}
 
-	urlString, err := url.JoinPath(c.actionsServiceURL, parsedPath.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to join path (actions_service_url=%q, parsedPath=%q): %w", c.actionsServiceURL, parsedPath.Path, err)
-	}
-
-	u, err := url.Parse(urlString)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse url string %q: %w", urlString, err)
-	}
-
-	q := u.Query()
-	maps.Copy(q, parsedPath.Query())
-
-	if q.Get("api-version") == "" {
-		q.Set("api-version", "6.0-preview")
-	}
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new request with context: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.actionsServiceAdminToken))
-	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Authorization", adminToken.authorizationHeader)
+	req.Header.Set("User-Agent", c.userAgentString())
 
 	return req, nil
 }
 
+type actionsServiceAdminToken struct {
+	token               string
+	authorizationHeader string
+	expiresAt           time.Time
+	url                 string
+}
+
+func (t actionsServiceAdminToken) requestURL(path string, query url.Values) (string, error) {
+	pathQuery := url.Values(nil)
+	if pathOnly, rawQuery, ok := strings.Cut(path, "?"); ok {
+		parsedQuery, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse query in path %q: %w", path, err)
+		}
+		path = pathOnly
+		pathQuery = parsedQuery
+	}
+
+	requestURL := joinURLPath(t.url, path)
+
+	q := make(url.Values, len(pathQuery)+len(query)+1)
+	copyQueryValues(q, pathQuery)
+	copyQueryValues(q, query)
+	if q.Get("api-version") == "" {
+		q.Set("api-version", "6.0-preview")
+	}
+
+	if rawQuery := q.Encode(); rawQuery != "" {
+		requestURL += "?" + rawQuery
+	}
+
+	return requestURL, nil
+}
+
+func joinURLPath(base, path string) string {
+	if base == "" {
+		if path == "" {
+			return ""
+		}
+		if strings.HasPrefix(path, "/") {
+			return path
+		}
+		return "/" + path
+	}
+	if path == "" {
+		return strings.TrimRight(base, "/")
+	}
+	if strings.HasPrefix(path, "/") {
+		return strings.TrimRight(base, "/") + path
+	}
+	return strings.TrimRight(base, "/") + "/" + path
+}
+
+func copyQueryValues(dst, src url.Values) {
+	for key, values := range src {
+		dst[key] = append(dst[key], values...)
+	}
+}
+
 // GetRunnerScaleSet fetches a runner scale set by its name within a runner group.
 func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runnerScaleSetName string) (*RunnerScaleSet, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	path := fmt.Sprintf("/%s?runnerGroupId=%d&name=%s", scaleSetEndpoint, runnerGroupID, runnerScaleSetName)
-	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	query := url.Values{
+		"runnerGroupId": []string{strconv.Itoa(runnerGroupID)},
+		"name":          []string{runnerScaleSetName},
+	}
+	req, err := c.newActionsServiceRequestWithQuery(ctx, http.MethodGet, scaleSetEndpoint, query, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
@@ -317,9 +366,6 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 
 // GetRunnerScaleSetByID fetches a runner scale set by its ID.
 func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int) (*RunnerScaleSet, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -345,11 +391,8 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int
 
 // GetRunnerGroupByName fetches a runner group by its name.
 func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (*RunnerGroup, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	path := fmt.Sprintf("/_apis/runtime/runnergroups/?groupName=%s", runnerGroup)
-	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	query := url.Values{"groupName": []string{runnerGroup}}
+	req, err := c.newActionsServiceRequestWithQuery(ctx, http.MethodGet, "/_apis/runtime/runnergroups/", query, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
@@ -404,9 +447,6 @@ func ensureLabels(runnerScaleSet *RunnerScaleSet) error {
 
 // CreateRunnerScaleSet creates a new runner scale set. Note that runner scale set names must be unique within a runner group.
 func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if err := ensureLabels(runnerScaleSet); err != nil {
 		return nil, fmt.Errorf("validating runner scale set: %w", err)
 	}
@@ -441,9 +481,6 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 
 // UpdateRunnerScaleSet updates an existing runner scale set.
 func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int, runnerScaleSet *RunnerScaleSet) (*RunnerScaleSet, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	applyDefaultLabelTypes(runnerScaleSet)
 
 	path := fmt.Sprintf("%s/%d", scaleSetEndpoint, runnerScaleSetID)
@@ -476,9 +513,6 @@ func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int,
 
 // DeleteRunnerScaleSet deletes a runner scale set by its ID.
 func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	path := fmt.Sprintf("/%s/%d", scaleSetEndpoint, runnerScaleSetID)
 	req, err := c.newActionsServiceRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
@@ -570,8 +604,6 @@ func parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMess
 //
 // It exposes client options that could be overwritten, providing ability to specify different retry policies or TLS settings, proxy, etc.
 func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int, owner string, options ...HTTPOption) (*MessageSessionClient, error) {
-	c.mu.Lock()
-
 	// Copy original options
 	httpClientOption := c.httpClientOption
 	// Apply overwrites
@@ -580,7 +612,7 @@ func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int,
 	}
 	// Instantiate a new common client
 	commonClient := newCommonClient(
-		c.systemInfo,
+		c.SystemInfo(),
 		httpClientOption,
 	)
 
@@ -589,10 +621,7 @@ func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int,
 		commonClient: commonClient,
 		owner:        owner,
 		scaleSetID:   runnerScaleSetID,
-		session:      nil,
 	}
-	// Unlock the client to allow createMessageSession to call public methods that require locking
-	c.mu.Unlock()
 
 	if err := client.createMessageSession(ctx); err != nil {
 		return nil, fmt.Errorf("failed to create message session: %w", err)
@@ -604,9 +633,6 @@ func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int,
 // GenerateJitRunnerConfig generates a JIT runner configuration for the specified runner scale set. This returns an encoded
 // configuration that can be used to directly start a new runner.
 func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *RunnerScaleSetJitRunnerSetting, scaleSetID int) (*RunnerScaleSetJitRunnerConfig, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	path := fmt.Sprintf("/%s/%d/generatejitconfig", scaleSetEndpoint, scaleSetID)
 
 	body, err := json.Marshal(jitRunnerSetting)
@@ -639,9 +665,6 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 
 // GetRunner fetches a runner by its ID. This can be used to check if a runner exists.
 func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
 	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
@@ -669,12 +692,8 @@ func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference,
 
 // GetRunnerByName fetches a runner by its name. This can be used to check if a runner exists.
 func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*RunnerReference, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	path := fmt.Sprintf("/%s?agentName=%s", runnerEndpoint, runnerName)
-
-	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	query := url.Values{"agentName": []string{runnerName}}
+	req, err := c.newActionsServiceRequestWithQuery(ctx, http.MethodGet, runnerEndpoint, query, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
@@ -706,9 +725,6 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 
 // RemoveRunner removes a runner by its ID.
 func (c *Client) RemoveRunner(ctx context.Context, runnerID int64) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	path := fmt.Sprintf("/%s/%d", runnerEndpoint, runnerID)
 
 	req, err := c.newActionsServiceRequest(ctx, http.MethodDelete, path, nil)
@@ -974,10 +990,16 @@ func actionsServiceAdminTokenExpiresAt(jwtToken string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("failed to parse token claims to get expire at")
 }
 
-func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
-	aboutToExpire := time.Now().Add(60 * time.Second).After(c.actionsServiceAdminTokenExpiresAt)
-	if !aboutToExpire && !c.actionsServiceAdminTokenExpiresAt.IsZero() {
-		return nil
+func (c *Client) updateTokenIfNeeded(ctx context.Context) (actionsServiceAdminToken, error) {
+	if token, ok := c.actionsServiceAdminTokenSnapshot(); ok {
+		return token, nil
+	}
+
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	if token, ok := c.actionsServiceAdminTokenSnapshot(); ok {
+		return token, nil
 	}
 
 	configURL := ""
@@ -989,25 +1011,49 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) error {
 	}
 	rt, err := c.getRunnerRegistrationToken(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get runner registration token on refresh: %w", err)
+		return actionsServiceAdminToken{}, fmt.Errorf("failed to get runner registration token on refresh: %w", err)
 	}
 
 	adminConnInfo, err := c.getActionsServiceAdminConnection(ctx, rt)
 	if err != nil {
-		return fmt.Errorf("failed to get actions service admin connection on refresh: %w", err)
+		return actionsServiceAdminToken{}, fmt.Errorf("failed to get actions service admin connection on refresh: %w", err)
 	}
 	if adminConnInfo == nil || adminConnInfo.ActionsServiceURL == nil || adminConnInfo.AdminToken == nil {
-		return fmt.Errorf("failed to get actions service admin connection on refresh: missing url or token")
+		return actionsServiceAdminToken{}, fmt.Errorf("failed to get actions service admin connection on refresh: missing url or token")
 	}
 
-	c.actionsServiceURL = *adminConnInfo.ActionsServiceURL
-	c.actionsServiceAdminToken = *adminConnInfo.AdminToken
-	c.actionsServiceAdminTokenExpiresAt, err = actionsServiceAdminTokenExpiresAt(*adminConnInfo.AdminToken)
+	expiresAt, err := actionsServiceAdminTokenExpiresAt(*adminConnInfo.AdminToken)
 	if err != nil {
-		return fmt.Errorf("failed to get admin token expire at on refresh: %w", err)
+		return actionsServiceAdminToken{}, fmt.Errorf("failed to get admin token expire at on refresh: %w", err)
+	}
+	token := actionsServiceAdminToken{
+		token:               *adminConnInfo.AdminToken,
+		authorizationHeader: "Bearer " + *adminConnInfo.AdminToken,
+		expiresAt:           expiresAt,
+		url:                 *adminConnInfo.ActionsServiceURL,
 	}
 
-	return nil
+	c.adminTokenMu.Lock()
+	c.actionsServiceAdminToken = token
+	c.adminTokenMu.Unlock()
+
+	return token, nil
+}
+
+func (c *Client) actionsServiceAdminTokenSnapshot() (actionsServiceAdminToken, bool) {
+	c.adminTokenMu.RLock()
+	defer c.adminTokenMu.RUnlock()
+
+	token := c.actionsServiceAdminToken
+	if token.authorizationHeader == "" && token.token != "" {
+		token.authorizationHeader = fmt.Sprintf("Bearer %s", token.token)
+	}
+
+	if token.expiresAt.IsZero() || time.Now().Add(60*time.Second).After(token.expiresAt) {
+		return actionsServiceAdminToken{}, false
+	}
+
+	return token, true
 }
 
 func detectModuleVersionAndCommit() (version string, commit string) {

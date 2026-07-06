@@ -139,8 +139,10 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				defaultCreds,
 			)
 			require.NoError(t, err)
-			client.actionsServiceAdminToken = "expiring-token"
-			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(59 * time.Second)
+			client.actionsServiceAdminToken = actionsServiceAdminToken{
+				token:     "expiring-token",
+				expiresAt: time.Now().Add(59 * time.Second),
+			}
 
 			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.NoError(t, err)
@@ -172,13 +174,15 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
 			expiresAt := time.Now().Add(59 * time.Second)
-			client.actionsServiceAdminToken = expiringToken
-			client.actionsServiceAdminTokenExpiresAt = expiresAt
+			client.actionsServiceAdminToken = actionsServiceAdminToken{
+				token:     expiringToken,
+				expiresAt: expiresAt,
+			}
 			_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "test")
-			assert.Equal(t, client.actionsServiceAdminToken, expiringToken)
-			assert.Equal(t, client.actionsServiceAdminTokenExpiresAt, expiresAt)
+			assert.Equal(t, expiringToken, client.actionsServiceAdminToken.token)
+			assert.Equal(t, expiresAt, client.actionsServiceAdminToken.expiresAt)
 		})
 
 		t.Run("admin token refresh retry", func(t *testing.T) {
@@ -219,14 +223,16 @@ func TestNewActionsServiceRequest(t *testing.T) {
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
 			expiresAt := time.Now().Add(59 * time.Second)
-			client.actionsServiceAdminToken = expiringToken
-			client.actionsServiceAdminTokenExpiresAt = expiresAt
+			client.actionsServiceAdminToken = actionsServiceAdminToken{
+				token:     expiringToken,
+				expiresAt: expiresAt,
+			}
 
 			_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.NoError(t, err)
-			assert.Equal(t, client.actionsServiceAdminToken, newToken)
-			assert.Equal(t, client.actionsServiceURL, srv)
-			assert.NotEqual(t, client.actionsServiceAdminTokenExpiresAt, expiresAt)
+			assert.Equal(t, newToken, client.actionsServiceAdminToken.token)
+			assert.Equal(t, client.actionsServiceAdminToken.url, srv)
+			assert.NotEqual(t, expiresAt, client.actionsServiceAdminToken.expiresAt)
 		})
 
 		t.Run("token is currently valid", func(t *testing.T) {
@@ -239,8 +245,10 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				defaultCreds,
 			)
 			require.NoError(t, err)
-			client.actionsServiceAdminToken = "healthy-token"
-			client.actionsServiceAdminTokenExpiresAt = time.Now().Add(1 * time.Hour)
+			client.actionsServiceAdminToken = actionsServiceAdminToken{
+				token:     "healthy-token",
+				expiresAt: time.Now().Add(1 * time.Hour),
+			}
 
 			req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "my-path", nil)
 			require.NoError(t, err)

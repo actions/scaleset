@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
@@ -22,7 +23,7 @@ import (
 // It is safe for concurrent use by multiple goroutines.
 // Please do not forget to call Close when done to clean up the session.
 type MessageSessionClient struct {
-	mu sync.Mutex
+	refreshMu sync.Mutex
 	// inner client is the parent of the message session, allowing session refreshing
 	// use this client to create (and potentially refresh the session) requests.
 	innerClient *Client
@@ -31,14 +32,13 @@ type MessageSessionClient struct {
 	commonClient *commonClient
 	scaleSetID   int
 	owner        string
-	session      *RunnerScaleSetSession
+	session      atomic.Pointer[RunnerScaleSetSession]
 }
 
 // Close deletes the message session associated with this client.
 func (c *MessageSessionClient) Close(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.deleteMessageSession(ctx, c.scaleSetID, c.session.SessionID)
+	session := c.Session()
+	return c.deleteMessageSession(ctx, c.scaleSetID, session.SessionID)
 }
 
 func (c *MessageSessionClient) createMessageSession(ctx context.Context) error {
@@ -65,7 +65,7 @@ func (c *MessageSessionClient) createMessageSession(ctx context.Context) error {
 		return fmt.Errorf("failed to do the session request: %w", err)
 	}
 
-	c.session = &createdSession
+	c.session.Store(&createdSession)
 
 	return nil
 }
@@ -78,13 +78,22 @@ func (c *MessageSessionClient) deleteMessageSession(ctx context.Context, runnerS
 
 // RefreshMessageSession refreshes a message session for the specified runner scale set.
 // This should be used when a MessageQueueTokenExpiredError is encountered.
-func (c *MessageSessionClient) refreshMessageSession(ctx context.Context) error {
-	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, c.scaleSetID, c.session.SessionID.String())
+func (c *MessageSessionClient) refreshMessageSession(ctx context.Context, expiredSession RunnerScaleSetSession) error {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	session := c.Session()
+	if session.SessionID != expiredSession.SessionID || session.MessageQueueAccessToken != expiredSession.MessageQueueAccessToken {
+		return nil
+	}
+
+	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, c.scaleSetID, session.SessionID.String())
 	refreshedSession := &RunnerScaleSetSession{}
 	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {
 		return fmt.Errorf("failed to do the session request: %w", err)
 	}
-	c.session = refreshedSession
+
+	c.session.Store(refreshedSession)
 	return nil
 }
 
@@ -92,11 +101,10 @@ func (c *MessageSessionClient) refreshMessageSession(ctx context.Context) error 
 // Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
 // If the current session token is expired, it refreshes the session and tries one more time.
 func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	session := c.Session()
 	message, err := c.getMessage(
 		ctx,
+		session,
 		lastMessageID,
 		maxCapacity,
 	)
@@ -108,19 +116,20 @@ func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int
 		return nil, fmt.Errorf("failed to get next message: %w", err)
 	}
 
-	if err := c.refreshMessageSession(ctx); err != nil {
+	if err := c.refreshMessageSession(ctx, session); err != nil {
 		return nil, fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
 	return c.getMessage(
 		ctx,
+		c.Session(),
 		lastMessageID,
 		maxCapacity,
 	)
 }
 
-func (c *MessageSessionClient) getMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
-	u, err := url.Parse(c.session.MessageQueueURL)
+func (c *MessageSessionClient) getMessage(ctx context.Context, session RunnerScaleSetSession, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
+	u, err := url.Parse(session.MessageQueueURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse message queue url: %w", err)
 	}
@@ -137,7 +146,7 @@ func (c *MessageSessionClient) getMessage(ctx context.Context, lastMessageID int
 	}
 
 	req.Header.Set("Accept", "application/json; api-version=6.0-preview")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", session.MessageQueueAccessToken))
 	req.Header.Set("User-Agent", c.commonClient.userAgent)
 	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
 
@@ -170,10 +179,8 @@ func (c *MessageSessionClient) getMessage(ctx context.Context, lastMessageID int
 // This should typically be done after processing the message and acts as an acknowledgment.
 // If the current session token is expired, it refreshes the session and tries one more time.
 func (c *MessageSessionClient) DeleteMessage(ctx context.Context, messageID int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	err := c.deleteMessage(ctx, messageID)
+	session := c.Session()
+	err := c.deleteMessage(ctx, session, messageID)
 	if err == nil {
 		return nil
 	}
@@ -182,15 +189,15 @@ func (c *MessageSessionClient) DeleteMessage(ctx context.Context, messageID int)
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
-	if err := c.refreshMessageSession(ctx); err != nil {
+	if err := c.refreshMessageSession(ctx, session); err != nil {
 		return fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
-	return c.deleteMessage(ctx, messageID)
+	return c.deleteMessage(ctx, c.Session(), messageID)
 }
 
-func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageID int) error {
-	u, err := url.Parse(c.session.MessageQueueURL)
+func (c *MessageSessionClient) deleteMessage(ctx context.Context, session RunnerScaleSetSession, messageID int) error {
+	u, err := url.Parse(session.MessageQueueURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse message queue url: %w", err)
 	}
@@ -203,7 +210,7 @@ func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageID int)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", session.MessageQueueAccessToken))
 	req.Header.Set("User-Agent", c.commonClient.userAgent)
 
 	resp, err := c.commonClient.do(req)
@@ -224,23 +231,19 @@ func (c *MessageSessionClient) deleteMessage(ctx context.Context, messageID int)
 }
 
 func (c *MessageSessionClient) Session() RunnerScaleSetSession {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.session == nil {
+	session := c.session.Load()
+	if session == nil {
 		return RunnerScaleSetSession{}
 	}
 
-	return *c.session
+	return *session
 }
 
 // AcquireJobs acquires the given job request IDs from the runner scale set.
 // If the current session token is expired, it refreshes the session and tries one more time.
 func (c *MessageSessionClient) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	ids, err := c.acquireJobs(ctx, requestIDs)
+	session := c.Session()
+	ids, err := c.acquireJobs(ctx, session, requestIDs)
 	if err == nil {
 		return ids, nil
 	}
@@ -249,14 +252,14 @@ func (c *MessageSessionClient) AcquireJobs(ctx context.Context, requestIDs []int
 		return nil, fmt.Errorf("failed to acquire jobs: %w", err)
 	}
 
-	if err := c.refreshMessageSession(ctx); err != nil {
+	if err := c.refreshMessageSession(ctx, session); err != nil {
 		return nil, fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
-	return c.acquireJobs(ctx, requestIDs)
+	return c.acquireJobs(ctx, c.Session(), requestIDs)
 }
 
-func (c *MessageSessionClient) acquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
+func (c *MessageSessionClient) acquireJobs(ctx context.Context, session RunnerScaleSetSession, requestIDs []int64) ([]int64, error) {
 	body, err := json.Marshal(requestIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request ids: %w", err)
@@ -264,14 +267,12 @@ func (c *MessageSessionClient) acquireJobs(ctx context.Context, requestIDs []int
 
 	path := fmt.Sprintf("/%s/%d/acquirejobs", scaleSetEndpoint, c.scaleSetID)
 
-	c.innerClient.mu.Lock()
 	req, err := c.innerClient.newActionsServiceRequest(ctx, http.MethodPost, path, bytes.NewBuffer(body))
-	c.innerClient.mu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create acquire jobs request: %w", err)
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.session.MessageQueueAccessToken))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", session.MessageQueueAccessToken))
 
 	resp, err := c.commonClient.do(req)
 	if err != nil {
@@ -296,9 +297,6 @@ func (c *MessageSessionClient) acquireJobs(ctx context.Context, requestIDs []int
 }
 
 func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
-	c.innerClient.mu.Lock()
-	defer c.innerClient.mu.Unlock()
-
 	req, err := c.innerClient.newActionsServiceRequest(ctx, method, path, requestData)
 	if err != nil {
 		return fmt.Errorf("failed to create new actions service request: %w", err)
