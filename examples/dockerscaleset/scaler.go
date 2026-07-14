@@ -19,6 +19,7 @@ type Scaler struct {
 	scaleSetID     int
 	dockerClient   *dockerclient.Client
 	scalesetClient *scaleset.Client
+	sessionClient  listener.Client
 	minRunners     int
 	maxRunners     int
 	logger         *slog.Logger
@@ -36,6 +37,16 @@ func (s *Scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 	for _, jobCompleted := range msg.JobCompletedMessages {
 		if err := s.HandleJobCompleted(ctx, jobCompleted); err != nil {
 			return fmt.Errorf("failed to handle job completed: %w", err)
+		}
+	}
+
+	if len(msg.JobAvailableMessages) > 0 {
+		requestIDs := make([]int64, 0, len(msg.JobAvailableMessages))
+		for _, job := range msg.JobAvailableMessages {
+			requestIDs = append(requestIDs, job.RunnerRequestID)
+		}
+		if _, err := s.sessionClient.AcquireJobs(ctx, requestIDs); err != nil {
+			return fmt.Errorf("failed to acquire jobs: %w", err)
 		}
 	}
 
