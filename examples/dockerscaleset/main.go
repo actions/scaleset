@@ -161,6 +161,7 @@ func run(ctx context.Context, c Config) error {
 		maxRunners:     c.MaxRunners,
 		dockerClient:   dockerClient,
 		scalesetClient: scalesetClient,
+		sessionClient:  sessionClient,
 		scaleSetID:     scaleSet.ID,
 	}
 
