@@ -946,10 +946,6 @@ func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*ac
 
 		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
 	}
-	// Adding custom error handler to also return response in case of error
-	retryableClient.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		return resp, err
-	}
 	httpClient := retryableClient.StandardClient()
 
 	resp, err := sendRequest(httpClient, req)
