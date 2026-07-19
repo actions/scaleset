@@ -11,8 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -1426,11 +1424,12 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}
 
-	certPath := filepath.Join("testdata", "server.crt")
-	keyPath := filepath.Join("testdata", "server.key")
+	certs := generateTestCertificates(t)
+	rootCAs := x509.NewCertPool()
+	rootCAs.AddCert(certs.rootCA)
 
 	t.Run("client without ca certs", func(t *testing.T) {
-		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
+		server := startNewTLSTestServer(t, certs.server, http.HandlerFunc(h))
 		u = server.URL
 		configURL := server.URL + "/my-org"
 
@@ -1459,20 +1458,9 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 	})
 
 	t.Run("client with ca certs", func(t *testing.T) {
-		server := startNewTLSTestServer(
-			t,
-			certPath,
-			keyPath,
-			http.HandlerFunc(h),
-		)
+		server := startNewTLSTestServer(t, certs.server, http.HandlerFunc(h))
 		u = server.URL
 		configURL := server.URL + "/my-org"
-
-		cert, err := os.ReadFile(filepath.Join("testdata", "rootCA.crt"))
-		require.NoError(t, err)
-
-		pool := x509.NewCertPool()
-		require.True(t, pool.AppendCertsFromPEM(cert))
 
 		client, err := newClient(
 			testSystemInfo,
@@ -1480,7 +1468,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 			actionsAuth{
 				token: "token",
 			},
-			WithRootCAs(pool),
+			WithRootCAs(rootCAs),
 		)
 		require.NoError(t, err)
 		assert.NotNil(t, client)
@@ -1490,20 +1478,9 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 	})
 
 	t.Run("client with ca chain certs", func(t *testing.T) {
-		server := startNewTLSTestServer(
-			t,
-			filepath.Join("testdata", "leaf.crt"),
-			filepath.Join("testdata", "leaf.key"),
-			http.HandlerFunc(h),
-		)
+		server := startNewTLSTestServer(t, certs.serverChain, http.HandlerFunc(h))
 		u = server.URL
 		configURL := server.URL + "/my-org"
-
-		cert, err := os.ReadFile(filepath.Join("testdata", "intermediate.crt"))
-		require.NoError(t, err)
-
-		pool := x509.NewCertPool()
-		require.True(t, pool.AppendCertsFromPEM(cert))
 
 		client, err := newClient(
 			testSystemInfo,
@@ -1511,7 +1488,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 			actionsAuth{
 				token: "token",
 			},
-			WithRootCAs(pool),
+			WithRootCAs(rootCAs),
 			WithRetryMax(0),
 		)
 		require.NoError(t, err)
@@ -1522,7 +1499,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 	})
 
 	t.Run("client skipping tls verification", func(t *testing.T) {
-		server := startNewTLSTestServer(t, certPath, keyPath, http.HandlerFunc(h))
+		server := startNewTLSTestServer(t, certs.server, http.HandlerFunc(h))
 		configURL := server.URL + "/my-org"
 
 		client, err := newClient(
@@ -1538,14 +1515,11 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 	})
 }
 
-func startNewTLSTestServer(t *testing.T, certPath, keyPath string, handler http.Handler) *httptest.Server {
+func startNewTLSTestServer(t *testing.T, cert tls.Certificate, handler http.Handler) *httptest.Server {
 	server := httptest.NewUnstartedServer(handler)
 	t.Cleanup(func() {
 		server.Close()
 	})
-
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	require.NoError(t, err)
 
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	server.StartTLS()

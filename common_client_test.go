@@ -299,10 +299,9 @@ func TestWithRetryableHTTPClient(t *testing.T) {
 }
 
 func TestWithTLSClientCertificate(t *testing.T) {
-	t.Run("applies client certificate to transport", func(t *testing.T) {
-		cert, err := tls.LoadX509KeyPair("testdata/leaf.crt", "testdata/leaf.key")
-		require.NoError(t, err)
+	cert := tls.Certificate{}
 
+	t.Run("applies client certificate to transport", func(t *testing.T) {
 		opts := defaultHTTPClientOption()
 		WithTLSClientCertificate(cert)(&opts)
 
@@ -317,9 +316,6 @@ func TestWithTLSClientCertificate(t *testing.T) {
 	})
 
 	t.Run("allows multiple certificates", func(t *testing.T) {
-		cert, err := tls.LoadX509KeyPair("testdata/leaf.crt", "testdata/leaf.key")
-		require.NoError(t, err)
-
 		opts := defaultHTTPClientOption()
 		WithTLSClientCertificate(cert)(&opts)
 		WithTLSClientCertificate(cert)(&opts)
@@ -330,8 +326,8 @@ func TestWithTLSClientCertificate(t *testing.T) {
 
 func TestWithTLSClientCertificateFromFile(t *testing.T) {
 	t.Run("loads certificate from files", func(t *testing.T) {
-		certFile := "testdata/leaf.crt"
-		keyFile := "testdata/leaf.key"
+		certs := generateTestCertificates(t)
+		certFile, keyFile := writeTestKeyPair(t, certs.server)
 
 		opt, err := WithTLSClientCertificateFromFile(certFile, keyFile)
 		require.NoError(t, err)
