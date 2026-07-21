@@ -106,26 +106,43 @@ func (a *GitHubAppAuth) Validate() error {
 type actionsAuth struct {
 	// token is a GitHub PAT (mutually exclusive with jwtProvider).
 	token string
+	// tokenProvider supplies bearer tokens minted (or cached) outside the
+	// client, consulted on every re-authentication (mutually exclusive with
+	// token and jwtProvider).
+	tokenProvider TokenProvider
 	// jwtProvider creates JWTs for GitHub App auth.
 	jwtProvider JWTProvider
 	// installationID is the GitHub App installation ID (used with jwtProvider).
 	installationID int64
 }
 
-// validate does the basic validation check, ensuring that
-// either GitHub App credentials (a JWT provider with an installation ID)
-// or a personal access token is provided.
+// validate does the basic validation check, ensuring that exactly one
+// credential source is provided: a personal access token, a token provider,
+// or GitHub App credentials (a JWT provider with an installation ID).
 //
 // This method does not validate the credentials against GitHub, so it does not
 // check if the credentials are correct or have the necessary permissions.
 func (a actionsAuth) validate() error {
-	if a.token == "" && a.jwtProvider == nil {
+	sources := 0
+	if a.token != "" {
+		sources++
+	}
+	if a.tokenProvider != nil {
+		sources++
+	}
+	if a.jwtProvider != nil {
+		sources++
+	}
+	switch {
+	case sources == 0:
 		return fmt.Errorf("either GitHub App credentials or personal access token is required")
-	}
-	if a.token != "" && a.jwtProvider != nil {
+	// The pre-existing App-plus-PAT conflict keeps its original wording, so
+	// callers matching on that message are unaffected by the added source.
+	case a.token != "" && a.jwtProvider != nil && a.tokenProvider == nil:
 		return fmt.Errorf("cannot provide both GitHub App credentials and personal access token")
-	}
-	if a.jwtProvider != nil && a.installationID == 0 {
+	case sources > 1:
+		return fmt.Errorf("cannot provide more than one of: GitHub App credentials, personal access token, token provider")
+	case a.jwtProvider != nil && a.installationID == 0:
 		return fmt.Errorf("app installation ID is required")
 	}
 	return nil
@@ -199,6 +216,32 @@ func NewClientWithPersonalAccessToken(config NewClientWithPersonalAccessTokenCon
 		config.GitHubConfigURL,
 		actionsAuth{
 			token: config.PersonalAccessToken,
+		},
+		options...,
+	)
+}
+
+// ClientWithTokenProviderConfig contains the configuration for creating a new Client
+// using a TokenProvider for GitHub API authentication.
+type ClientWithTokenProviderConfig struct {
+	GitHubConfigURL string
+	SystemInfo      SystemInfo
+}
+
+// NewClientWithTokenProvider creates a new Client that authenticates its GitHub
+// API calls with bearer tokens from the provider. The provider is consulted on
+// every re-authentication, so short-lived credentials — such as GitHub App
+// installation tokens minted (or cached) outside the client — stay valid for
+// the client's whole lifetime.
+func NewClientWithTokenProvider(config ClientWithTokenProviderConfig, provider TokenProvider, options ...HTTPOption) (*Client, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("token provider is required")
+	}
+	return newClient(
+		config.SystemInfo,
+		config.GitHubConfigURL,
+		actionsAuth{
+			tokenProvider: provider,
 		},
 		options...,
 	)
@@ -856,9 +899,17 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 
 	bearerToken := ""
 
-	if c.creds.token != "" {
+	switch {
+	case c.creds.tokenProvider != nil:
+		token, err := c.creds.tokenProvider.Token(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get token from token provider: %w", err)
+		}
+
+		bearerToken = fmt.Sprintf("Bearer %v", token)
+	case c.creds.token != "":
 		bearerToken = fmt.Sprintf("Bearer %v", c.creds.token)
-	} else {
+	default:
 		accessToken, err := c.fetchAccessToken(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch access token: %w", err)
