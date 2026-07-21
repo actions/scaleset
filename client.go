@@ -389,11 +389,10 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 
 // ListRunnerScaleSets returns every runner scale set in the given runner group.
 func (c *Client) ListRunnerScaleSets(ctx context.Context, runnerGroupID int) ([]RunnerScaleSet, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	path := fmt.Sprintf("/%s?runnerGroupId=%d", scaleSetEndpoint, runnerGroupID)
-	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, path, nil)
+	query := url.Values{
+		"runnerGroupId": []string{strconv.Itoa(runnerGroupID)},
+	}
+	req, err := c.newActionsServiceRequestWithQuery(ctx, http.MethodGet, scaleSetEndpoint, query, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
