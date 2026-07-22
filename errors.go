@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type scalesetError string
@@ -25,7 +27,85 @@ var (
 	NotFoundError     = scalesetError("not found")
 	UnauthorizedError = scalesetError("unauthorized")
 	ConflictError     = scalesetError("conflict")
+	// RateLimitedError identifies a response rejected because of rate limiting.
+	RateLimitedError = scalesetError("rate limited")
 )
+
+const (
+	headerRetryAfter         = "Retry-After"
+	headerRateLimitRemaining = "X-RateLimit-Remaining"
+	headerRateLimitReset     = "X-RateLimit-Reset"
+	maxRetryAfterSeconds     = (1<<63 - 1) / int64(time.Second)
+)
+
+// RateLimitError carries the server's requested delay. Match the condition
+// with errors.Is(err, RateLimitedError), and read the hint with errors.As.
+type RateLimitError struct {
+	// RetryAfter is zero when the response did not provide a usable delay.
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("rate limited (retry after %s)", e.RetryAfter)
+	}
+	return "rate limited"
+}
+
+func (e *RateLimitError) Unwrap() error { return RateLimitedError }
+
+func retryAfterHint(header http.Header, now time.Time) time.Duration {
+	if retryAfter, ok := parseRetryAfter(header.Get(headerRetryAfter), now); ok {
+		return retryAfter
+	}
+	if header.Get(headerRateLimitRemaining) != "0" {
+		return 0
+	}
+
+	reset, err := strconv.ParseInt(header.Get(headerRateLimitReset), 10, 64)
+	if err != nil {
+		return 0
+	}
+
+	retryAfter := time.Unix(reset, 0).Sub(now)
+	if retryAfter < 0 {
+		return 0
+	}
+	return retryAfter
+}
+
+// parseRetryAfter accepts the two Retry-After forms defined by RFC 9110.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		if seconds > uint64(maxRetryAfterSeconds) {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+
+	retryAfter := retryAt.Sub(now)
+	if retryAfter < 0 {
+		retryAfter = 0
+	}
+	return retryAfter, true
+}
+
+func isRateLimitResponse(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+
+	return resp.Header.Get(headerRetryAfter) != "" ||
+		resp.Header.Get(headerRateLimitRemaining) == "0"
+}
 
 type actionsExceptionError struct {
 	ExceptionName string `json:"typeName,omitempty"`
@@ -103,6 +183,10 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 }
 
 func wrapResponseErrorType(resp *http.Response, err error) error {
+	if isRateLimitResponse(resp) {
+		return fmt.Errorf("%w: %w", &RateLimitError{RetryAfter: retryAfterHint(resp.Header, time.Now())}, err)
+	}
+
 	switch resp.StatusCode {
 	case http.StatusBadRequest:
 		return fmt.Errorf("%w: %w", BadRequestError, err)

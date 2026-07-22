@@ -790,6 +790,32 @@ func TestGetRunnerScaleSet(t *testing.T) {
 		assert.Equalf(t, actualRetry, expectedRetry, "A retry was expected after the first request but got: %v", actualRetry)
 	})
 
+	t.Run("Rate limit error survives exhausted retries", func(t *testing.T) {
+		attempts := 0
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			attempts++
+			w.Header().Set(headerRetryAfter, "17")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+
+		client, err := newClient(
+			testSystemInfo,
+			server.configURLForOrg("my-org"),
+			auth,
+			WithRetryMax(0),
+		)
+		require.NoError(t, err)
+
+		_, err = client.GetRunnerScaleSet(ctx, 1, scaleSetName)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, RateLimitedError)
+		assert.Equal(t, 1, attempts)
+
+		var rateLimitErr *RateLimitError
+		require.ErrorAs(t, err, &rateLimitErr)
+		assert.Equal(t, 17*time.Second, rateLimitErr.RetryAfter)
+	})
+
 	t.Run("RunnerScaleSet count is zero", func(t *testing.T) {
 		want := (*RunnerScaleSet)(nil)
 		runnerScaleSetsResp := []byte(`{"count":0,"value":[{"id":1,"name":"ScaleSet"}]}`)
