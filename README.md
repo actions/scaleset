@@ -142,12 +142,41 @@ If you are not a Go developer, you can still:
 
 ## Authentication
 
-Two options:
+Three options:
 
 1. **GitHub App (preferred):** Stronger scoping & rotation. Provide: `ClientID`, `InstallationID`, `PrivateKey`.
-2. **PAT (personal access token):** Simpler but broader scoped.
+2. **GitHub App with custom JWT signing:** For KMS/HSM-backed keys where private key material cannot be in memory. Provide a `JWTProvider` implementation.
+3. **PAT (personal access token):** Simpler but broader scoped.
 
 The client automatically exchanges credentials for a registration token + admin token behind the scenes and refreshes them before expiry.
+
+### Custom JWT Signing (KMS/HSM)
+
+For organizations that require private key material to stay within a KMS or HSM boundary:
+
+```go
+// Using a crypto.Signer (AWS KMS, GCP Cloud KMS, Azure Key Vault, etc.)
+provider := &scaleset.SignerJWTProvider{
+    ClientID: "Iv1.abc123",
+    Signer:   myKMSSigner, // any crypto.Signer with an RSA key
+}
+
+client, err := scaleset.NewClientWithJWTProvider(
+    scaleset.ClientWithJWTProviderConfig{
+        GitHubConfigURL: "https://github.com/my-org",
+        InstallationID:  12345,
+    },
+    provider,
+)
+```
+
+Or wrap any function that returns a signed JWT:
+
+```go
+provider := scaleset.JWTProviderFunc(func(ctx context.Context) (string, error) {
+    return getJWTFromExternalService(ctx)
+})
+```
 
 You can find more details on required permissions in the [GitHub Docs](https://docs.github.com/en/actions/tutorials/use-actions-runner-controller/authenticate-to-the-api).
 
@@ -175,6 +204,7 @@ Assigning more than one label to a scale set is supported on **GHES 3.18 and lat
 ## Security Notes
 
 - Always prefer GitHub App credentials; rotate PATs if you must use them.
+- Use `SignerJWTProvider` or `JWTProviderFunc` to keep private key material in a KMS/HSM.
 - Treat JIT configs as secrets until consumed.
 
 ---

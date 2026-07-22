@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/actions/scaleset/internal/testserver"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,7 +120,7 @@ func TestNewClientWithPersonalAccessToken(t *testing.T) {
 		require.NotNil(t, client)
 
 		assert.Equal(t, "ghp_test_token", client.creds.token)
-		assert.Nil(t, client.creds.app)
+		assert.Nil(t, client.creds.jwtProvider)
 		assert.Equal(t, "my-org", client.config.organization)
 		assert.Equal(t, "my-repo", client.config.repository)
 		assert.Equal(t, testSystemInfo, client.SystemInfo())
@@ -156,10 +156,8 @@ func TestNewClientWithGitHubApp(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, client)
 
-		require.NotNil(t, client.creds.app)
-		assert.Equal(t, "12345", client.creds.app.ClientID)
-		assert.EqualValues(t, 67890, client.creds.app.InstallationID)
-		assert.Equal(t, samplePrivateKey, client.creds.app.PrivateKey)
+		require.NotNil(t, client.creds.jwtProvider)
+		assert.EqualValues(t, 67890, client.creds.installationID)
 		assert.Equal(t, "", client.creds.token)
 		assert.Equal(t, "my-org", client.config.organization)
 		assert.Equal(t, "my-repo", client.config.repository)
@@ -218,6 +216,22 @@ func TestNewClientWithGitHubApp(t *testing.T) {
 			assert.Contains(t, err.Error(), "app private key is required")
 		})
 	})
+
+	t.Run("returns error for an invalid private key", func(t *testing.T) {
+		client, err := NewClientWithGitHubApp(ClientWithGitHubAppConfig{
+			GitHubConfigURL: "https://github.com/my-org/my-repo",
+			GitHubAppAuth: GitHubAppAuth{
+				ClientID:       "12345",
+				InstallationID: 67890,
+				PrivateKey:     "not a private key",
+			},
+			SystemInfo: testSystemInfo,
+		})
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "invalid credentials")
+		assert.Contains(t, err.Error(), "failed to parse RSA private key from PEM")
+	})
 }
 
 func TestNewClientWithBothTokenAndGitHubApp(t *testing.T) {
@@ -226,12 +240,9 @@ func TestNewClientWithBothTokenAndGitHubApp(t *testing.T) {
 			testSystemInfo,
 			"https://github.com/my-org/my-repo",
 			actionsAuth{
-				token: "ghp_test_token",
-				app: &GitHubAppAuth{
-					ClientID:       "12345",
-					InstallationID: 67890,
-					PrivateKey:     samplePrivateKey,
-				},
+				token:          "ghp_test_token",
+				jwtProvider:    JWTProviderFunc(func(context.Context) (string, error) { return "jwt", nil }),
+				installationID: 67890,
 			},
 		)
 
@@ -1551,6 +1562,93 @@ func startNewTLSTestServer(t *testing.T, certPath, keyPath string, handler http.
 	server.StartTLS()
 
 	return server
+}
+
+func TestNewClientWithJWTProvider(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("full flow with custom JWT provider", func(t *testing.T) {
+		var capturedAuthHeader string
+		server := testserver.New(t, nil,
+			testserver.WithInstallationAccessTokenHandler(func(w http.ResponseWriter, r *http.Request) {
+				capturedAuthHeader = r.Header.Get("Authorization")
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(`{"token":"ghs_test_installation_token","expires_at":"2099-01-01T00:00:00Z"}`))
+			}),
+		)
+
+		provider := JWTProviderFunc(func(_ context.Context) (string, error) {
+			return "my-custom-jwt", nil
+		})
+
+		client, err := NewClientWithJWTProvider(
+			ClientWithJWTProviderConfig{
+				GitHubConfigURL: server.ConfigURLForOrg("my-org"),
+				InstallationID:  42,
+				SystemInfo:      testSystemInfo,
+			},
+			provider,
+		)
+		require.NoError(t, err)
+
+		// Trigger the full auth flow by making a request that needs authentication
+		req, err := client.newActionsServiceRequest(ctx, http.MethodGet, "/test", nil)
+		require.NoError(t, err)
+		assert.NotNil(t, req)
+
+		// Verify our custom JWT was used in the installation access token request
+		assert.Equal(t, "Bearer my-custom-jwt", capturedAuthHeader)
+	})
+
+	t.Run("provider error propagates", func(t *testing.T) {
+		server := testserver.New(t, nil)
+
+		expectedErr := errors.New("kms unavailable")
+		provider := JWTProviderFunc(func(_ context.Context) (string, error) {
+			return "", expectedErr
+		})
+
+		client, err := NewClientWithJWTProvider(
+			ClientWithJWTProviderConfig{
+				GitHubConfigURL: server.ConfigURLForOrg("my-org"),
+				InstallationID:  42,
+				SystemInfo:      testSystemInfo,
+			},
+			provider,
+		)
+		require.NoError(t, err)
+
+		_, err = client.newActionsServiceRequest(ctx, http.MethodGet, "/test", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "kms unavailable")
+	})
+
+	t.Run("nil provider returns error", func(t *testing.T) {
+		_, err := NewClientWithJWTProvider(
+			ClientWithJWTProviderConfig{
+				GitHubConfigURL: "https://github.com/my-org",
+				InstallationID:  42,
+			},
+			nil,
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "JWT provider is required")
+	})
+
+	t.Run("zero installation ID returns error", func(t *testing.T) {
+		provider := JWTProviderFunc(func(_ context.Context) (string, error) {
+			return "jwt", nil
+		})
+		_, err := NewClientWithJWTProvider(
+			ClientWithJWTProviderConfig{
+				GitHubConfigURL: "https://github.com/my-org",
+				InstallationID:  0,
+			},
+			provider,
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "installation ID is required")
+	})
 }
 
 const samplePrivateKey = `-----BEGIN PRIVATE KEY-----
