@@ -952,3 +952,112 @@ func TestAcquireJobs(t *testing.T) {
 		assert.Empty(t, got)
 	})
 }
+
+// A broker-side session eviction makes every refresh 404 even though the scale
+// set still exists and a new session would work. The client must re-create the
+// session in place — preserving the caller's message cursor — rather than
+// surface a fatal error on every token refresh.
+func TestGetMessageSessionRecreate(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{token: "token"}
+	response := []byte(`{"messageId":7,"messageType":"RunnerScaleSetJobMessages"}`)
+
+	t.Run("refresh 404 recreates the session and the retried get succeeds", func(t *testing.T) {
+		var creates, refreshes, gets int
+		var lastMessageIDSeen string
+		var handleSessionRequest http.HandlerFunc
+		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.Contains(r.URL.Path, "/sessions/") && r.Method == http.MethodPatch:
+				refreshes++
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`{"typeName":"RunnerAdminException","message":"runner referenced a session ID that doesn't exist in redis"}`))
+			case strings.HasSuffix(r.URL.Path, "sessions") && r.Method == http.MethodPost:
+				creates++
+				handleSessionRequest(w, r)
+			default: // message queue GET
+				gets++
+				if gets == 1 {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				lastMessageIDSeen = r.URL.Query().Get("lastMessageId")
+				w.Write(response)
+			}
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, s.testRunnerScaleSetSession())
+
+		client, err := newClient(testSystemInfo, s.configURLForOrg("my-org"), auth)
+		require.NoError(t, err)
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+		creates = 0 // ignore the initial session creation
+
+		got, err := sessionClient.GetMessage(ctx, 42, 10)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, 7, got.MessageID)
+		assert.Equal(t, 1, refreshes, "exactly one refresh attempt")
+		assert.Equal(t, 1, creates, "exactly one re-create after the 404")
+		assert.Equal(t, "42", lastMessageIDSeen, "caller-held cursor must survive re-creation")
+	})
+
+	t.Run("non-404 refresh failure does not recreate", func(t *testing.T) {
+		var creates int
+		var handleSessionRequest http.HandlerFunc
+		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.Contains(r.URL.Path, "/sessions/") && r.Method == http.MethodPatch:
+				w.WriteHeader(http.StatusInternalServerError)
+			case strings.HasSuffix(r.URL.Path, "sessions") && r.Method == http.MethodPost:
+				creates++
+				handleSessionRequest(w, r)
+			default:
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, s.testRunnerScaleSetSession())
+
+		client, err := newClient(testSystemInfo, s.configURLForOrg("my-org"), auth)
+		require.NoError(t, err)
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+		creates = 0
+
+		_, err = sessionClient.GetMessage(ctx, 0, 10)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to refresh message session")
+		assert.Equal(t, 0, creates, "a 500 on refresh must not trigger re-create")
+	})
+
+	t.Run("refresh 404 with failing re-create surfaces both errors", func(t *testing.T) {
+		var creates int
+		var handleSessionRequest http.HandlerFunc
+		s := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.Contains(r.URL.Path, "/sessions/") && r.Method == http.MethodPatch:
+				w.WriteHeader(http.StatusNotFound)
+			case strings.HasSuffix(r.URL.Path, "sessions") && r.Method == http.MethodPost:
+				creates++
+				if creates == 1 {
+					handleSessionRequest(w, r)
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		}))
+		handleSessionRequest = newTestSessionRequestHandler(t, s.testRunnerScaleSetSession())
+
+		client, err := newClient(testSystemInfo, s.configURLForOrg("my-org"), auth)
+		require.NoError(t, err)
+		sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+		require.NoError(t, err)
+
+		_, err = sessionClient.GetMessage(ctx, 0, 10)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, NotFoundError)
+		assert.Contains(t, err.Error(), "re-create also failed")
+	})
+}
