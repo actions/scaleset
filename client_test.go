@@ -678,6 +678,78 @@ func TestGetRunnerGroupByName(t *testing.T) {
 	})
 }
 
+func TestListRunnerGroups(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{token: "token"}
+
+	t.Run("returns every runner group for the configured repository", func(t *testing.T) {
+		expected := []RunnerGroup{
+			{ID: 1, Name: "default", Size: 2, IsDefault: true},
+			{ID: 2, Name: "production", Size: 3},
+		}
+
+		server := newActionsServer(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			assert.Equal(t, "/tenant/123/_apis/runtime/runnergroups/", request.URL.Path)
+			assert.Empty(t, request.URL.Query().Get("groupName"))
+			writer.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(writer).Encode(RunnerGroupList{
+				Count:        len(expected),
+				RunnerGroups: expected,
+			}))
+		}))
+
+		client, err := newClient(testSystemInfo, server.URL+"/my-org/my-repo", auth)
+		require.NoError(t, err)
+
+		actual, err := client.ListRunnerGroups(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, expected, actual)
+	})
+
+	t.Run("returns an empty list", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, err := writer.Write([]byte(`{"count":0,"value":[]}`))
+			require.NoError(t, err)
+		}))
+
+		client, err := newClient(testSystemInfo, server.URL+"/my-org/my-repo", auth)
+		require.NoError(t, err)
+
+		actual, err := client.ListRunnerGroups(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, actual)
+	})
+
+	t.Run("returns an error for a non-success response", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(http.StatusTeapot)
+		}))
+
+		client, err := newClient(testSystemInfo, server.URL+"/my-org/my-repo", auth)
+		require.NoError(t, err)
+
+		actual, err := client.ListRunnerGroups(ctx)
+		assert.ErrorContains(t, err, "unexpected status code: 418")
+		assert.Nil(t, actual)
+	})
+
+	t.Run("returns an error for a malformed response", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, err := writer.Write([]byte(`{"count":`))
+			require.NoError(t, err)
+		}))
+
+		client, err := newClient(testSystemInfo, server.URL+"/my-org/my-repo", auth)
+		require.NoError(t, err)
+
+		actual, err := client.ListRunnerGroups(ctx)
+		assert.ErrorContains(t, err, "failed to decode runner group list")
+		assert.Nil(t, actual)
+	})
+}
+
 func TestGetRunnerScaleSet(t *testing.T) {
 	ctx := context.Background()
 	auth := actionsAuth{
