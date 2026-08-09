@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	runnerEndpoint   = "_apis/distributedtask/pools/0/agents"
-	scaleSetEndpoint = "_apis/runtime/runnerscalesets"
+	runnerEndpoint      = "_apis/distributedtask/pools/0/agents"
+	runnerGroupEndpoint = "_apis/runtime/runnergroups/"
+	scaleSetEndpoint    = "_apis/runtime/runnerscalesets"
 )
 
 var buildInfo clientBuildInfo
@@ -443,7 +444,7 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int
 // GetRunnerGroupByName fetches a runner group by its name.
 func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (*RunnerGroup, error) {
 	query := url.Values{"groupName": []string{runnerGroup}}
-	req, err := c.newActionsServiceRequestWithQuery(ctx, http.MethodGet, "/_apis/runtime/runnergroups/", query, nil)
+	req, err := c.newActionsServiceRequestWithQuery(ctx, http.MethodGet, runnerGroupEndpoint, query, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
 	}
@@ -470,6 +471,34 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	default:
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("multiple runner group found with name %q", runnerGroup))
 	}
+}
+
+// ListRunnerGroups returns every runner group available to the client's configured GitHub scope.
+// The repository, organization, or enterprise is selected by the GitHubConfigURL used to create
+// the client. Results preserve the API response order; request, HTTP status, and decoding failures
+// are returned as errors.
+func (c *Client) ListRunnerGroups(ctx context.Context) ([]RunnerGroup, error) {
+	req, err := c.newActionsServiceRequest(ctx, http.MethodGet, runnerGroupEndpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new actions service request: %w", err)
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to issue the request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
+	}
+
+	var runnerGroupList RunnerGroupList
+	if err := json.NewDecoder(resp.Body).Decode(&runnerGroupList); err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner group list: %w", err))
+	}
+
+	return runnerGroupList.RunnerGroups, nil
 }
 
 // applyDefaultLabelTypes ensures that each label in the runner scale set has a Type set,
