@@ -121,6 +121,11 @@ type acquireJobsResponse struct {
 	Value []int64 `json:"value"`
 }
 
+type acquirableJobsResponse struct {
+	Count int             `json:"count"`
+	Jobs  []*JobAvailable `json:"value"`
+}
+
 type RunnerScaleSetSession struct {
 	SessionID               uuid.UUID                `json:"sessionId,omitempty"`
 	OwnerName               string                   `json:"ownerName,omitempty"`

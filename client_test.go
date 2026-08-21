@@ -1617,3 +1617,72 @@ func TestListRunnerScaleSets(t *testing.T) {
 	assert.Equal(t, "alpha", got[0].Name)
 	assert.Equal(t, "beta", got[1].Name)
 }
+
+func TestGetAcquirableJobs(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{token: "token"}
+
+	t.Run("returns jobs using actions admin authentication", func(t *testing.T) {
+		var server *actionsServer
+		server = newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodGet, r.Method)
+			assert.Equal(t, "/tenant/123/_apis/runtime/runnerscalesets/7/acquirablejobs", r.URL.Path)
+			assert.Equal(t, "6.0-preview", r.URL.Query().Get("api-version"))
+			assert.Equal(t, "Bearer "+server.token, r.Header.Get("Authorization"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(acquirableJobsResponse{
+				Count: 2,
+				Jobs: []*JobAvailable{
+					{JobMessageBase: JobMessageBase{RunnerRequestID: 101, OwnerName: "actions", RepositoryName: "scaleset", JobDisplayName: "unit"}},
+					{JobMessageBase: JobMessageBase{RunnerRequestID: 102, OwnerName: "actions", RepositoryName: "scaleset", JobDisplayName: "build"}},
+				},
+			})
+		}))
+		client, err := newClient(testSystemInfo, server.configURLForOrg("my-org"), auth)
+		require.NoError(t, err)
+
+		got, err := client.GetAcquirableJobs(ctx, 7)
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		assert.EqualValues(t, 101, got[0].RunnerRequestID)
+		assert.Equal(t, "unit", got[0].JobDisplayName)
+		assert.EqualValues(t, 102, got[1].RunnerRequestID)
+	})
+
+	t.Run("no content returns an empty list", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		client, err := newClient(testSystemInfo, server.configURLForOrg("my-org"), auth)
+		require.NoError(t, err)
+
+		got, err := client.GetAcquirableJobs(ctx, 7)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
+
+	t.Run("non-success response is returned as an error", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		client, err := newClient(testSystemInfo, server.configURLForOrg("my-org"), auth)
+		require.NoError(t, err)
+
+		_, err = client.GetAcquirableJobs(ctx, 7)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status code: 400")
+	})
+
+	t.Run("invalid response is returned as an error", func(t *testing.T) {
+		server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("{"))
+		}))
+		client, err := newClient(testSystemInfo, server.configURLForOrg("my-org"), auth)
+		require.NoError(t, err)
+
+		_, err = client.GetAcquirableJobs(ctx, 7)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to decode acquirable jobs")
+	})
+}
