@@ -179,7 +179,11 @@ func TestRetryableHTTPClientFactoryIsolatesMessageSession(t *testing.T) {
 }
 
 func TestRetryableHTTPClientFactoryCopiesTLSConfig(t *testing.T) {
-	shared := &tls.Config{Certificates: make([]tls.Certificate, 1, 4)}
+	shared := &tls.Config{
+		Certificates: make([]tls.Certificate, 1, 4),
+		NextProtos:   make([]string, 1, 4),
+	}
+	shared.NextProtos[0] = "h2"
 	opts := defaultHTTPClientOption()
 	WithRetryableHTTPClientFactory(func() *retryablehttp.Client {
 		client := retryablehttp.NewClient()
@@ -201,7 +205,10 @@ func TestRetryableHTTPClientFactoryCopiesTLSConfig(t *testing.T) {
 			child, err := childOpts.newRetryableHTTPClient()
 			errs[i] = err
 			if err == nil {
-				configs[i] = child.HTTPClient.Transport.(*http.Transport).TLSClientConfig
+				transport := child.HTTPClient.Transport.(*http.Transport)
+				// This also initializes HTTP/2, as the first request would.
+				transport.CloseIdleConnections()
+				configs[i] = transport.TLSClientConfig
 			}
 		})
 	}
@@ -222,6 +229,7 @@ func TestRetryableHTTPClientFactoryCopiesTLSConfig(t *testing.T) {
 	assert.False(t, shared.InsecureSkipVerify)
 	assert.False(t, parentConfig.InsecureSkipVerify)
 	assert.Empty(t, shared.Certificates[:cap(shared.Certificates)][1].Certificate)
+	assert.Empty(t, shared.NextProtos[:cap(shared.NextProtos)][1])
 }
 
 func TestMessageSessionCertificateOptionsDoNotShareArray(t *testing.T) {
@@ -243,4 +251,27 @@ func TestMessageSessionCertificateOptionsDoNotShareArray(t *testing.T) {
 		assert.Equal(t, []byte{byte(i)}, child.tlsClientCertificates[3].Certificate[0])
 	}
 	assert.Empty(t, opts.tlsClientCertificates[:cap(opts.tlsClientCertificates)][3].Certificate)
+}
+
+func TestRetryableHTTPClientFactoryCopiesProtocolHandlers(t *testing.T) {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	shared := make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	opts := defaultHTTPClientOption()
+	WithRetryableHTTPClientFactory(func() *retryablehttp.Client {
+		client := retryablehttp.NewClient()
+		transport := client.HTTPClient.Transport.(*http.Transport)
+		transport.Protocols = protocols
+		transport.TLSNextProto = shared
+		return client
+	})(&opts)
+	var workers sync.WaitGroup
+	for range 16 {
+		client, err := opts.newRetryableHTTPClient()
+		require.NoError(t, err)
+		workers.Go(client.HTTPClient.CloseIdleConnections)
+	}
+	workers.Wait()
+	assert.Empty(t, shared)
 }

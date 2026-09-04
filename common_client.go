@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"time"
@@ -136,11 +137,15 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 		// cleanhttp.DefaultPooledTransport()
 		return nil, fmt.Errorf("failed to get http transport from retryablehttp client")
 	}
+	// HTTP/2 initialization can add handlers to this map.
+	transport.TLSNextProto = maps.Clone(transport.TLSNextProto)
 	if transport.TLSClientConfig == nil {
 		transport.TLSClientConfig = &tls.Config{}
 	} else {
 		// A fresh transport can still share its TLS config with another client.
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+		// HTTP/2 initialization can append to the transport's protocol list.
+		transport.TLSClientConfig.NextProtos = slices.Clone(transport.TLSClientConfig.NextProtos)
 	}
 
 	if o.rootCAs != nil {
