@@ -67,8 +67,6 @@ type Listener struct {
 	logger *slog.Logger
 }
 
-type Option func(*Listener)
-
 // SetMaxRunners sets the capacity of the scaleset. It is concurrently
 // safe to update the max runners during listener.Run.
 func (l *Listener) SetMaxRunners(count int) {
@@ -76,7 +74,7 @@ func (l *Listener) SetMaxRunners(count int) {
 }
 
 // New creates a new Listener with the given configuration.
-func New(client Client, config Config, options ...Option) (*Listener, error) {
+func New(client Client, config Config) (*Listener, error) {
 	if client == nil {
 		return nil, errors.New("client is required")
 	}
@@ -92,14 +90,31 @@ func New(client Client, config Config, options ...Option) (*Listener, error) {
 	}
 	listener.SetMaxRunners(config.MaxRunners)
 
-	for _, option := range options {
-		option(listener)
-	}
-
 	return listener, nil
 }
 
-// Scaler defines the interface for handling scale set messages.
+// InitialMessageID is the MessageID of the synthetic message the listener passes
+// to Scale before polling starts. The service numbers real messages from 0, so
+// this value can never collide with one.
+const InitialMessageID = -1
+
+// Scaler handles scale set messages. The listener owns session management,
+// polling and acking; everything else is up to the implementation.
+//
+// Scale is called once per poll, and must handle:
+//
+//   - A nil message. The service returns nothing when the long poll times out
+//     with no activity. The listener does not track the last seen statistics,
+//     so cache them if you want to keep converging on an idle scale set.
+//   - The initial message, carrying MessageID InitialMessageID and the session
+//     statistics. It has no job messages.
+//   - Acquiring jobs. Every JobAvailable the implementation wants must be passed
+//     to Client.AcquireJobs, or the job stays unassigned.
+//
+// The message is acked before Scale is called, so returning an error will not
+// redeliver it. ctx is the context passed to Run, so Scale is canceled on
+// shutdown; use context.WithoutCancel if a unit of work must finish once it has
+// started. Scale is never called concurrently.
 type Scaler interface {
 	Scale(ctx context.Context, message *scaleset.RunnerScaleSetMessage) error
 }
@@ -118,7 +133,7 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 		}
 
 		if err := scaler.Scale(ctx, &scaleset.RunnerScaleSetMessage{
-			MessageID:  -1, // Initial statistics message has no ID, the first message from the service will have ID 0
+			MessageID:  InitialMessageID,
 			Statistics: initialSession.Statistics,
 		}); err != nil {
 			return fmt.Errorf("failed to handle initial session statistics: %w", err)
@@ -150,7 +165,7 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 
 		if msg != nil {
 			lastMessageID = msg.MessageID
-			if err := l.client.DeleteMessage(context.WithoutCancel(ctx), msg.MessageID); err != nil {
+			if err := l.client.DeleteMessage(ctx, msg.MessageID); err != nil {
 				return fmt.Errorf("failed to delete message: %w", err)
 			}
 		}

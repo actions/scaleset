@@ -150,8 +150,8 @@ func TestListener_Run(t *testing.T) {
 			Run(func(mock.Arguments) { cancel() }).
 			Once()
 
-		// Ensure delete message is called without cancel
-		client.On("DeleteMessage", context.WithoutCancel(ctx), mock.Anything).
+		// Ensure delete message is called with the same context
+		client.On("DeleteMessage", ctx, mock.Anything).
 			Return(nil).
 			Once()
 
@@ -164,5 +164,60 @@ func TestListener_Run(t *testing.T) {
 
 		err = l.Run(ctx, handler)
 		assert.ErrorIs(t, context.Canceled, err)
+	})
+
+	t.Run("message is acked before it is handled", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		config := Config{
+			ScaleSetID: 1,
+			MaxRunners: 10,
+		}
+
+		session := scaleset.RunnerScaleSetSession{
+			SessionID:               uuid.New(),
+			OwnerName:               "example",
+			RunnerScaleSet:          &scaleset.RunnerScaleSet{},
+			MessageQueueURL:         "https://example.com",
+			MessageQueueAccessToken: "1234567890",
+			Statistics:              &scaleset.RunnerScaleSetStatistic{},
+		}
+
+		msg := &scaleset.RunnerScaleSetMessage{
+			MessageID:  1,
+			Statistics: &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: 3},
+		}
+
+		client := NewMockClient(t)
+		handler := NewMockScaler(t)
+
+		client.On("Session").Return(session).Once()
+		handler.On("Scale", ctx, mock.Anything).Return(nil).Once()
+
+		client.On("GetMessage", ctx, mock.Anything, 10).
+			Return(msg, nil).
+			Once()
+
+		var acked bool
+		client.On("DeleteMessage", ctx, msg.MessageID).
+			Run(func(mock.Arguments) { acked = true }).
+			Return(nil).
+			Once()
+
+		handler.On("Scale", ctx, msg).
+			Run(func(mock.Arguments) {
+				assert.True(t, acked, "message should be acked before Scale is called")
+				cancel()
+			}).
+			Return(nil).
+			Once()
+
+		l, err := New(client, config)
+		require.Nil(t, err)
+
+		err = l.Run(ctx, handler)
+		assert.ErrorIs(t, err, context.Canceled)
 	})
 }
