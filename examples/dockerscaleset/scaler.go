@@ -29,6 +29,19 @@ func (s *Scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 	if msg == nil {
 		return nil
 	}
+
+	// Acquire first. The message is already acked, so a failure further down
+	// must not leave these jobs unassigned with nothing left to retry.
+	if len(msg.JobAvailableMessages) > 0 {
+		requestIDs := make([]int64, 0, len(msg.JobAvailableMessages))
+		for _, job := range msg.JobAvailableMessages {
+			requestIDs = append(requestIDs, job.RunnerRequestID)
+		}
+		if _, err := s.sessionClient.AcquireJobs(ctx, requestIDs); err != nil {
+			return fmt.Errorf("failed to acquire jobs: %w", err)
+		}
+	}
+
 	for _, jobStarted := range msg.JobStartedMessages {
 		if err := s.HandleJobStarted(ctx, jobStarted); err != nil {
 			return fmt.Errorf("failed to handle job started: %w", err)
@@ -40,14 +53,8 @@ func (s *Scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		}
 	}
 
-	if len(msg.JobAvailableMessages) > 0 {
-		requestIDs := make([]int64, 0, len(msg.JobAvailableMessages))
-		for _, job := range msg.JobAvailableMessages {
-			requestIDs = append(requestIDs, job.RunnerRequestID)
-		}
-		if _, err := s.sessionClient.AcquireJobs(ctx, requestIDs); err != nil {
-			return fmt.Errorf("failed to acquire jobs: %w", err)
-		}
+	if msg.Statistics == nil {
+		return nil
 	}
 
 	if _, err := s.HandleDesiredRunnerCount(ctx, msg.Statistics.TotalAssignedJobs); err != nil {

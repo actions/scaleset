@@ -109,7 +109,9 @@ const InitialMessageID = -1
 //   - The initial message, carrying MessageID InitialMessageID and the session
 //     statistics. It has no job messages.
 //   - Acquiring jobs. Every JobAvailable the implementation wants must be passed
-//     to Client.AcquireJobs, or the job stays unassigned.
+//     to Client.AcquireJobs, or the job stays unassigned. Do this before any
+//     step that can fail, since the message is already acked and nothing will
+//     redeliver it.
 //
 // The message is acked before Scale is called, so returning an error will not
 // redeliver it. ctx is the context passed to Run, so Scale is canceled on
