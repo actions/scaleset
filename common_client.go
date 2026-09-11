@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
@@ -78,7 +80,7 @@ type httpClientOption struct {
 	logger *slog.Logger
 
 	// Options for built-in retryable HTTP client.
-	// Ignored if a custom retryable HTTP client is provided via WithRetryableHTTPClint.
+	// Ignored when a custom retryable HTTP client or factory is provided.
 	retryMax     int
 	retryWaitMax time.Duration
 
@@ -89,7 +91,8 @@ type httpClientOption struct {
 	proxyFunc             ProxyFunc
 	timeout               time.Duration
 
-	retryableHTTPClient *retryablehttp.Client
+	retryableHTTPClient        *retryablehttp.Client
+	retryableHTTPClientFactory func() *retryablehttp.Client
 }
 
 func (o *httpClientOption) defaults() {
@@ -109,7 +112,12 @@ func (o *httpClientOption) defaults() {
 
 func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, error) {
 	var retryClient *retryablehttp.Client
-	if o.retryableHTTPClient != nil {
+	if o.retryableHTTPClientFactory != nil {
+		retryClient = o.retryableHTTPClientFactory()
+		if retryClient == nil || retryClient.HTTPClient == nil {
+			return nil, fmt.Errorf("retryable HTTP client factory returned a nil client")
+		}
+	} else if o.retryableHTTPClient != nil {
 		retryClient = o.retryableHTTPClient
 	} else {
 		retryClient = retryablehttp.NewClient()
@@ -129,8 +137,15 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 		// cleanhttp.DefaultPooledTransport()
 		return nil, fmt.Errorf("failed to get http transport from retryablehttp client")
 	}
+	// HTTP/2 initialization can add handlers to this map.
+	transport.TLSNextProto = maps.Clone(transport.TLSNextProto)
 	if transport.TLSClientConfig == nil {
 		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		// A fresh transport can still share its TLS config with another client.
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+		// HTTP/2 initialization can append to the transport's protocol list.
+		transport.TLSClientConfig.NextProtos = slices.Clone(transport.TLSClientConfig.NextProtos)
 	}
 
 	if o.rootCAs != nil {
@@ -143,7 +158,7 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 
 	if len(o.tlsClientCertificates) > 0 {
 		transport.TLSClientConfig.Certificates = append(
-			transport.TLSClientConfig.Certificates,
+			slices.Clone(transport.TLSClientConfig.Certificates),
 			o.tlsClientCertificates...,
 		)
 	}
@@ -177,9 +192,26 @@ type HTTPOption func(*httpClientOption)
 
 // WithRetryableHTTPClint allows users to provide a custom retryable HTTP client.
 // If not set, a default client will be used with the specified retry and timeout settings.
+//
+// Deprecated: Use WithRetryableHTTPClientFactory. Token refresh changes the
+// retry policy, which can race with requests that share this client.
 func WithRetryableHTTPClint(client *retryablehttp.Client) HTTPOption {
 	return func(c *httpClientOption) {
 		c.retryableHTTPClient = client
+		c.retryableHTTPClientFactory = nil
+	}
+}
+
+// WithRetryableHTTPClientFactory creates a custom client for each SDK HTTP client,
+// including token refresh and message sessions. The factory must return a new
+// retryable client, http.Client, and *http.Transport each time. The SDK applies
+// HTTP options and can change the retry policy before it uses each client.
+// The factory must be safe to call concurrently. The last custom-client option wins.
+// A nil factory selects the default client.
+func WithRetryableHTTPClientFactory(factory func() *retryablehttp.Client) HTTPOption {
+	return func(c *httpClientOption) {
+		c.retryableHTTPClientFactory = factory
+		c.retryableHTTPClient = nil
 	}
 }
 
@@ -229,7 +261,8 @@ func WithoutTLSVerify() HTTPOption {
 // tls.Config.GetClientCertificate instead.
 func WithTLSClientCertificate(cert tls.Certificate) HTTPOption {
 	return func(c *httpClientOption) {
-		c.tlsClientCertificates = append(c.tlsClientCertificates, cert)
+		// Message sessions copy options. Do not append into a parent's array.
+		c.tlsClientCertificates = append(slices.Clone(c.tlsClientCertificates), cert)
 	}
 }
 
