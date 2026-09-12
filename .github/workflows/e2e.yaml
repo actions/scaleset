@@ -30,12 +30,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: true
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: "go.mod"
       - name: Get configure token
         id: config-token
-        uses: peter-murray/workflow-application-token-action@cb731e00cb6754f584507134ff389dfb3dc42bbc
+        uses: peter-murray/workflow-application-token-action@dad2b81e50ce3edeb5f3b7ffbd79f731368bd668
         with:
           application_id: ${{ secrets.E2E_TESTS_ACCESS_CLIENT_ID }}
           application_private_key: ${{ secrets.E2E_TESTS_ACCESS_PK }}
