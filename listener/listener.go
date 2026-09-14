@@ -165,15 +165,17 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 			return fmt.Errorf("failed to get message: %w", err)
 		}
 
-		if msg != nil {
-			lastMessageID = msg.MessageID
-			if err := l.client.DeleteMessage(ctx, msg.MessageID); err != nil {
-				return fmt.Errorf("failed to delete message: %w", err)
-			}
-		}
-
 		if err := scaler.Scale(ctx, msg); err != nil {
 			return fmt.Errorf("failed to scale: %w", err)
+		}
+
+		if msg != nil {
+			lastMessageID = msg.MessageID
+			// If the scale handled the message successfully, delete it from the queue without taking context cancellation into account.
+			// This is because the message has already been processed and we don't want to leave it in the queue if the context is canceled.
+			if err := l.client.DeleteMessage(context.WithoutCancel(ctx), msg.MessageID); err != nil {
+				return fmt.Errorf("failed to delete the message %d: %w", msg.MessageID, err)
+			}
 		}
 	}
 }
