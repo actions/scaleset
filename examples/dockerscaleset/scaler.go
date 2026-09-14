@@ -30,8 +30,9 @@ func (s *Scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 		return nil
 	}
 
-	// Acquire first. The message is already acked, so a failure further down
-	// must not leave these jobs unassigned with nothing left to retry.
+	// Acquire first so jobs are assigned as early as possible. If a later step
+	// fails, the message is redelivered and AcquireJobs runs again, which is
+	// safe since acquiring an already acquired job is a no-op.
 	if len(msg.JobAvailableMessages) > 0 {
 		requestIDs := make([]int64, 0, len(msg.JobAvailableMessages))
 		for _, job := range msg.JobAvailableMessages {

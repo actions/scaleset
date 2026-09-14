@@ -109,14 +109,15 @@ const InitialMessageID = -1
 //   - The initial message, carrying MessageID InitialMessageID and the session
 //     statistics. It has no job messages.
 //   - Acquiring jobs. Every JobAvailable the implementation wants must be passed
-//     to Client.AcquireJobs, or the job stays unassigned. Do this before any
-//     step that can fail, since the message is already acked and nothing will
-//     redeliver it.
+//     to Client.AcquireJobs, or the job stays unassigned.
 //
-// The message is acked before Scale is called, so returning an error will not
-// redeliver it. ctx is the context passed to Run, so Scale is canceled on
-// shutdown; use context.WithoutCancel if a unit of work must finish once it has
-// started. Scale is never called concurrently.
+// The message is acked only after Scale returns nil. Returning an error stops
+// the listener without acking, so the message is redelivered when polling
+// resumes and Scale must tolerate seeing it more than once. Partial work
+// completed before the error is repeated too, so prefer making each step
+// idempotent. ctx is the context passed to Run, so Scale is canceled on
+// shutdown; the ack itself is not, and always runs once Scale succeeds. Scale
+// is never called concurrently.
 type Scaler interface {
 	Scale(ctx context.Context, message *scaleset.RunnerScaleSetMessage) error
 }
