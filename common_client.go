@@ -120,6 +120,10 @@ func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, erro
 	if retryClient.HTTPClient.Timeout == 0 {
 		retryClient.HTTPClient.Timeout = o.timeout
 	}
+	// Keep the final retryable response so callers can classify its status.
+	if retryClient.ErrorHandler == nil {
+		retryClient.ErrorHandler = retryablehttp.PassthroughErrorHandler
+	}
 
 	retryClient.Logger = o.logger
 

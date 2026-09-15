@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,6 +214,79 @@ func TestNewRequestResponseError(t *testing.T) {
 		assert.Contains(t, err.Error(), "still running")
 	})
 
+	t.Run("rate-limit responses map to a typed error", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			statusCode int
+			retryAfter string
+			remaining  string
+			want       bool
+			wantDelay  time.Duration
+		}{
+			{
+				name:       "429 with retry-after",
+				statusCode: http.StatusTooManyRequests,
+				retryAfter: "17",
+				want:       true,
+				wantDelay:  17 * time.Second,
+			},
+			{
+				name:       "429 without retry-after",
+				statusCode: http.StatusTooManyRequests,
+				want:       true,
+			},
+			{
+				name:       "403 with retry-after",
+				statusCode: http.StatusForbidden,
+				retryAfter: "17",
+				want:       true,
+				wantDelay:  17 * time.Second,
+			},
+			{
+				name:       "403 with exhausted GitHub rate limit",
+				statusCode: http.StatusForbidden,
+				remaining:  "0",
+				want:       true,
+			},
+			{
+				name:       "unrelated 403",
+				statusCode: http.StatusForbidden,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				base := errors.New("base")
+				header := make(http.Header)
+				if tt.retryAfter != "" {
+					header.Set(headerRetryAfter, tt.retryAfter)
+				}
+				if tt.remaining != "" {
+					header.Set(headerRateLimitRemaining, tt.remaining)
+				}
+				resp := &http.Response{
+					Status:        fmt.Sprintf("%d %s", tt.statusCode, http.StatusText(tt.statusCode)),
+					StatusCode:    tt.statusCode,
+					ContentLength: 0,
+					Header:        header,
+				}
+
+				err := newRequestResponseError(req(t), resp, base)
+				require.Error(t, err)
+				assert.ErrorIs(t, err, base)
+				assert.Equal(t, tt.want, errors.Is(err, RateLimitedError))
+
+				var rateLimitErr *RateLimitError
+				if tt.want {
+					require.ErrorAs(t, err, &rateLimitErr)
+					assert.Equal(t, tt.wantDelay, rateLimitErr.RetryAfter)
+				} else {
+					assert.False(t, errors.As(err, &rateLimitErr))
+				}
+			})
+		}
+	})
+
 	t.Run("invalid json returns unmarshal error and includes body", func(t *testing.T) {
 		base := errors.New("base")
 		bad := "not-json"
@@ -253,4 +327,44 @@ func TestNewRequestResponseError(t *testing.T) {
 		assert.Equal(t, "SomeException", ex.ExceptionName)
 		assert.Equal(t, "example error message", ex.Message)
 	})
+}
+
+func TestRetryAfterHint(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		retryAfter string
+		remaining  string
+		reset      string
+		want       time.Duration
+	}{
+		{name: "delay seconds", retryAfter: "17", want: 17 * time.Second},
+		{name: "HTTP date", retryAfter: now.Add(30 * time.Second).Format(http.TimeFormat), want: 30 * time.Second},
+		{name: "GitHub reset fallback", remaining: "0", reset: fmt.Sprint(now.Add(45 * time.Second).Unix()), want: 45 * time.Second},
+		{name: "GitHub reset without exhausted limit", reset: fmt.Sprint(now.Add(45 * time.Second).Unix())},
+		{name: "retry-after takes precedence", retryAfter: "17", remaining: "0", reset: fmt.Sprint(now.Add(45 * time.Second).Unix()), want: 17 * time.Second},
+		{name: "zero takes precedence", retryAfter: "0", remaining: "0", reset: fmt.Sprint(now.Add(45 * time.Second).Unix())},
+		{name: "past HTTP date", retryAfter: now.Add(-time.Second).Format(http.TimeFormat)},
+		{name: "negative seconds", retryAfter: "-1"},
+		{name: "invalid", retryAfter: "later"},
+		{name: "duration overflow", retryAfter: "9223372037"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := make(http.Header)
+			if tt.retryAfter != "" {
+				header.Set(headerRetryAfter, tt.retryAfter)
+			}
+			if tt.remaining != "" {
+				header.Set(headerRateLimitRemaining, tt.remaining)
+			}
+			if tt.reset != "" {
+				header.Set(headerRateLimitReset, tt.reset)
+			}
+
+			assert.Equal(t, tt.want, retryAfterHint(header, now))
+		})
+	}
 }
