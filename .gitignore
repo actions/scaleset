@@ -1,0 +1,6 @@
+# Compiled binaries
+/dockerscaleset
+
+# Test and coverage output
+*.test
+*.out

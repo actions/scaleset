@@ -53,55 +53,18 @@ type Client interface {
 	Session() scaleset.RunnerScaleSetSession
 }
 
-// MetricsRecorder defines the hook methods that will be called by the listener at
-// various points in the message handling process. This allows for custom
-// metrics to be collected without coupling the listener to a specific metrics
-// implementation. The methods in this interface will be called with relevant
-// information about the message handling process, such as the number of jobs
-// started/completed, the desired runner count, and any errors that occur.
-// Implementers can use this information to track the performance and behavior
-// of the listener and the scaleset service.
-type MetricsRecorder interface {
-	RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic)
-	RecordJobStarted(msg *scaleset.JobStarted)
-	RecordJobCompleted(msg *scaleset.JobCompleted)
-	RecordDesiredRunners(count int)
-}
-
-type discardMetricsRecorder struct{}
-
-func (d *discardMetricsRecorder) RecordStatistics(statistics *scaleset.RunnerScaleSetStatistic) {}
-func (d *discardMetricsRecorder) RecordJobStarted(msg *scaleset.JobStarted)                     {}
-func (d *discardMetricsRecorder) RecordJobCompleted(msg *scaleset.JobCompleted)                 {}
-func (d *discardMetricsRecorder) RecordDesiredRunners(count int)                                {}
-
 // Listener listens for messages from the scaleset service and handles them. It automatically handles session
 // creation/deletion/refreshing and message polling and acking.
 type Listener struct {
 	// The main client responsible for communicating with the scaleset service
-	client          Client
-	metricsRecorder MetricsRecorder
+	client Client
 
 	// Configuration for the listener
-	scaleSetID       int
-	maxRunners       atomic.Uint32
-	latestStatistics *scaleset.RunnerScaleSetStatistic
+	scaleSetID int
+	maxRunners atomic.Uint32
 
 	// configuration for the listener
 	logger *slog.Logger
-}
-
-type Option func(*Listener)
-
-// WithMetricsRecorder sets the MetricsRecorder for the listener. If not set, a no-op recorder will be used.
-// If the nil is passed, the MetricsRecorder will not be updated and the existing one will be used (which is a no-op by default).
-func WithMetricsRecorder(recorder MetricsRecorder) Option {
-	return func(l *Listener) {
-		if recorder == nil {
-			return
-		}
-		l.metricsRecorder = recorder
-	}
 }
 
 // SetMaxRunners sets the capacity of the scaleset. It is concurrently
@@ -111,7 +74,7 @@ func (l *Listener) SetMaxRunners(count int) {
 }
 
 // New creates a new Listener with the given configuration.
-func New(client Client, config Config, options ...Option) (*Listener, error) {
+func New(client Client, config Config) (*Listener, error) {
 	if client == nil {
 		return nil, errors.New("client is required")
 	}
@@ -121,25 +84,42 @@ func New(client Client, config Config, options ...Option) (*Listener, error) {
 	}
 
 	listener := &Listener{
-		client:          client,
-		metricsRecorder: &discardMetricsRecorder{},
-		scaleSetID:      config.ScaleSetID,
-		logger:          config.Logger,
+		client:     client,
+		scaleSetID: config.ScaleSetID,
+		logger:     config.Logger,
 	}
 	listener.SetMaxRunners(config.MaxRunners)
-
-	for _, option := range options {
-		option(listener)
-	}
 
 	return listener, nil
 }
 
-// Scaler defines the interface for handling scale set messages.
+// InitialMessageID is the MessageID of the synthetic message the listener passes
+// to Scale before polling starts. The service numbers real messages from 0, so
+// this value can never collide with one.
+const InitialMessageID = -1
+
+// Scaler handles scale set messages. The listener owns session management,
+// polling and acking; everything else is up to the implementation.
+//
+// Scale is called once per poll, and must handle:
+//
+//   - A nil message. The service returns nothing when the long poll times out
+//     with no activity. The listener does not track the last seen statistics,
+//     so cache them if you want to keep converging on an idle scale set.
+//   - The initial message, carrying MessageID InitialMessageID and the session
+//     statistics. It has no job messages.
+//   - Acquiring jobs. Every JobAvailable the implementation wants must be passed
+//     to Client.AcquireJobs, or the job stays unassigned.
+//
+// The message is acked only after Scale returns nil. Returning an error stops
+// the listener without acking, so the message is redelivered when polling
+// resumes and Scale must tolerate seeing it more than once. Partial work
+// completed before the error is repeated too, so prefer making each step
+// idempotent. ctx is the context passed to Run, so Scale is canceled on
+// shutdown; the ack itself is not, and always runs once Scale succeeds. Scale
+// is never called concurrently.
 type Scaler interface {
-	HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStarted) error
-	HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error
-	HandleDesiredRunnerCount(ctx context.Context, count int) (int, error)
+	Scale(ctx context.Context, message *scaleset.RunnerScaleSetMessage) error
 }
 
 // Run starts the listener and processes messages using the provided scaler.
@@ -155,17 +135,17 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 			return fmt.Errorf("session statistics is nil")
 		}
 
-		l.handleStatistics(ctx, initialSession.Statistics)
+		if err := scaler.Scale(ctx, &scaleset.RunnerScaleSetMessage{
+			MessageID:  InitialMessageID,
+			Statistics: initialSession.Statistics,
+		}); err != nil {
+			return fmt.Errorf("failed to handle initial session statistics: %w", err)
+		}
 
 		l.logger.Info(
 			"Handling initial session statistics",
 			slog.Int("totalAssignedJobs", initialSession.Statistics.TotalAssignedJobs),
 		)
-		desiredCount, err := scaler.HandleDesiredRunnerCount(ctx, initialSession.Statistics.TotalAssignedJobs)
-		if err != nil {
-			return fmt.Errorf("handling initial message failed: %w", err)
-		}
-		l.metricsRecorder.RecordDesiredRunners(desiredCount)
 	}
 
 	var lastMessageID int
@@ -186,77 +166,17 @@ func (l *Listener) Run(ctx context.Context, scaler Scaler) error {
 			return fmt.Errorf("failed to get message: %w", err)
 		}
 
-		if msg == nil {
-			_, err := scaler.HandleDesiredRunnerCount(ctx, l.latestStatistics.TotalAssignedJobs)
-			if err != nil {
-				return fmt.Errorf("handling nil message failed: %w", err)
+		if err := scaler.Scale(ctx, msg); err != nil {
+			return fmt.Errorf("failed to scale: %w", err)
+		}
+
+		if msg != nil {
+			lastMessageID = msg.MessageID
+			// If the scale handled the message successfully, delete it from the queue without taking context cancellation into account.
+			// This is because the message has already been processed and we don't want to leave it in the queue if the context is canceled.
+			if err := l.client.DeleteMessage(context.WithoutCancel(ctx), msg.MessageID); err != nil {
+				return fmt.Errorf("failed to delete the message %d: %w", msg.MessageID, err)
 			}
-
-			continue
-		}
-
-		lastMessageID = msg.MessageID
-
-		// Remove cancellation from the context to avoid cancelling the message handling.
-		if err := l.handleMessage(context.WithoutCancel(ctx), scaler, msg); err != nil {
-			return fmt.Errorf("failed to handle message: %w", err)
 		}
 	}
-}
-
-func (l *Listener) handleMessage(ctx context.Context, handler Scaler, msg *scaleset.RunnerScaleSetMessage) error {
-	l.handleStatistics(ctx, msg.Statistics)
-
-	if err := l.client.DeleteMessage(ctx, msg.MessageID); err != nil {
-		return fmt.Errorf("failed to delete message: %w", err)
-	}
-
-	if len(msg.JobAvailableMessages) > 0 {
-		if err := l.acquireAvailableJobs(ctx, msg.JobAvailableMessages); err != nil {
-			return fmt.Errorf("failed to acquire available jobs: %w", err)
-		}
-	}
-
-	for _, jobStarted := range msg.JobStartedMessages {
-		l.metricsRecorder.RecordJobStarted(jobStarted)
-		if err := handler.HandleJobStarted(ctx, jobStarted); err != nil {
-			return fmt.Errorf("failed to handle job started: %w", err)
-		}
-	}
-	for _, jobCompleted := range msg.JobCompletedMessages {
-		l.metricsRecorder.RecordJobCompleted(jobCompleted)
-		if err := handler.HandleJobCompleted(ctx, jobCompleted); err != nil {
-			return fmt.Errorf("failed to handle job completed: %w", err)
-		}
-	}
-
-	desiredCount, err := handler.HandleDesiredRunnerCount(ctx, msg.Statistics.TotalAssignedJobs)
-	if err != nil {
-		return fmt.Errorf("failed to handle desired runner count: %w", err)
-	}
-	l.metricsRecorder.RecordDesiredRunners(desiredCount)
-
-	return nil
-}
-
-func (l *Listener) acquireAvailableJobs(ctx context.Context, jobsAvailable []*scaleset.JobAvailable) error {
-	ids := make([]int64, 0, len(jobsAvailable))
-	for _, job := range jobsAvailable {
-		ids = append(ids, job.RunnerRequestID)
-	}
-
-	l.logger.Info("Acquiring jobs", slog.Int("count", len(ids)))
-
-	acquired, err := l.client.AcquireJobs(ctx, ids)
-	if err != nil {
-		return fmt.Errorf("acquiring jobs: %w", err)
-	}
-
-	l.logger.Info("Jobs acquired", slog.Int("count", len(acquired)))
-	return nil
-}
-
-func (l *Listener) handleStatistics(ctx context.Context, msg *scaleset.RunnerScaleSetStatistic) {
-	l.latestStatistics = msg
-	l.metricsRecorder.RecordStatistics(msg)
 }

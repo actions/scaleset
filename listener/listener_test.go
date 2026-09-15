@@ -2,6 +2,7 @@ package listener
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 
@@ -89,19 +90,15 @@ func TestListener_Run(t *testing.T) {
 
 		client.On("Session").Return(session).Once()
 
-		metricsRecorder := NewMockMetricsRecorder(t)
-		metricsRecorder.On("RecordStatistics", initialStatistics).Once()
-		metricsRecorder.On("RecordDesiredRunners", initialStatistics.TotalAssignedJobs).
-			Return(initialStatistics.TotalAssignedJobs, nil).
-			Run(func(mock.Arguments) { cancel() }).
-			Once()
-
-		l, err := New(client, config, WithMetricsRecorder(metricsRecorder))
+		l, err := New(client, config)
 		require.Nil(t, err)
 
 		handler := NewMockScaler(t)
-		handler.On("HandleDesiredRunnerCount", mock.Anything, mock.Anything).
-			Return(initialStatistics.TotalAssignedJobs, nil).
+		handler.On("Scale", mock.Anything, mock.MatchedBy(func(message *scaleset.RunnerScaleSetMessage) bool {
+			return message.Statistics == initialStatistics
+		})).
+			Run(func(mock.Arguments) { cancel() }).
+			Return(nil).
 			Once()
 
 		err = l.Run(ctx, handler)
@@ -139,17 +136,14 @@ func TestListener_Run(t *testing.T) {
 			},
 		}
 
-		metricsRecorder := NewMockMetricsRecorder(t)
 		client := NewMockClient(t)
 		handler := NewMockScaler(t)
 
 		client.On("Session").Return(session).Once()
-		metricsRecorder.On("RecordStatistics", initialStatistics).Once()
-		metricsRecorder.On("RecordDesiredRunners", initialStatistics.TotalAssignedJobs).
-			Return(initialStatistics.TotalAssignedJobs, nil).
-			Once()
-		handler.On("HandleDesiredRunnerCount", mock.Anything, initialStatistics.TotalAssignedJobs).
-			Return(initialStatistics.TotalAssignedJobs, nil).
+		handler.On("Scale", mock.Anything, mock.MatchedBy(func(message *scaleset.RunnerScaleSetMessage) bool {
+			return message.Statistics == initialStatistics
+		})).
+			Return(nil).
 			Once()
 
 		client.On("GetMessage", ctx, mock.Anything, 10).
@@ -157,24 +151,126 @@ func TestListener_Run(t *testing.T) {
 			Run(func(mock.Arguments) { cancel() }).
 			Once()
 
-		metricsRecorder.On("RecordStatistics", msg.Statistics).Once()
 		// Ensure delete message is called without cancel
 		client.On("DeleteMessage", context.WithoutCancel(ctx), mock.Anything).
 			Return(nil).
 			Once()
 
-		metricsRecorder.On("RecordDesiredRunners", msg.Statistics.TotalAssignedJobs).
-			Return(msg.Statistics.TotalAssignedJobs, nil).
+		handler.On("Scale", mock.Anything, msg).
+			Return(nil).
 			Once()
 
-		handler.On("HandleDesiredRunnerCount", mock.Anything, msg.Statistics.TotalAssignedJobs).
-			Return(msg.Statistics.TotalAssignedJobs, nil).
-			Once()
-
-		l, err := New(client, config, WithMetricsRecorder(metricsRecorder))
+		l, err := New(client, config)
 		require.Nil(t, err)
 
 		err = l.Run(ctx, handler)
 		assert.ErrorIs(t, context.Canceled, err)
+	})
+
+	t.Run("message is acked after it is handled", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		config := Config{
+			ScaleSetID: 1,
+			MaxRunners: 10,
+		}
+
+		session := scaleset.RunnerScaleSetSession{
+			SessionID:               uuid.New(),
+			OwnerName:               "example",
+			RunnerScaleSet:          &scaleset.RunnerScaleSet{},
+			MessageQueueURL:         "https://example.com",
+			MessageQueueAccessToken: "1234567890",
+			Statistics:              &scaleset.RunnerScaleSetStatistic{},
+		}
+
+		msg := &scaleset.RunnerScaleSetMessage{
+			MessageID:  1,
+			Statistics: &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: 3},
+		}
+
+		client := NewMockClient(t)
+		handler := NewMockScaler(t)
+
+		client.On("Session").Return(session).Once()
+		handler.On("Scale", ctx, mock.Anything).Return(nil).Once()
+
+		client.On("GetMessage", ctx, mock.Anything, 10).
+			Return(msg, nil).
+			Once()
+
+		var scaled bool
+		handler.On("Scale", ctx, msg).
+			Run(func(mock.Arguments) { scaled = true }).
+			Return(nil).
+			Once()
+
+		// The ack must outlive cancellation, otherwise the handled message is
+		// redelivered and the work is repeated.
+		client.On("DeleteMessage", context.WithoutCancel(ctx), msg.MessageID).
+			Run(func(mock.Arguments) {
+				assert.True(t, scaled, "message should be acked after Scale is called")
+				cancel()
+			}).
+			Return(nil).
+			Once()
+
+		l, err := New(client, config)
+		require.Nil(t, err)
+
+		err = l.Run(ctx, handler)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("message is not acked when scale fails", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+
+		config := Config{
+			ScaleSetID: 1,
+			MaxRunners: 10,
+		}
+
+		session := scaleset.RunnerScaleSetSession{
+			SessionID:               uuid.New(),
+			OwnerName:               "example",
+			RunnerScaleSet:          &scaleset.RunnerScaleSet{},
+			MessageQueueURL:         "https://example.com",
+			MessageQueueAccessToken: "1234567890",
+			Statistics:              &scaleset.RunnerScaleSetStatistic{},
+		}
+
+		msg := &scaleset.RunnerScaleSetMessage{
+			MessageID:  1,
+			Statistics: &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: 3},
+		}
+
+		scaleErr := errors.New("scale failed")
+
+		client := NewMockClient(t)
+		handler := NewMockScaler(t)
+
+		client.On("Session").Return(session).Once()
+		handler.On("Scale", ctx, mock.Anything).Return(nil).Once()
+
+		client.On("GetMessage", ctx, mock.Anything, 10).
+			Return(msg, nil).
+			Once()
+
+		handler.On("Scale", ctx, msg).
+			Return(scaleErr).
+			Once()
+
+		// DeleteMessage is intentionally not expected. NewMockClient fails the
+		// test if it is called, which is the assertion here.
+
+		l, err := New(client, config)
+		require.Nil(t, err)
+
+		err = l.Run(ctx, handler)
+		assert.ErrorIs(t, err, scaleErr)
 	})
 }
