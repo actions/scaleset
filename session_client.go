@@ -97,6 +97,41 @@ func (c *MessageSessionClient) refreshMessageSession(ctx context.Context, expire
 	return nil
 }
 
+// refreshOrRecreateSession refreshes the message session; when the service no
+// longer knows the session (404 on the refresh), it creates a fresh session in
+// place instead of failing. Without this, a broker-side session eviction is
+// fatal to the caller on every token refresh even though a new session would
+// work fine — and the caller's message cursor (lastMessageId, passed per
+// request) survives re-creation. Only the 404 path re-creates; every other
+// refresh failure surfaces exactly as before.
+func (c *MessageSessionClient) refreshOrRecreateSession(ctx context.Context, expiredSession RunnerScaleSetSession) error {
+	refreshErr := c.refreshMessageSession(ctx, expiredSession)
+	if refreshErr == nil {
+		return nil
+	}
+	if !errors.Is(refreshErr, NotFoundError) {
+		return refreshErr
+	}
+	if createErr := c.recreateMessageSession(ctx, expiredSession); createErr != nil {
+		return fmt.Errorf("%w (session was gone; re-create also failed: %v)", refreshErr, createErr)
+	}
+	return nil
+}
+
+// recreateMessageSession mirrors refreshMessageSession's locking and
+// double-check: if another goroutine already replaced the session, do nothing.
+func (c *MessageSessionClient) recreateMessageSession(ctx context.Context, expiredSession RunnerScaleSetSession) error {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	session := c.Session()
+	if session.SessionID != expiredSession.SessionID {
+		return nil
+	}
+
+	return c.createMessageSession(ctx)
+}
+
 // GetMessage fetches a message from the runner scale set message queue. If there are no messages available, it returns (nil, nil).
 // Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
 // If the current session token is expired, it refreshes the session and tries one more time.
@@ -116,7 +151,7 @@ func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int
 		return nil, fmt.Errorf("failed to get next message: %w", err)
 	}
 
-	if err := c.refreshMessageSession(ctx, session); err != nil {
+	if err := c.refreshOrRecreateSession(ctx, session); err != nil {
 		return nil, fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
@@ -189,7 +224,7 @@ func (c *MessageSessionClient) DeleteMessage(ctx context.Context, messageID int)
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
-	if err := c.refreshMessageSession(ctx, session); err != nil {
+	if err := c.refreshOrRecreateSession(ctx, session); err != nil {
 		return fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
@@ -252,7 +287,7 @@ func (c *MessageSessionClient) AcquireJobs(ctx context.Context, requestIDs []int
 		return nil, fmt.Errorf("failed to acquire jobs: %w", err)
 	}
 
-	if err := c.refreshMessageSession(ctx, session); err != nil {
+	if err := c.refreshOrRecreateSession(ctx, session); err != nil {
 		return nil, fmt.Errorf("failed to refresh message session: %w", err)
 	}
 
@@ -310,6 +345,13 @@ func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, pat
 	defer resp.Body.Close()
 
 	if resp.StatusCode != expectedResponseStatusCode {
+		// A 404 on a session request means the service no longer knows the
+		// session (or the scale set behind it). Surface the typed sentinel so
+		// callers can distinguish "session evicted, safe to re-create" from
+		// genuine failures.
+		if resp.StatusCode == http.StatusNotFound {
+			return newRequestResponseError(req, resp, NotFoundError)
+		}
 		return newRequestResponseError(req, resp, fmt.Errorf("unexpected status code %s", resp.Status))
 	}
 
