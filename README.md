@@ -209,7 +209,10 @@ Transport belongs to you; retries belong to the SDK.
 
 ```go
 httpClient := &http.Client{
-    Timeout:   30 * time.Second,
+    // A bare http.Client has no timeout. DefaultTimeout is the 5 minute
+    // per-attempt timeout the SDK used to set, and it covers the ~50s
+    // message long poll. Do not lower it on a client shared with sessions.
+    Timeout:   scaleset.DefaultTimeout,
     Transport: myInstrumentedTransport,
 }
 
@@ -218,13 +221,12 @@ client, err := scaleset.NewClientWithPersonalAccessToken(config,
 )
 ```
 
-If you don't want to assemble a transport by hand, `NewHTTPClient` builds a sensible `*http.Client` for the common cases:
+If you don't want to assemble a transport by hand, `NewHTTPClient` builds a sensible `*http.Client` for the common cases. Leaving `Timeout` unset applies `DefaultTimeout` (5 minutes), the same client timeout as before:
 
 ```go
 httpClient := scaleset.NewHTTPClient(scaleset.HTTPClientConfig{
     RootCAs:      myCertPool,
     Certificates: []tls.Certificate{myClientCert}, // mTLS
-    Timeout:      30 * time.Second,
 })
 ```
 
@@ -250,7 +252,7 @@ The transport options were replaced by `WithHTTPClient` in v0.5.0:
 | `WithRetryableHTTPClint(c)` | `WithHTTPClient(c.HTTPClient)` — retries move to `WithRetry` |
 | `WithRetryMax(n)` | `WithRetry(RetryConfig{Max: n, ...})` |
 | `WithRetryWaitMax(d)` | `WithRetry(RetryConfig{WaitMax: d, ...})` |
-| `WithTimeout(d)` | `NewHTTPClient(HTTPClientConfig{Timeout: d})` |
+| `WithTimeout(d)` | `NewHTTPClient(HTTPClientConfig{Timeout: d})`. Unset stays `DefaultTimeout` (5 minutes), the previous default |
 | `WithProxy(f)` | `NewHTTPClient(HTTPClientConfig{Proxy: f})` |
 | `WithRootCAs(pool)` | `NewHTTPClient(HTTPClientConfig{RootCAs: pool})` |
 | `WithoutTLSVerify()` | `NewHTTPClient(HTTPClientConfig{InsecureSkipVerify: true})` |

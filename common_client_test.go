@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -358,7 +359,20 @@ func TestNewHTTPClient(t *testing.T) {
 	})
 
 	t.Run("defaults the timeout", func(t *testing.T) {
+		assert.Equal(t, 5*time.Minute, DefaultTimeout)
 		assert.Equal(t, DefaultTimeout, NewHTTPClient(HTTPClientConfig{}).Timeout)
+	})
+
+	t.Run("keeps the previous transport timeouts", func(t *testing.T) {
+		transport := DefaultTransport()
+
+		assert.Equal(t, 30*time.Second, defaultDialTimeout)
+		assert.Equal(t, 30*time.Second, defaultDialKeepAlive)
+		assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+		assert.Equal(t, 10*time.Second, transport.TLSHandshakeTimeout)
+		assert.Equal(t, time.Second, transport.ExpectContinueTimeout)
+		assert.Equal(t, 100, transport.MaxIdleConns)
+		assert.Equal(t, runtime.GOMAXPROCS(0)+1, transport.MaxIdleConnsPerHost)
 	})
 
 	t.Run("returns an independent transport each time", func(t *testing.T) {

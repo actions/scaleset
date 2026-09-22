@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"runtime"
 	"slices"
@@ -52,29 +53,46 @@ type HTTPClientConfig struct {
 
 // DefaultTimeout bounds a single HTTP attempt when HTTPClientConfig leaves
 // Timeout unset.
+//
+// It is the client timeout the SDK applied before transport configuration
+// moved to the caller. GetMessage long-polls for about 50 seconds, so this
+// must stay above that.
 const DefaultTimeout = 5 * time.Minute
+
+// Timeouts of the transport retryablehttp built through
+// cleanhttp.DefaultPooledTransport. They are the previous defaults, not knobs.
+const (
+	defaultDialTimeout           = 30 * time.Second
+	defaultDialKeepAlive         = 30 * time.Second
+	defaultIdleConnTimeout       = 90 * time.Second
+	defaultTLSHandshakeTimeout   = 10 * time.Second
+	defaultExpectContinueTimeout = 1 * time.Second
+)
 
 // DefaultTransport returns the *http.Transport that the SDK uses when no HTTP
 // client is supplied. The result is owned by the caller and safe to modify.
+//
+// Its timeouts are the ones the SDK used before, via cleanhttp's pooled
+// transport. They are set explicitly so a replaced http.DefaultTransport, or
+// a future stdlib default, cannot change them.
 func DefaultTransport() *http.Transport {
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		// Unreachable with the standard library, but a caller may have
-		// replaced http.DefaultTransport.
-		return &http.Transport{
-			Proxy:             http.ProxyFromEnvironment,
-			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
-			ForceAttemptHTTP2: true,
-		}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   defaultDialTimeout,
+			KeepAlive: defaultDialKeepAlive,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       defaultIdleConnTimeout,
+		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+		ExpectContinueTimeout: defaultExpectContinueTimeout,
+		ForceAttemptHTTP2:     true,
+		// The listener holds a long poll open per scale set alongside regular
+		// API traffic, so the stdlib default of 2 idle connections per host
+		// is low. This is the value cleanhttp used.
+		MaxIdleConnsPerHost: runtime.GOMAXPROCS(0) + 1,
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
 	}
-
-	transport = transport.Clone()
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	// The listener holds a long poll open per scale set alongside regular API
-	// traffic, so the stdlib default of 2 idle connections per host is low.
-	transport.MaxIdleConnsPerHost = runtime.GOMAXPROCS(0) + 1
-
-	return transport
 }
 
 // NewHTTPClient builds an *http.Client from cfg, for use with WithHTTPClient.
