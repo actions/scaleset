@@ -247,13 +247,19 @@ client, err := scaleset.NewClientWithPersonalAccessToken(config,
 
 ### Migrating from the transport options
 
-The transport options were replaced by `WithHTTPClient` in v0.5.0:
+If you never passed an HTTP option, you change no code. The constructors are the same, and the defaults are the same.
+
+That path did not have the shared-client race. With no custom client, each call built its own HTTP client, so token refresh had nothing shared to write. The race only happened when `WithRetryableHTTPClint` made every call share one client.
+
+Change code only if you used one of the options below. Three things still differ for everyone: a retry that runs out returns the final response instead of `"giving up after N attempts"`, `GetMessage` stops after `MessagePollTimeout` (2 minutes) instead of the 5 minute client timeout, and a redirect loop, a bad scheme, or an invalid header can be retried. Certificate errors still are not.
+
+`WithRetry` replaces the policy wholesale. Start from `DefaultRetryConfig()` and change the field you care about. A literal `RetryConfig{WaitMax: d}` also sets `Max` to 0, which disables retries.
 
 | Removed | Replacement |
 | --- | --- |
 | `WithRetryableHTTPClint(c)` | `WithHTTPClient(c.HTTPClient)` — retries move to `WithRetry` |
-| `WithRetryMax(n)` | `WithRetry(RetryConfig{Max: n, ...})` |
-| `WithRetryWaitMax(d)` | `WithRetry(RetryConfig{WaitMax: d, ...})` |
+| `WithRetryMax(n)` | `retry := DefaultRetryConfig(); retry.Max = n`; `WithRetry(retry)` |
+| `WithRetryWaitMax(d)` | `retry := DefaultRetryConfig(); retry.WaitMax = d`; `WithRetry(retry)` |
 | `WithTimeout(d)` | `NewHTTPClient(HTTPClientConfig{Timeout: d})`. Unset stays `DefaultTimeout` (5 minutes), the previous default |
 | `WithProxy(f)` | `NewHTTPClient(HTTPClientConfig{Proxy: f})` |
 | `WithRootCAs(pool)` | `NewHTTPClient(HTTPClientConfig{RootCAs: pool})` |
