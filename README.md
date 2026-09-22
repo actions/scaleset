@@ -201,6 +201,64 @@ Assigning more than one label to a scale set is supported on **GHES 3.18 and lat
 
 ---
 
+## HTTP Transport and Retries
+
+Transport belongs to you; retries belong to the SDK.
+
+`WithHTTPClient` accepts anything with a `Do(*http.Request) (*http.Response, error)` method, including `*http.Client`. The SDK never writes to the client, its `Transport`, or its `tls.Config`, so TLS, proxies, connection pooling, and per-attempt timeouts stay entirely under your control. One client can be shared safely across a `Client`, its message sessions, and concurrent goroutines.
+
+```go
+httpClient := &http.Client{
+    Timeout:   30 * time.Second,
+    Transport: myInstrumentedTransport,
+}
+
+client, err := scaleset.NewClientWithPersonalAccessToken(config,
+    scaleset.WithHTTPClient(httpClient),
+)
+```
+
+If you don't want to assemble a transport by hand, `NewHTTPClient` builds a sensible `*http.Client` for the common cases:
+
+```go
+httpClient := scaleset.NewHTTPClient(scaleset.HTTPClientConfig{
+    RootCAs:      myCertPool,
+    Certificates: []tls.Certificate{myClientCert}, // mTLS
+    Timeout:      30 * time.Second,
+})
+```
+
+Retries are layered above the client and keep their state per request, which is what lets the SDK vary the policy for an individual call without touching shared state. `WithRetry` replaces the policy wholesale, so start from `DefaultRetryConfig` when tweaking:
+
+```go
+retry := scaleset.DefaultRetryConfig()
+retry.Max = 8
+
+client, err := scaleset.NewClientWithPersonalAccessToken(config,
+    scaleset.WithRetry(retry),
+)
+```
+
+`RetryConfig{}` (or `Max: 0`) disables retries entirely.
+
+### Migrating from the transport options
+
+The transport options were replaced by `WithHTTPClient` in v0.5.0:
+
+| Removed | Replacement |
+| --- | --- |
+| `WithRetryableHTTPClint(c)` | `WithHTTPClient(c.HTTPClient)` — retries move to `WithRetry` |
+| `WithRetryMax(n)` | `WithRetry(RetryConfig{Max: n, ...})` |
+| `WithRetryWaitMax(d)` | `WithRetry(RetryConfig{WaitMax: d, ...})` |
+| `WithTimeout(d)` | `NewHTTPClient(HTTPClientConfig{Timeout: d})` |
+| `WithProxy(f)` | `NewHTTPClient(HTTPClientConfig{Proxy: f})` |
+| `WithRootCAs(pool)` | `NewHTTPClient(HTTPClientConfig{RootCAs: pool})` |
+| `WithoutTLSVerify()` | `NewHTTPClient(HTTPClientConfig{InsecureSkipVerify: true})` |
+| `WithTLSClientCertificate(cert)` | `NewHTTPClient(HTTPClientConfig{Certificates: []tls.Certificate{cert}})` |
+| `WithTLSClientCertificateFromFile(c, k)` | `tls.LoadX509KeyPair` + `Certificates` |
+
+---
+
 ## Security Notes
 
 - Always prefer GitHub App credentials; rotate PATs if you must use them.

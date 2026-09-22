@@ -9,10 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/actions/scaleset/internal/testserver"
-	"github.com/hashicorp/go-retryablehttp"
 )
 
 func BenchmarkClientLocalMetadataParallel(b *testing.B) {
@@ -240,7 +238,8 @@ func newBenchmarkClient(b *testing.B) *Client {
 		testSystemInfo,
 		server.ConfigURLForOrg("my-org"),
 		actionsAuth{token: "token"},
-		WithRetryableHTTPClint(newBenchmarkRetryableHTTPClient()),
+		WithHTTPClient(newBenchmarkHTTPClient()),
+		WithRetry(RetryConfig{}),
 	)
 	if err != nil {
 		b.Fatalf("new client: %v", err)
@@ -288,7 +287,8 @@ func newBenchmarkMessageSessionClient(b *testing.B) *MessageSessionClient {
 		testSystemInfo,
 		server.ConfigURLForOrg("my-org"),
 		actionsAuth{token: "token"},
-		WithRetryableHTTPClint(newBenchmarkRetryableHTTPClient()),
+		WithHTTPClient(newBenchmarkHTTPClient()),
+		WithRetry(RetryConfig{}),
 	)
 	if err != nil {
 		b.Fatalf("new client: %v", err)
@@ -302,17 +302,14 @@ func newBenchmarkMessageSessionClient(b *testing.B) *MessageSessionClient {
 	return sessionClient
 }
 
-func newBenchmarkRetryableHTTPClient() *retryablehttp.Client {
-	retryClient := retryablehttp.NewClient()
-	retryClient.RetryMax = 0
-	retryClient.RetryWaitMax = time.Nanosecond
-	retryClient.HTTPClient.Transport = &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		MaxIdleConns:        1024,
-		MaxIdleConnsPerHost: 1024,
+func newBenchmarkHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        1024,
+			MaxIdleConnsPerHost: 1024,
+		},
 	}
-
-	return retryClient
 }
 
 func handleBenchmarkClientRequest(w http.ResponseWriter, r *http.Request) {

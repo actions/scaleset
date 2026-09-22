@@ -124,8 +124,7 @@ func TestCreateMessageSession(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -133,8 +132,7 @@ func TestCreateMessageSession(t *testing.T) {
 			ctx,
 			runnerScaleSet.ID,
 			owner,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		assert.NotNil(t, err)
 		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
@@ -231,8 +229,7 @@ func TestGetMessage(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Millisecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Millisecond}),
 		)
 		require.NoError(t, err)
 
@@ -240,8 +237,7 @@ func TestGetMessage(t *testing.T) {
 			ctx,
 			1,
 			"my-org",
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Millisecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Millisecond}),
 		)
 		require.NoError(t, err)
 
@@ -673,8 +669,7 @@ func TestDeleteMessage(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 
@@ -682,8 +677,7 @@ func TestDeleteMessage(t *testing.T) {
 			ctx,
 			1,
 			"my-org",
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 
@@ -895,8 +889,7 @@ func TestAcquireJobs(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 
@@ -904,8 +897,7 @@ func TestAcquireJobs(t *testing.T) {
 			ctx,
 			1,
 			"my-org",
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 

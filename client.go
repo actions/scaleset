@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/hashicorp/go-retryablehttp"
 )
 
 const (
@@ -68,15 +67,46 @@ type debugInfo struct {
 // DebugInfo returns a JSON string containing debug information about the client,
 // including whether a proxy or custom root CA is configured, and the current system info.
 // This method is intended for diagnostic and troubleshooting purposes.
+//
+// Proxy and root CA settings live on the HTTP client, which the caller may
+// supply, so both are reported as unknown (false) when that client does not
+// expose an *http.Transport.
 func (c *Client) DebugInfo() string {
 	info := debugInfo{
-		HasProxy:   c.proxyFunc != nil,
-		HasRootCA:  c.rootCAs != nil,
+		HasProxy:   c.hasProxy(),
+		HasRootCA:  c.hasRootCA(),
 		SystemInfo: c.userAgentString(),
 	}
 
 	b, _ := json.Marshal(info)
 	return string(b)
+}
+
+// hasProxy reports whether a request to the GitHub config URL would be routed
+// through a proxy. It evaluates the transport's proxy function rather than
+// looking for an explicit setting, so a proxy from the environment counts.
+func (c *Client) hasProxy() bool {
+	transport, ok := transportOf(c.httpClient)
+	if !ok || transport.Proxy == nil || c.config.configURL == nil {
+		return false
+	}
+
+	req, err := http.NewRequest(http.MethodGet, c.config.configURL.String(), nil)
+	if err != nil {
+		return false
+	}
+
+	proxyURL, err := transport.Proxy(req)
+
+	return err == nil && proxyURL != nil
+}
+
+// hasRootCA reports whether the HTTP client verifies servers against a custom
+// certificate pool rather than the host's trust store.
+func (c *Client) hasRootCA() bool {
+	tlsConfig, ok := tlsConfigFromClient(c.httpClient)
+
+	return ok && tlsConfig.RootCAs != nil
 }
 
 // GitHubAppAuth contains the GitHub App authentication credentials. All fields are required.
@@ -243,18 +273,19 @@ func newClient(systemInfo SystemInfo, githubConfigURL string, creds actionsAuth,
 		return nil, fmt.Errorf("invalid credentials: %w", err)
 	}
 
-	httpClientOption := httpClientOption{
-		retryMax:     4,
-		retryWaitMax: 30 * time.Second,
+	opts := httpClientOption{
+		retry: DefaultRetryConfig(),
 	}
-	httpClientOption.defaults()
+	// Options are applied before defaults so that defaults only fill in what
+	// the caller left unset.
 	for _, option := range options {
-		option(&httpClientOption)
+		option(&opts)
 	}
+	opts.defaults()
 
 	commonClient := newCommonClient(
 		systemInfo,
-		httpClientOption,
+		opts,
 	)
 
 	ac := &Client{
@@ -694,18 +725,21 @@ func parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMess
 
 // MessageSessionClient creates a new MessageSessionClient for the specified runner scale set ID and owner.
 //
-// It exposes client options that could be overwritten, providing ability to specify different retry policies or TLS settings, proxy, etc.
+// It exposes client options that could be overwritten, providing ability to specify a different
+// retry policy, logger, or HTTP client than the one the parent Client uses. Options left
+// unspecified are inherited, including the parent's HTTP client and its connection pool.
 func (c *Client) MessageSessionClient(ctx context.Context, runnerScaleSetID int, owner string, options ...HTTPOption) (*MessageSessionClient, error) {
 	// Copy original options
-	httpClientOption := c.httpClientOption
+	opts := c.httpClientOption
 	// Apply overwrites
 	for _, option := range options {
-		option(&httpClientOption)
+		option(&opts)
 	}
+	opts.defaults()
 	// Instantiate a new common client
 	commonClient := newCommonClient(
 		c.SystemInfo(),
-		httpClientOption,
+		opts,
 	)
 
 	client := &MessageSessionClient{
@@ -974,26 +1008,10 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 }
 
 func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*actionsServiceAdminConnection, error) {
-	retryableClient, err := c.newRetryableHTTPClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create retryable HTTP client: %w", err)
-	}
-
-	retryableClient.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
-		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-			// Retry on 401 Unauthorized and 403 Forbidden
-			return true, nil
-		}
-
-		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
-	}
-	// Adding custom error handler to also return response in case of error
-	retryableClient.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		return resp, err
-	}
-	httpClient := retryableClient.StandardClient()
-
-	resp, err := sendRequest(httpClient, req)
+	// A freshly minted registration token is not always usable immediately, so
+	// this request alone also retries 401 and 403. The override applies to this
+	// request only and leaves the client's own policy untouched.
+	resp, err := c.do(req, retryOnStatus(http.StatusUnauthorized, http.StatusForbidden))
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}
