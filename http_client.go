@@ -292,10 +292,10 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 	}
 
 	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds < 0 {
-			return 0, false
-		}
-		return time.Duration(seconds) * time.Second, true
+	if seconds < 0 || seconds > int64(math.MaxInt64/int64(time.Second)) {
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
 	}
 
 	when, err := http.ParseTime(value)
