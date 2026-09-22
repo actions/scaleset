@@ -3,11 +3,13 @@ package scaleset
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -232,16 +234,23 @@ func TestSuppliedHTTPClientIsNotModified(t *testing.T) {
 	transport, ok := transportOf(httpClient)
 	require.True(t, ok)
 
-	proxy := transport.Proxy
-	tlsConfig, ok := tlsConfigFromClient(httpClient)
-	require.True(t, ok)
+	// Clone rather than dereference: a live transport's unexported fields are
+	// its connection pool, which its own goroutines write to.
+	before := transport.Clone()
+	beforeTimeout := httpClient.Timeout
+
+	var refreshes atomic.Int64
 
 	server := testserver.New(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		_, _ = w.Write([]byte(`{"sessionId":"00000000-0000-0000-0000-000000000001"}`))
+		_, _ = w.Write([]byte(`{"sessionId":"00000000-0000-0000-0000-000000000001","id":1,"name":"runner","runnerScaleSetId":1}`))
+	}), testserver.WithActionsRegistrationTokenHandler(func(w http.ResponseWriter, r *http.Request) {
+		refreshes.Add(1)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"url":"http://` + r.Host + `/tenant/123/","token":"` + testserver.DefaultActionsToken(t) + `"}`))
 	}))
 
 	client, err := newClient(
@@ -250,6 +259,18 @@ func TestSuppliedHTTPClientIsNotModified(t *testing.T) {
 		actionsAuth{token: "token"},
 		WithHTTPClient(httpClient),
 	)
+	require.NoError(t, err)
+
+	_, err = client.GetRunner(context.Background(), 1)
+	require.NoError(t, err)
+
+	// Force a token refresh, the path that used to install its own retry
+	// policy by writing to the shared client.
+	client.adminTokenMu.Lock()
+	client.actionsServiceAdminToken.expiresAt = time.Now().Add(-time.Second)
+	client.adminTokenMu.Unlock()
+
+	_, err = client.GetRunner(context.Background(), 1)
 	require.NoError(t, err)
 
 	session, err := client.MessageSessionClient(
@@ -267,13 +288,56 @@ func TestSuppliedHTTPClientIsNotModified(t *testing.T) {
 	assert.Equal(t, 0, session.commonClient.retry.Max)
 	assert.Equal(t, DefaultRetryMax, client.retry.Max)
 
+	// Guard against the workload above never exercising a refresh.
+	assert.Positive(t, refreshes.Load())
+
 	// Nothing was written to the client that was handed in.
 	assert.Same(t, transport, httpClient.Transport)
-	assert.Same(t, tlsConfig, transport.TLSClientConfig)
-	assert.False(t, tlsConfig.InsecureSkipVerify)
-	assert.Empty(t, tlsConfig.Certificates)
-	assert.Nil(t, tlsConfig.RootCAs)
-	assert.NotNil(t, proxy)
+	assert.Equal(t, beforeTimeout, httpClient.Timeout, "Client.Timeout")
+	assertConfigUnchanged(t, "Transport", reflect.ValueOf(before).Elem(), reflect.ValueOf(transport.Clone()).Elem())
+}
+
+// assertConfigUnchanged compares the configuration of two structs of the same
+// type, field by field.
+//
+// It walks exported fields only. On http.Transport and tls.Config those are
+// exactly the configuration knobs, while the unexported ones hold live state -
+// connection pools, mutexes, session ticket keys - that changes as a matter of
+// course and must not be compared.
+//
+// Comparing by walking rather than by listing field names is deliberate: a
+// write the SDK should not be making is caught even if the field is added to
+// the standard library, or to this package, after this test was written.
+func assertConfigUnchanged(t *testing.T, label string, want, got reflect.Value) {
+	t.Helper()
+
+	typ := want.Type()
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		name := label + "." + field.Name
+		wantField, gotField := want.Field(i), got.Field(i)
+
+		switch {
+		case field.Type == reflect.TypeFor[*tls.Config]():
+			if wantField.IsNil() || gotField.IsNil() {
+				assert.Equal(t, wantField.IsNil(), gotField.IsNil(), name)
+				continue
+			}
+			assertConfigUnchanged(t, name, wantField.Elem(), gotField.Elem())
+
+		case field.Type.Kind() == reflect.Func:
+			// Functions are comparable only against nil, so compare the code
+			// each one points at.
+			assert.Equal(t, wantField.Pointer(), gotField.Pointer(), name)
+
+		default:
+			assert.True(t, reflect.DeepEqual(wantField.Interface(), gotField.Interface()), name)
+		}
+	}
 }
 
 func TestRetryRewindsRequestBody(t *testing.T) {
