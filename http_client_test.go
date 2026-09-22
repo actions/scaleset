@@ -3,12 +3,16 @@ package scaleset
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/actions/scaleset/internal/testserver"
@@ -113,6 +117,108 @@ func TestTokenRefreshIsolatedFromInflightRequests(t *testing.T) {
 
 	// Guard against the test passing because no refresh ever happened.
 	assert.Positive(t, refreshes.Load())
+}
+
+// TestSharedClientDuringTokenRefreshWithInflightRequests is the regression
+// test for the data race this package was redesigned to remove.
+//
+// A single HTTP client is shared by every request, which is exactly the
+// arrangement that used to be unsafe: a token refresh installed its own retry
+// policy by writing CheckRetry and ErrorHandler onto that shared client while
+// in-flight requests were reading them. Here the refresh is forced to land
+// while sixteen requests are parked inside the JIT handler, so the write and
+// the reads overlap with nothing synchronizing them.
+//
+// The scenario is taken from the reproduction in #128. Run against the code
+// before this change, it reports a race in
+// getActionsServiceAdminConnectionRequest; #128 needed a per-client factory to
+// avoid it, whereas a shared client is safe here because the retry policy is
+// copied per request instead of stored on the client.
+func TestSharedClientDuringTokenRefreshWithInflightRequests(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const inflight = 16
+
+		entered := make(chan struct{}, inflight)
+		release := make(chan struct{})
+		var jitCount, adminCount atomic.Int64
+
+		shared := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			code, body := http.StatusOK, ""
+			switch {
+			case strings.HasSuffix(req.URL.Path, "/registration-token"):
+				code = http.StatusCreated
+				body = `{"token":"registration-token"}`
+
+			case req.URL.Path == "/actions/runner-registration":
+				// Expire the first admin token quickly so the request made
+				// after the workers are parked has to refresh it.
+				expires := time.Now().Add(time.Hour)
+				if adminCount.Add(1) == 1 {
+					expires = time.Now().Add(61 * time.Second)
+				}
+				body = fmt.Sprintf(`{"url":"https://actions.example/","token":%q}`, unsignedJWT(t, expires))
+
+			case strings.HasSuffix(req.URL.Path, "/generatejitconfig"):
+				// Park every concurrent worker inside the handler, so they are
+				// still in flight when the refresh happens.
+				id := jitCount.Add(1)
+				if id > 1 && id <= inflight+1 {
+					entered <- struct{}{}
+					<-release
+				}
+				body = fmt.Sprintf(`{"runner":{"id":%d},"encodedJITConfig":"config"}`, id)
+
+			default:
+				return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL)
+			}
+
+			return newStubResponse(req, code, body), nil
+		})
+
+		client, err := NewClientWithPersonalAccessToken(
+			NewClientWithPersonalAccessTokenConfig{
+				GitHubConfigURL:     "https://github.com/example-org",
+				PersonalAccessToken: "example-token",
+			},
+			WithHTTPClient(shared),
+		)
+		require.NoError(t, err)
+
+		generate := func(name string) error {
+			_, err := client.GenerateJitRunnerConfig(
+				t.Context(),
+				&RunnerScaleSetJitRunnerSetting{Name: name, WorkFolder: "_work"},
+				1,
+			)
+			return err
+		}
+
+		require.NoError(t, generate("warm"))
+
+		var workers sync.WaitGroup
+		errs := make([]error, inflight)
+		for i := range inflight {
+			workers.Go(func() { errs[i] = generate(fmt.Sprintf("inflight-%d", i)) })
+		}
+		for range inflight {
+			<-entered
+		}
+
+		// Let the admin token expire while the workers are parked.
+		time.Sleep(2 * time.Second)
+		close(release)
+
+		refreshErr := generate("refresh")
+		workers.Wait()
+
+		require.NoError(t, refreshErr)
+		for _, err := range errs {
+			assert.NoError(t, err)
+		}
+
+		// Guard against the test passing because no refresh ever happened.
+		assert.Equal(t, int64(2), adminCount.Load())
+	})
 }
 
 // TestSuppliedHTTPClientIsNotModified covers message session options reaching
@@ -305,4 +411,19 @@ func TestDefaultBackoff(t *testing.T) {
 			assert.Equal(t, time.Second, DefaultBackoff(time.Second, time.Hour, 0, resp), "Retry-After: %q", value)
 		}
 	})
+}
+
+// unsignedJWT builds a JWT with the given expiry. Only the claims are read
+// when determining when the admin token needs refreshing.
+func unsignedJWT(t *testing.T, expiresAt time.Time) string {
+	t.Helper()
+
+	encode := func(v string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(v))
+	}
+
+	header := encode(`{"alg":"none","typ":"JWT"}`)
+	claims := encode(fmt.Sprintf(`{"exp":%d}`, expiresAt.Unix()))
+
+	return header + "." + claims + "."
 }
