@@ -62,7 +62,14 @@ func (o *httpClientOption) defaults() {
 // mark when present, and replaces the body with the result. Use it rather
 // than calling HTTPClient.Do directly.
 func (c *commonClient) do(req *http.Request, opts ...retryOption) (*http.Response, error) {
-	resp, err := c.send(req, opts...)
+	return c.doWith(c.httpClient, req, opts...)
+}
+
+// doWith is do, sending through client instead of the one the SDK was given.
+// client may be a copy with a longer timeout. It is never the caller's value
+// with a field written on it.
+func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retryOption) (*http.Response, error) {
+	resp, err := c.send(client, req, opts...)
 	if err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", err))
 	}
@@ -85,7 +92,7 @@ func (c *commonClient) do(req *http.Request, opts ...retryOption) (*http.Respons
 // The policy for this call lives in a local copy of the configuration, so
 // concurrent requests never observe one another's adjustments, and nothing
 // owned by the caller is written to.
-func (c *commonClient) send(req *http.Request, opts ...retryOption) (*http.Response, error) {
+func (c *commonClient) send(client HTTPClient, req *http.Request, opts ...retryOption) (*http.Response, error) {
 	cfg := c.retry
 	for _, opt := range opts {
 		opt(&cfg)
@@ -101,7 +108,7 @@ func (c *commonClient) send(req *http.Request, opts ...retryOption) (*http.Respo
 			return nil, err
 		}
 
-		resp, doErr := c.httpClient.Do(attemptReq)
+		resp, doErr := client.Do(attemptReq)
 
 		retry, policyErr := shouldRetry(req.Context(), resp, doErr)
 		if policyErr != nil {

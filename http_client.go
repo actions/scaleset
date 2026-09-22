@@ -55,9 +55,17 @@ type HTTPClientConfig struct {
 // Timeout unset.
 //
 // It is the client timeout the SDK applied before transport configuration
-// moved to the caller. GetMessage long-polls for about 50 seconds, so this
-// must stay above that.
+// moved to the caller.
 const DefaultTimeout = 5 * time.Minute
+
+// MessagePollTimeout is how long GetMessage waits for the service to finish
+// a long poll.
+//
+// The service holds that request for about 50 seconds when the queue is
+// empty, so this stays above one minute. Two minutes leaves room for that
+// hold plus a slow connection, and a stuck poll fails here instead of
+// sitting for DefaultTimeout.
+const MessagePollTimeout = 2 * time.Minute
 
 // Timeouts of the transport retryablehttp built through
 // cleanhttp.DefaultPooledTransport. They are the previous defaults, not knobs.
@@ -322,6 +330,25 @@ func retryOnStatus(codes ...int) retryOption {
 			return base(ctx, resp, err)
 		}
 	}
+}
+
+// clientForMessagePoll returns a client whose per-attempt timeout is at least
+// MessagePollTimeout.
+//
+// A *http.Client with a shorter positive Timeout would cut the long poll off.
+// The returned value is a copy; the client the caller supplied is not written.
+// A zero Timeout already means no client timeout, and anything that is not a
+// *http.Client has to allow MessagePollTimeout itself.
+func clientForMessagePoll(client HTTPClient) HTTPClient {
+	httpClient, ok := client.(*http.Client)
+	if !ok || httpClient == nil || httpClient.Timeout == 0 || httpClient.Timeout >= MessagePollTimeout {
+		return client
+	}
+
+	lifted := *httpClient
+	lifted.Timeout = MessagePollTimeout
+
+	return &lifted
 }
 
 // drainAndClose consumes a bounded prefix of a discarded response so that the

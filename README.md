@@ -96,6 +96,8 @@ See [`types.go`](./types.go) for payload definitions.
 2. Otherwise, the request blocks for up to ~50 seconds.
 3. If no messages arrive, a 202 response is returned (`nil, nil` in the Go client).
 
+The call itself waits at most `MessagePollTimeout` (2 minutes). That is above the ~50 second hold, and a stuck connection fails there instead of sitting for the 5 minute client timeout. A `*http.Client` with a shorter timeout is not used as-is for this call: the SDK copies it and raises the copy. The client you passed is not modified. A custom `HTTPClient` must allow an attempt of at least `MessagePollTimeout`.
+
 Poll again immediately after handling each response.
 
 ### Message Acknowledgment
@@ -210,8 +212,8 @@ Transport belongs to you; retries belong to the SDK.
 ```go
 httpClient := &http.Client{
     // A bare http.Client has no timeout. DefaultTimeout is the 5 minute
-    // per-attempt timeout the SDK used to set, and it covers the ~50s
-    // message long poll. Do not lower it on a client shared with sessions.
+    // per-attempt timeout the SDK used to set. GetMessage does not use a
+    // shorter value on this client: it waits up to MessagePollTimeout.
     Timeout:   scaleset.DefaultTimeout,
     Transport: myInstrumentedTransport,
 }

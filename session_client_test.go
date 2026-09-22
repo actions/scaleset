@@ -139,6 +139,59 @@ func TestCreateMessageSession(t *testing.T) {
 	})
 }
 
+func TestGetMessageBoundsTheLongPoll(t *testing.T) {
+	assert.GreaterOrEqual(t, MessagePollTimeout, time.Minute)
+	assert.Equal(t, 2*time.Minute, MessagePollTimeout)
+
+	var deadline time.Time
+	var hasDeadline bool
+	stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+		deadline, hasDeadline = req.Context().Deadline()
+		return newStubResponse(req, http.StatusAccepted, ""), nil
+	})
+
+	sessionClient := &MessageSessionClient{
+		commonClient: newCommonClient(testSystemInfo, httpClientOption{
+			httpClient: stub,
+			retry:      RetryConfig{Max: 0},
+		}),
+	}
+	sessionClient.session.Store(&RunnerScaleSetSession{
+		MessageQueueURL:         "https://actions.example/queue",
+		MessageQueueAccessToken: "token",
+	})
+
+	_, err := sessionClient.GetMessage(context.Background(), 0, 1)
+	require.NoError(t, err)
+	require.True(t, hasDeadline)
+	assert.WithinDuration(t, time.Now().Add(MessagePollTimeout), deadline, time.Second)
+
+	t.Run("a sooner parent deadline wins", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		_, err := sessionClient.GetMessage(ctx, 0, 1)
+		require.NoError(t, err)
+		assert.WithinDuration(t, time.Now().Add(time.Second), deadline, 200*time.Millisecond)
+	})
+}
+
+func TestClientForMessagePoll(t *testing.T) {
+	short := &http.Client{Timeout: 30 * time.Second, Transport: http.DefaultTransport}
+	lifted, ok := clientForMessagePoll(short).(*http.Client)
+	require.True(t, ok)
+	assert.Equal(t, 30*time.Second, short.Timeout)
+	assert.NotSame(t, short, lifted)
+	assert.Equal(t, MessagePollTimeout, lifted.Timeout)
+	assert.Same(t, short.Transport, lifted.Transport)
+
+	long := &http.Client{Timeout: DefaultTimeout}
+	assert.Same(t, long, clientForMessagePoll(long))
+
+	unlimited := &http.Client{}
+	assert.Same(t, unlimited, clientForMessagePoll(unlimited))
+}
+
 func TestGetMessage(t *testing.T) {
 	ctx := context.Background()
 	auth := actionsAuth{
