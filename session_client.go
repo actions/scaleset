@@ -101,9 +101,11 @@ func (c *MessageSessionClient) refreshMessageSession(ctx context.Context, expire
 // Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
 // If the current session token is expired, it refreshes the session and tries one more time.
 //
-// The call waits at most MessagePollTimeout. A parent context with a sooner
-// deadline still cancels it. A *http.Client with a shorter timeout is copied
-// for this call and the copy's timeout is raised; the supplied client is not
+// Each poll waits at most MessagePollTimeout. A token refresh is not part of
+// that window: the retry gets a new one, so time spent on the first poll is
+// not subtracted from the second. A parent context with a sooner deadline
+// still cancels a poll. A *http.Client with a shorter timeout is copied for
+// the poll and the copy's timeout is raised; the supplied client is not
 // modified.
 func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
 	session := c.Session()
@@ -134,8 +136,9 @@ func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int
 }
 
 func (c *MessageSessionClient) getMessage(ctx context.Context, session RunnerScaleSetSession, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
-	// Bound this call on its own. A parent deadline that is sooner still
-	// wins, and the shared client timeout is not shortened for other calls.
+	// Each poll gets its own window. GetMessage calls this again after a token
+	// refresh, and that second poll must not inherit time already spent on the
+	// first. A parent deadline that is sooner still wins.
 	ctx, cancel := context.WithTimeout(ctx, MessagePollTimeout)
 	defer cancel()
 

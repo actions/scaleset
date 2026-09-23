@@ -96,7 +96,7 @@ See [`types.go`](./types.go) for payload definitions.
 2. Otherwise, the request blocks for up to ~50 seconds.
 3. If no messages arrive, a 202 response is returned (`nil, nil` in the Go client).
 
-The call itself waits at most `MessagePollTimeout` (2 minutes). That is above the ~50 second hold, and a stuck connection fails there instead of sitting for the 5 minute client timeout. A `*http.Client` with a shorter timeout is not used as-is for this call: the SDK copies it and raises the copy. The client you passed is not modified. A custom `HTTPClient` must allow an attempt of at least `MessagePollTimeout`.
+Each poll waits at most `MessagePollTimeout` (2 minutes). That is above the ~50 second hold, with room if the service holds the poll longer. A stuck connection fails there instead of sitting for the 5 minute client timeout. If the session token has expired, the refresh is separate and the retry gets a new window of the same length. A `*http.Client` with a shorter timeout is not used as-is for a poll: the SDK copies it and raises the copy. The client you passed is not modified. A custom `HTTPClient` must allow an attempt of at least `MessagePollTimeout`.
 
 Poll again immediately after handling each response.
 

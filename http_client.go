@@ -58,13 +58,14 @@ type HTTPClientConfig struct {
 // moved to the caller.
 const DefaultTimeout = 5 * time.Minute
 
-// MessagePollTimeout is how long GetMessage waits for the service to finish
-// a long poll.
+// MessagePollTimeout is how long one GetMessage poll waits for the service
+// to finish.
 //
 // The service holds that request for about 50 seconds when the queue is
-// empty, so this stays above one minute. Two minutes leaves room for that
-// hold plus a slow connection, and a stuck poll fails here instead of
-// sitting for DefaultTimeout.
+// empty, so this stays above one minute. Two minutes leaves room if that
+// hold gets longer. A stuck poll fails here instead of sitting for
+// DefaultTimeout. A retry after a token refresh gets a new window of this
+// length; it does not share the first poll's timer.
 const MessagePollTimeout = 2 * time.Minute
 
 // Timeouts of the transport retryablehttp built through
