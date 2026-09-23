@@ -176,6 +176,95 @@ func TestGetMessageBoundsTheLongPoll(t *testing.T) {
 	})
 }
 
+// pollDeadlineTransport records the client-side deadline of each message-queue
+// poll. The first poll is held so a shared timer and a fresh timer disagree.
+type pollDeadlineTransport struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	dls  []time.Time
+}
+
+func (p *pollDeadlineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && (req.URL.Path == "/" || req.URL.Path == "") {
+		if dl, ok := req.Context().Deadline(); ok {
+			p.mu.Lock()
+			first := len(p.dls) == 0
+			p.dls = append(p.dls, dl)
+			p.mu.Unlock()
+			if first {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+	}
+	return p.base.RoundTrip(req)
+}
+
+func TestGetMessageRefreshStartsANewPollWindow(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{token: "token"}
+
+	var handleSessionRequest http.HandlerFunc
+	type state int
+	const (
+		createSession state = iota
+		firstGetMessage
+		refreshToken
+		secondGetMessage
+	)
+	currentState := createSession
+	server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "sessions") && !strings.Contains(r.URL.Path, "/sessions/") {
+			require.Equal(t, createSession, currentState)
+			handleSessionRequest(w, r)
+			currentState = firstGetMessage
+			return
+		}
+		if strings.Contains(r.URL.Path, "/sessions/") {
+			require.Equal(t, refreshToken, currentState)
+			handleSessionRequest(w, r)
+			currentState = secondGetMessage
+			return
+		}
+		if currentState == firstGetMessage {
+			w.WriteHeader(http.StatusUnauthorized)
+			currentState = refreshToken
+			return
+		}
+		require.Equal(t, secondGetMessage, currentState)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
+
+	base := NewHTTPClient(HTTPClientConfig{})
+	recorder := &pollDeadlineTransport{base: base.Transport}
+	base.Transport = recorder
+
+	client, err := newClient(
+		testSystemInfo,
+		server.configURLForOrg("my-org"),
+		auth,
+		WithHTTPClient(base),
+	)
+	require.NoError(t, err)
+
+	sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+	require.NoError(t, err)
+
+	_, err = sessionClient.GetMessage(ctx, 0, 10)
+	require.NoError(t, err)
+
+	recorder.mu.Lock()
+	deadlines := append([]time.Time(nil), recorder.dls...)
+	recorder.mu.Unlock()
+	require.Len(t, deadlines, 2)
+	// The first poll is held for 200ms. A timer created once in GetMessage would
+	// be the same instant on both polls. A timer created in getMessage is later
+	// on the retry by about that hold.
+	gap := deadlines[1].Sub(deadlines[0])
+	assert.Greater(t, gap, 100*time.Millisecond)
+	assert.Less(t, gap, 5*time.Second)
+}
+
 func TestClientForMessagePoll(t *testing.T) {
 	short := &http.Client{Timeout: 30 * time.Second, Transport: http.DefaultTransport}
 	lifted, ok := clientForMessagePoll(short).(*http.Client)
