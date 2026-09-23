@@ -2,23 +2,41 @@ package scaleset
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/actions/scaleset/internal/testserver"
-	"github.com/hashicorp/go-retryablehttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http/httpproxy"
 )
+
+// httpClientFunc adapts a function to the HTTPClient interface, so a test can
+// stand in for a transport without running a server.
+type httpClientFunc func(req *http.Request) (*http.Response, error)
+
+func (f httpClientFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func newStubResponse(req *http.Request, statusCode int, body string) *http.Response {
+	return &http.Response{
+		Status:     http.StatusText(statusCode),
+		StatusCode: statusCode,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
 
 func defaultHTTPClientOption() httpClientOption {
 	var opt httpClientOption
@@ -94,7 +112,7 @@ func TestClientProxy(t *testing.T) {
 	}
 
 	opts := defaultHTTPClientOption()
-	WithProxy(proxyFunc)(&opts)
+	WithHTTPClient(NewHTTPClient(HTTPClientConfig{Proxy: proxyFunc}))(&opts)
 
 	client := newCommonClient(
 		testSystemInfo,
@@ -186,178 +204,187 @@ func TestWithLogger(t *testing.T) {
 		assert.Equal(t, handler, opts.logger.Handler(), "WithLogger should set the provided logger handler")
 	})
 
-	t.Run("WithLogger(nil) propagates discard logger to retryable HTTP client", func(t *testing.T) {
+	t.Run("WithLogger(nil) leaves the client with a discard logger", func(t *testing.T) {
 		opts := httpClientOption{}
 		WithLogger(nil)(&opts)
-		client, err := opts.newRetryableHTTPClient()
-		require.NoError(t, err)
-		assert.NotNil(t, client.Logger, "retryable client should have logger set from WithLogger(nil)")
-
-		logger, ok := client.Logger.(*slog.Logger)
-		require.True(t, ok, "retryable client logger should be a *slog.Logger")
-		assert.Same(t, opts.logger, logger, "retryable client logger should be the same logger set by WithLogger(nil)")
-		assert.Equal(t, slog.DiscardHandler, logger.Handler(), "retryable client logger should be a discard logger from WithLogger(nil)")
+		opts.defaults()
+		client := newCommonClient(testSystemInfo, opts)
+		require.NotNil(t, client.logger)
+		assert.Equal(t, slog.DiscardHandler, client.logger.Handler())
 	})
 
-	t.Run("WithLogger(customLogger) propagates custom logger to retryable HTTP client", func(t *testing.T) {
+	t.Run("WithLogger(customLogger) propagates the logger to the client", func(t *testing.T) {
 		handler := newJSONHandler()
 		customLogger := slog.New(handler)
 		opts := httpClientOption{}
 		WithLogger(customLogger)(&opts)
-		client, err := opts.newRetryableHTTPClient()
-		require.NoError(t, err)
-		assert.NotNil(t, client.Logger, "retryable client should have logger set")
-		logger, ok := client.Logger.(*slog.Logger)
-		require.True(t, ok, "retryable client logger should be a *slog.Logger")
-		assert.Equal(t, handler, logger.Handler(), "retryable client logger should be the custom logger from WithLogger")
+		opts.defaults()
+		client := newCommonClient(testSystemInfo, opts)
+		assert.Same(t, customLogger, client.logger)
+		assert.Equal(t, handler, client.logger.Handler())
 	})
 }
 
-// TestWithRetryableHTTPClient verifies that a custom retryable HTTP client
-// provided via WithRetryableHTTPClient is actually used instead of the built-in one
-func TestWithRetryableHTTPClient(t *testing.T) {
-	t.Run("uses custom retryable client instead of built-in", func(t *testing.T) {
-		attemptCount := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attemptCount++
-			if attemptCount == 1 {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result": "success"}`))
-		}))
-		defer server.Close()
+// TestWithHTTPClient verifies that a caller-supplied HTTP client is the one
+// used, and that the SDK layers its own retries above it.
+func TestWithHTTPClient(t *testing.T) {
+	t.Run("uses the supplied client", func(t *testing.T) {
+		var calls int
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return newStubResponse(req, http.StatusOK, `{"result":"success"}`), nil
+		})
 
-		// Create a custom retryable HTTP client with specific retry configuration
-		customRetryClient := retryablehttp.NewClient()
-		customRetryClient.RetryMax = 3
-		customRetryClient.RetryWaitMax = 10 * time.Millisecond
-
-		// Create options with the custom retryable client
 		opts := defaultHTTPClientOption()
-		WithRetryableHTTPClint(customRetryClient)(&opts)
-
-		// Verify that the custom client is set in options
-		assert.NotNil(t, opts.retryableHTTPClient)
-		assert.Equal(t, customRetryClient, opts.retryableHTTPClient)
-
-		// Create the common client with custom retryable client
+		WithHTTPClient(stub)(&opts)
 		client := newCommonClient(testSystemInfo, opts)
 
-		// Make a request that will trigger a retry
-		req, err := http.NewRequest("GET", server.URL, nil)
+		req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
 		require.NoError(t, err)
 
 		resp, err := client.do(req)
 		require.NoError(t, err)
-
-		// Should succeed after retry
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, 2, attemptCount)
-
-		// Verify that the client used is the custom one by checking newRetryableHTTPClient
-		retrievedRetryClient, err := client.newRetryableHTTPClient()
-		require.NoError(t, err)
-		assert.Equal(t, customRetryClient, retrievedRetryClient, "should return the custom retryable client")
+		assert.Equal(t, 1, calls)
 	})
 
-	t.Run("respects custom client's retry configuration over built-in defaults", func(t *testing.T) {
-		attemptCount := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attemptCount++
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}))
-		defer server.Close()
-
-		// Create custom client with limited retries
-		customRetryClient := retryablehttp.NewClient()
-		customRetryClient.RetryMax = 1 // Only 1 retry (2 total attempts)
-		customRetryClient.RetryWaitMax = 5 * time.Millisecond
+	t.Run("retries the supplied client and returns the final response", func(t *testing.T) {
+		var calls int
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return newStubResponse(req, http.StatusServiceUnavailable, ""), nil
+			}
+			return newStubResponse(req, http.StatusOK, `{"result":"success"}`), nil
+		})
 
 		opts := defaultHTTPClientOption()
-		WithRetryableHTTPClint(customRetryClient)(&opts)
-
+		WithHTTPClient(stub)(&opts)
+		WithRetry(RetryConfig{Max: 3, WaitMax: time.Millisecond})(&opts)
 		client := newCommonClient(testSystemInfo, opts)
 
-		req, err := http.NewRequest("GET", server.URL, nil)
+		req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
 		require.NoError(t, err)
 
 		resp, err := client.do(req)
-		// When all retries are exhausted with a retryable error, the client gives up
-		// and an error is returned
-		if err != nil {
-			// Expected: request failed after exhausting retries
-			assert.Contains(t, err.Error(), "giving up after 2 attempt(s)")
-		} else {
-			// Or the final response is returned
-			assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-		}
-		// Should have tried 1 initial + 1 retry = 2 times total
-		assert.Equal(t, 2, attemptCount)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, 2, calls)
+	})
+
+	t.Run("returns the last response once retries are exhausted", func(t *testing.T) {
+		var calls int
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return newStubResponse(req, http.StatusServiceUnavailable, `{"message":"unavailable"}`), nil
+		})
+
+		opts := defaultHTTPClientOption()
+		WithHTTPClient(stub)(&opts)
+		WithRetry(RetryConfig{Max: 1, WaitMax: time.Millisecond})(&opts)
+		client := newCommonClient(testSystemInfo, opts)
+
+		req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+		require.NoError(t, err)
+
+		// The response is handed back rather than discarded, so callers can
+		// build an error that carries the status, headers, and body.
+		resp, err := client.do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		assert.Equal(t, 2, calls)
+	})
+
+	t.Run("a zero retry config disables retries", func(t *testing.T) {
+		var calls int
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return newStubResponse(req, http.StatusServiceUnavailable, ""), nil
+		})
+
+		opts := defaultHTTPClientOption()
+		WithHTTPClient(stub)(&opts)
+		WithRetry(RetryConfig{})(&opts)
+		client := newCommonClient(testSystemInfo, opts)
+
+		req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+		require.NoError(t, err)
+
+		_, err = client.do(req)
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
 	})
 }
 
-func TestWithTLSClientCertificate(t *testing.T) {
-	t.Run("applies client certificate to transport", func(t *testing.T) {
+func TestNewHTTPClient(t *testing.T) {
+	t.Run("applies client certificates", func(t *testing.T) {
 		cert, err := tls.LoadX509KeyPair("testdata/leaf.crt", "testdata/leaf.key")
 		require.NoError(t, err)
 
-		opts := defaultHTTPClientOption()
-		WithTLSClientCertificate(cert)(&opts)
+		client := NewHTTPClient(HTTPClientConfig{Certificates: []tls.Certificate{cert, cert}})
 
-		assert.Len(t, opts.tlsClientCertificates, 1)
-
-		client, err := opts.newRetryableHTTPClient()
-		require.NoError(t, err)
-
-		transport, ok := client.HTTPClient.Transport.(*http.Transport)
+		tlsConfig, ok := tlsConfigFromClient(client)
 		require.True(t, ok)
-		assert.Len(t, transport.TLSClientConfig.Certificates, 1)
+		assert.Len(t, tlsConfig.Certificates, 2)
 	})
 
-	t.Run("allows multiple certificates", func(t *testing.T) {
+	t.Run("does not alias the caller's certificate slice", func(t *testing.T) {
 		cert, err := tls.LoadX509KeyPair("testdata/leaf.crt", "testdata/leaf.key")
 		require.NoError(t, err)
 
-		opts := defaultHTTPClientOption()
-		WithTLSClientCertificate(cert)(&opts)
-		WithTLSClientCertificate(cert)(&opts)
+		certs := make([]tls.Certificate, 1, 4)
+		certs[0] = cert
+		client := NewHTTPClient(HTTPClientConfig{Certificates: certs})
 
-		assert.Len(t, opts.tlsClientCertificates, 2)
-	})
-}
-
-func TestWithTLSClientCertificateFromFile(t *testing.T) {
-	t.Run("loads certificate from files", func(t *testing.T) {
-		certFile := "testdata/leaf.crt"
-		keyFile := "testdata/leaf.key"
-
-		opt, err := WithTLSClientCertificateFromFile(certFile, keyFile)
-		require.NoError(t, err)
-
-		opts := defaultHTTPClientOption()
-		opt(&opts)
-
-		assert.Len(t, opts.tlsClientCertificates, 1)
+		tlsConfig, ok := tlsConfigFromClient(client)
+		require.True(t, ok)
+		tlsConfig.Certificates = append(tlsConfig.Certificates, cert)
+		assert.Len(t, certs, 1)
+		assert.Empty(t, certs[:cap(certs)][1].Certificate)
 	})
 
-	t.Run("returns error for non-existent files", func(t *testing.T) {
-		_, err := WithTLSClientCertificateFromFile("nonexistent.crt", "nonexistent.key")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to load client certificate")
+	t.Run("applies TLS and timeout settings", func(t *testing.T) {
+		pool := x509.NewCertPool()
+		client := NewHTTPClient(HTTPClientConfig{
+			RootCAs:            pool,
+			InsecureSkipVerify: true,
+			Timeout:            time.Minute,
+		})
+
+		assert.Equal(t, time.Minute, client.Timeout)
+		tlsConfig, ok := tlsConfigFromClient(client)
+		require.True(t, ok)
+		assert.Same(t, pool, tlsConfig.RootCAs)
+		assert.True(t, tlsConfig.InsecureSkipVerify)
 	})
 
-	t.Run("returns error for invalid certificate", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		certFile := filepath.Join(tmpDir, "invalid.crt")
-		keyFile := filepath.Join(tmpDir, "invalid.key")
+	t.Run("defaults the timeout", func(t *testing.T) {
+		assert.Equal(t, 5*time.Minute, DefaultTimeout)
+		assert.Equal(t, DefaultTimeout, NewHTTPClient(HTTPClientConfig{}).Timeout)
+	})
 
-		require.NoError(t, os.WriteFile(certFile, []byte("not a cert"), 0600))
-		require.NoError(t, os.WriteFile(keyFile, []byte("not a key"), 0600))
+	t.Run("keeps the previous transport timeouts", func(t *testing.T) {
+		transport := DefaultTransport()
 
-		_, err := WithTLSClientCertificateFromFile(certFile, keyFile)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to load client certificate")
+		assert.Equal(t, 30*time.Second, defaultDialTimeout)
+		assert.Equal(t, 30*time.Second, defaultDialKeepAlive)
+		assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+		assert.Equal(t, 10*time.Second, transport.TLSHandshakeTimeout)
+		assert.Equal(t, time.Second, transport.ExpectContinueTimeout)
+		assert.Equal(t, 100, transport.MaxIdleConns)
+		assert.Equal(t, runtime.GOMAXPROCS(0)+1, transport.MaxIdleConnsPerHost)
+	})
+
+	t.Run("returns an independent transport each time", func(t *testing.T) {
+		first := NewHTTPClient(HTTPClientConfig{})
+		second := NewHTTPClient(HTTPClientConfig{})
+		assert.NotSame(t, first, second)
+		assert.NotSame(t, first.Transport, second.Transport)
+
+		firstTLS, ok := tlsConfigFromClient(first)
+		require.True(t, ok)
+		secondTLS, ok := tlsConfigFromClient(second)
+		require.True(t, ok)
+		assert.NotSame(t, firstTLS, secondTLS)
 	})
 }

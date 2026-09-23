@@ -96,6 +96,8 @@ See [`types.go`](./types.go) for payload definitions.
 2. Otherwise, the request blocks for up to ~50 seconds.
 3. If no messages arrive, a 202 response is returned (`nil, nil` in the Go client).
 
+Each poll waits at most `MessagePollTimeout` (2 minutes). That is above the ~50 second hold, with room if the service holds the poll longer. A stuck connection fails there instead of sitting for the 5 minute client timeout. If the session token has expired, the refresh is separate and the retry gets a new window of the same length. A `*http.Client` with a shorter timeout is not used as-is for a poll: the SDK copies it and raises the copy. The client you passed is not modified. A custom `HTTPClient` must allow an attempt of at least `MessagePollTimeout`.
+
 Poll again immediately after handling each response.
 
 ### Message Acknowledgment
@@ -198,6 +200,72 @@ Assigning more than one label to a scale set is supported on **GHES 3.18 and lat
   ```
 
 - **GHES 3.21 and later:** the flag is **on by default**, no action required.
+
+---
+
+## HTTP Transport and Retries
+
+Transport belongs to you; retries belong to the SDK.
+
+`WithHTTPClient` accepts anything with a `Do(*http.Request) (*http.Response, error)` method, including `*http.Client`. The SDK never writes to the client, its `Transport`, or its `tls.Config`, so TLS, proxies, connection pooling, and per-attempt timeouts stay entirely under your control. One client can be shared safely across a `Client`, its message sessions, and concurrent goroutines.
+
+```go
+httpClient := &http.Client{
+    // A bare http.Client has no timeout. DefaultTimeout is the 5 minute
+    // per-attempt timeout the SDK used to set. GetMessage does not use a
+    // shorter value on this client: it waits up to MessagePollTimeout.
+    Timeout:   scaleset.DefaultTimeout,
+    Transport: myInstrumentedTransport,
+}
+
+client, err := scaleset.NewClientWithPersonalAccessToken(config,
+    scaleset.WithHTTPClient(httpClient),
+)
+```
+
+If you don't want to assemble a transport by hand, `NewHTTPClient` builds a sensible `*http.Client` for the common cases. Leaving `Timeout` unset applies `DefaultTimeout` (5 minutes), the same client timeout as before:
+
+```go
+httpClient := scaleset.NewHTTPClient(scaleset.HTTPClientConfig{
+    RootCAs:      myCertPool,
+    Certificates: []tls.Certificate{myClientCert}, // mTLS
+})
+```
+
+Retries are layered above the client and keep their state per request, which is what lets the SDK vary the policy for an individual call without touching shared state. `WithRetry` replaces the policy wholesale, so start from `DefaultRetryConfig` when tweaking:
+
+```go
+retry := scaleset.DefaultRetryConfig()
+retry.Max = 8
+
+client, err := scaleset.NewClientWithPersonalAccessToken(config,
+    scaleset.WithRetry(retry),
+)
+```
+
+`RetryConfig{}` (or `Max: 0`) disables retries entirely.
+
+### Migrating from the transport options
+
+If you never passed an HTTP option, you change no code. The constructors are the same, and the defaults are the same.
+
+That path did not have the shared-client race. With no custom client, each call built its own HTTP client, so token refresh had nothing shared to write. The race only happened when `WithRetryableHTTPClint` made every call share one client.
+
+Change code only if you used one of the options below. Three things still differ for everyone: a retry that runs out returns the final response instead of `"giving up after N attempts"`, `GetMessage` stops after `MessagePollTimeout` (2 minutes) instead of the 5 minute client timeout, and a redirect loop, a bad scheme, or an invalid header can be retried. Certificate errors still are not.
+
+`WithRetry` replaces the policy wholesale. Start from `DefaultRetryConfig()` and change the field you care about. A literal `RetryConfig{WaitMax: d}` also sets `Max` to 0, which disables retries.
+
+| Removed | Replacement |
+| --- | --- |
+| `WithRetryableHTTPClint(c)` | `WithHTTPClient(c.HTTPClient)` — retries move to `WithRetry` |
+| `WithRetryMax(n)` | `retry := DefaultRetryConfig(); retry.Max = n`; `WithRetry(retry)` |
+| `WithRetryWaitMax(d)` | `retry := DefaultRetryConfig(); retry.WaitMax = d`; `WithRetry(retry)` |
+| `WithTimeout(d)` | `NewHTTPClient(HTTPClientConfig{Timeout: d})`. Unset stays `DefaultTimeout` (5 minutes), the previous default |
+| `WithProxy(f)` | `NewHTTPClient(HTTPClientConfig{Proxy: f})` |
+| `WithRootCAs(pool)` | `NewHTTPClient(HTTPClientConfig{RootCAs: pool})` |
+| `WithoutTLSVerify()` | `NewHTTPClient(HTTPClientConfig{InsecureSkipVerify: true})` |
+| `WithTLSClientCertificate(cert)` | `NewHTTPClient(HTTPClientConfig{Certificates: []tls.Certificate{cert}})` |
+| `WithTLSClientCertificateFromFile(c, k)` | `tls.LoadX509KeyPair` + `Certificates` |
 
 ---
 
