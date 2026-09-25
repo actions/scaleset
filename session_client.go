@@ -302,7 +302,7 @@ func (c *MessageSessionClient) acquireJobs(ctx context.Context, session RunnerSc
 	}
 
 	var result acquireJobsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeJSONBody(resp.Body, &result); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode acquire jobs response: %w", err))
 	}
 
@@ -330,7 +330,7 @@ func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, pat
 		return nil
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(responseUnmarshalTarget); err != nil {
+	if err := decodeJSONBody(resp.Body, responseUnmarshalTarget); err != nil {
 		return newRequestResponseError(req, resp, fmt.Errorf("failed to unmarshal response body: %w", err))
 	}
 
