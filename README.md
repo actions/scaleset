@@ -245,6 +245,57 @@ client, err := scaleset.NewClientWithPersonalAccessToken(config,
 
 `RetryConfig{}` (or `Max: 0`) disables retries entirely.
 
+### Inspecting HTTP failures
+
+Request failures, unexpected HTTP statuses, and missing or malformed required
+response bodies return a `*scaleset.RequestResponseError`, including failures
+with a successful HTTP status. Use `errors.As` through any outer error wrapping:
+
+```go
+_, err := client.GetRunner(ctx, runnerID)
+if err != nil {
+    var responseErr *scaleset.RequestResponseError
+    if errors.As(err, &responseErr) && responseErr.Response != nil {
+        resp := responseErr.Response
+        log.Printf("GitHub response: status=%d request_id=%q activity_id=%q",
+            resp.StatusCode,
+            resp.Header.Get("X-GitHub-Request-Id"),
+            resp.Header.Get("ActivityId"),
+        )
+    }
+    return err
+}
+```
+
+`Response` is a snapshot of the final response, not an earlier retried response
+or an earlier 401 that triggered a session refresh. It is nil when no response
+was received, such as a transport-only failure or a custom `HTTPClient` returning
+neither a response nor an error. A 401 can indicate an authentication problem;
+a 5xx can indicate a server problem; a 2xx with a decoding error indicates an
+unusable response despite the successful status.
+
+Cancellation between retry attempts can also leave `Response` nil, because
+responses discarded for retry are not retained.
+
+`Response.Body` is an independent in-memory reader of the bytes returned by the
+HTTP client, even after decoding has consumed them, with any byte order mark
+preserved. On a read failure it contains only the bytes received. The original
+body is already closed, and closing the snapshot is a no-op. Headers, trailers,
+and other response metadata are retained. Treat the body and `Response.Request`
+as sensitive: they can contain tokens or JIT configuration. Raw bodies, URL
+credentials, and query strings are not added to the error message; structured
+GitHub error messages and request IDs are still included.
+Underlying errors and server-provided messages may themselves contain sensitive
+details, so review them before logging.
+
+`Unwrap()` returns `Err`, which preserves the original cause and any recognized
+status/domain errors. Existing `errors.Is` checks such as `UnauthorizedError`,
+`RunnerExistsError`, `io.EOF`, and `context.DeadlineExceeded` continue to work;
+decoding errors can also be inspected with `errors.As`. Expected bodyless 204
+deletes, 202 no-message polls, and documented not-found results remain successful.
+Required JSON responses must contain a single JSON value, without trailing
+garbage. Invalid token responses are rejected before using their credentials.
+
 ### Migrating from the transport options
 
 If you never passed an HTTP option, you change no code. The constructors are the same, and the defaults are the same.

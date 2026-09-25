@@ -233,6 +233,9 @@ func DefaultShouldRetry(ctx context.Context, resp *http.Response, err error) (bo
 	if err != nil {
 		return !isCertificateError(err), nil
 	}
+	if resp == nil {
+		return false, errMissingResponse
+	}
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
