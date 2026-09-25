@@ -117,7 +117,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		assert.ErrorIs(t, err, base)
 	})
 
-	t.Run("text/plain body is included", func(t *testing.T) {
+	t.Run("text/plain body is inspectable but not printed", func(t *testing.T) {
 		base := errors.New("base")
 		body := "example plain text error"
 		resp := &http.Response{
@@ -132,11 +132,12 @@ func TestNewRequestResponseError(t *testing.T) {
 
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), body)
+		assert.NotContains(t, err.Error(), body)
+		assertResponseError(t, err, http.StatusBadRequest, body)
 		assert.ErrorIs(t, err, base)
 	})
 
-	t.Run("scalesetError in error chain uses raw body (no JSON parsing)", func(t *testing.T) {
+	t.Run("scalesetError in error chain skips JSON parsing", func(t *testing.T) {
 		wrapped := fmt.Errorf("wrapped: %w", RunnerNotFoundError)
 		body := `{"typeName":"AgentExistsException","message":"should not be parsed"}`
 		resp := &http.Response{
@@ -151,7 +152,8 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), resp, wrapped)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, RunnerNotFoundError)
-		assert.Contains(t, err.Error(), body)
+		assert.NotContains(t, err.Error(), body)
+		assertResponseError(t, err, http.StatusNotFound, body)
 	})
 
 	t.Run("known actions exception maps to sentinel error", func(t *testing.T) {
@@ -170,7 +172,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, RunnerExistsError)
 		assert.ErrorIs(t, err, ConflictError)
-		assert.NotErrorIs(t, err, base, "base error should not be wrapped for mapped exceptions")
+		assert.ErrorIs(t, err, base)
 		assert.Contains(t, err.Error(), "runner already exists")
 	})
 
@@ -189,7 +191,7 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, RunnerNotFoundError)
-		assert.NotErrorIs(t, err, base)
+		assert.ErrorIs(t, err, base)
 		assert.Contains(t, err.Error(), "missing")
 	})
 
@@ -209,11 +211,11 @@ func TestNewRequestResponseError(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, JobStillRunningError)
 		assert.ErrorIs(t, err, ConflictError)
-		assert.NotErrorIs(t, err, base)
+		assert.ErrorIs(t, err, base)
 		assert.Contains(t, err.Error(), "still running")
 	})
 
-	t.Run("invalid json returns unmarshal error and includes body", func(t *testing.T) {
+	t.Run("invalid json preserves the cause and body without printing it", func(t *testing.T) {
 		base := errors.New("base")
 		bad := "not-json"
 		resp := &http.Response{
@@ -228,8 +230,9 @@ func TestNewRequestResponseError(t *testing.T) {
 		err := newRequestResponseError(req(t), resp, base)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to unmarshal error response body")
-		assert.Contains(t, err.Error(), "not-json")
-		assert.NotErrorIs(t, err, base, "base error is not wrapped on JSON unmarshal failures")
+		assert.NotContains(t, err.Error(), "not-json")
+		assert.ErrorIs(t, err, base)
+		assertResponseError(t, err, http.StatusBadRequest, bad)
 	})
 
 	t.Run("unknown json error wraps exception", func(t *testing.T) {

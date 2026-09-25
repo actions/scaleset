@@ -604,7 +604,8 @@ func TestGetMessage(t *testing.T) {
 		assert.Nil(t, msg)
 		assert.NotNil(t, err)
 		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
-		assert.Contains(t, err.Error(), plainBody)
+		assert.NotContains(t, err.Error(), plainBody)
+		assertResponseError(t, err, http.StatusBadRequest, plainBody)
 	})
 
 	t.Run("Capacity error handling", func(t *testing.T) {
@@ -639,7 +640,8 @@ func TestGetMessage(t *testing.T) {
 		assert.Nil(t, msg)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
-		assert.Contains(t, err.Error(), plainBody)
+		assert.NotContains(t, err.Error(), plainBody)
+		assertResponseError(t, err, http.StatusBadRequest, plainBody)
 	})
 }
 
@@ -790,7 +792,8 @@ func TestDeleteMessage(t *testing.T) {
 		err = sessionClient.DeleteMessage(ctx, runnerScaleSetMessage.MessageID)
 		require.NotNil(t, err)
 		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
-		assert.Contains(t, err.Error(), plainBody)
+		assert.NotContains(t, err.Error(), plainBody)
+		assertResponseError(t, err, http.StatusBadRequest, plainBody)
 	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {

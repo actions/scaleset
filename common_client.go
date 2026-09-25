@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -74,17 +75,65 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", err))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	_, err = bufferResponseBody(resp)
 	if err != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", err))
+		return nil, newRequestResponseError(req, resp, err)
 	}
-	if err := resp.Body.Close(); err != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
-	}
-
-	resp.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
 
 	return resp, nil
+}
+
+// bufferedResponseBody keeps the original bytes even after an endpoint's
+// decoder has consumed the BOM-trimmed reader.
+type bufferedResponseBody struct {
+	*bytes.Reader
+	raw []byte
+}
+
+func (*bufferedResponseBody) Close() error { return nil }
+
+func bufferResponseBody(resp *http.Response) ([]byte, error) {
+	if resp == nil {
+		return nil, nil
+	}
+	if body, ok := resp.Body.(*bufferedResponseBody); ok {
+		return body.raw, nil
+	}
+
+	var body []byte
+	var readErr, closeErr error
+	if resp.Body != nil {
+		body, readErr = io.ReadAll(resp.Body)
+		closeErr = resp.Body.Close()
+	}
+	resp.Body = &bufferedResponseBody{
+		Reader: bytes.NewReader(trimByteOrderMark(body)),
+		raw:    body,
+	}
+	if readErr != nil {
+		readErr = fmt.Errorf("failed to read the response body: %w", readErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("failed to close the response body: %w", closeErr)
+	}
+	return body, errors.Join(readErr, closeErr)
+}
+
+// decodeJSONBody requires exactly one JSON value; a decoder alone accepts
+// trailing garbage after a valid value. Endpoint-specific nulls remain valid.
+func decodeJSONBody(body io.Reader, target any) error {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return errors.New("response body contains multiple JSON values")
+	}
+	return nil
 }
 
 // send runs the retry loop around the configured HTTP client.
@@ -109,11 +158,13 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, opts ...retryO
 		}
 
 		resp, doErr := client.Do(attemptReq)
+		if resp == nil && doErr == nil {
+			return nil, errMissingResponse
+		}
 
 		retry, policyErr := shouldRetry(req.Context(), resp, doErr)
 		if policyErr != nil {
-			drainAndClose(resp)
-			return nil, policyErr
+			return resp, errors.Join(doErr, policyErr)
 		}
 		if !retry || attempt >= cfg.Max || !replayable(req) {
 			return resp, doErr
