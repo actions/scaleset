@@ -294,7 +294,7 @@ func isCertificateError(err error) bool {
 // waitMin stays the minimum.
 func DefaultBackoff(waitMin, waitMax time.Duration, attempt int, resp *http.Response) time.Duration {
 	if resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
-		if wait, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+		if wait, ok := parseRetryAfter(resp.Header.Get(headerRetryAfter), time.Now()); ok {
 			return wait
 		}
 	}
@@ -312,9 +312,13 @@ func DefaultBackoff(waitMin, waitMax time.Duration, attempt int, resp *http.Resp
 	return min(wait, waitMax)
 }
 
-// parseRetryAfter reads a Retry-After header, which holds either a number of
-// seconds or an HTTP date.
-func parseRetryAfter(value string) (time.Duration, bool) {
+// parseRetryAfter reads a Retry-After header in either form RFC 9110 allows:
+// a number of seconds, or an HTTP date measured from now.
+//
+// It reports false for a value it cannot use: an empty or malformed value, a
+// negative number, a number of seconds that overflows time.Duration, or a
+// date that has already passed.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 	if value == "" {
 		return 0, false
 	}
@@ -331,7 +335,7 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 		return 0, false
 	}
 
-	wait := time.Until(when)
+	wait := when.Sub(now)
 	if wait < 0 {
 		return 0, false
 	}
