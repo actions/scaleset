@@ -36,6 +36,7 @@ func TestParseRetryAfter(t *testing.T) {
 		{name: "fractional seconds", value: "1.5"},
 		{name: "overflowing duration", value: "9223372036854775807"},
 		{name: "overflowing integer", value: "99999999999999999999"},
+		{name: "overflowing http date", value: "Fri, 31 Dec 9999 23:59:59 GMT"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := parseRetryAfter(tc.value, now)
@@ -217,6 +218,26 @@ func TestRateLimitFromResponse(t *testing.T) {
 			},
 			wantOK:   true,
 			wantKind: RateLimitPrimary,
+		},
+		{
+			name:   "X-RateLimit-Reset too far ahead for a duration",
+			status: http.StatusForbidden,
+			header: http.Header{
+				headerRateLimitRemaining: {"0"},
+				headerRateLimitReset:     {"253402300799"},
+			},
+			wantOK:    true,
+			wantKind:  RateLimitPrimary,
+			wantReset: time.Unix(253402300799, 0),
+		},
+		{
+			name:   "429 with far-future Retry-After date",
+			status: http.StatusTooManyRequests,
+			header: http.Header{
+				headerRetryAfter: {"Fri, 31 Dec 9999 23:59:59 GMT"},
+			},
+			wantOK:   true,
+			wantKind: RateLimitSecondary,
 		},
 		{
 			name:   "unrelated 403",
