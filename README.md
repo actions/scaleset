@@ -254,24 +254,32 @@ If the budget expires during an attempt or body read, the error matches both
 `MaxElapsedExceededError` and `context.DeadlineExceeded`. If the caller cancels or
 its deadline fires first, its context error is preserved instead.
 
-### Rate-limit retry decisions
+### Rate limits
 
-Set `RetryConfig.OnRateLimit` to decide whether and how long to retry a
-`*RateLimitError`. It replaces `ShouldRetry` for rate-limited responses; a zero
-wait with `retry=true` uses `Backoff`. Without a hook, 429s keep using `Backoff`
-and rate-limited 403s are not retried, except on the admin-connection request
-that already retries 401/403.
+By default, transport errors, 5xx responses (except 501), and 429 responses are retried up to 4 times with exponential backoff. A 429 waits for its full `Retry-After`; a rate-limited 403 is not retried, except on the admin token exchange that already retries 401/403. A wait that would reach or pass the context deadline is skipped, and the last response is returned instead of a context error.
 
-`RateLimitRetries` builds a hook with separate rules for primary and secondary
-limits. For example, return primary limits immediately and retry short
-secondary limits at most twice:
+A rate-limited response (any 429, or a 403 carrying `Retry-After`, `X-RateLimit-Remaining: 0`, or a secondary-limit message) comes back as a `*RateLimitError`:
+
+```go
+var rl *scaleset.RateLimitError
+if errors.As(err, &rl) {
+    // rl.Kind       RateLimitPrimary (spent quota, no secondary-limit message) or RateLimitSecondary
+    // rl.StatusCode 429 or 403
+    // rl.RetryAfter how long the server asked to wait, from Retry-After or X-RateLimit-Reset
+    // rl.Reset      when the rate limit window resets, from X-RateLimit-Reset
+    // rl.Retries    rate-limited retries the SDK already made for this request
+}
+```
+
+`RetryConfig.OnRateLimit` decides whether and how long to wait on a rate-limited response, in place of `ShouldRetry`. A zero wait with `retry=true` uses `Backoff`. `RateLimitRetries` builds a hook from a rule per kind. Set it client-wide with `WithRetry`:
 
 ```go
 retry := scaleset.DefaultRetryConfig()
 retry.OnRateLimit = scaleset.RateLimitRetries(
-    scaleset.RateLimitRule{},
-    scaleset.RateLimitRule{MaxRetries: 2, MaxWait: 5 * time.Second},
+    scaleset.RateLimitRule{},                                     // primary: return immediately
+    scaleset.RateLimitRule{MaxRetries: 2, MaxWait: 5 * time.Second}, // secondary: short retry
 )
+
 client, err := scaleset.NewClientWithPersonalAccessToken(config,
     scaleset.WithRetry(retry),
 )
@@ -288,6 +296,29 @@ deadline still bound retries. Hooks may run concurrently.
 When requeuing rate-limited work, preserve a positive `RetryAfter` hint and
 use a positive fallback (for example, one minute) when it is zero.
 In controller-runtime, `RequeueAfter: 0` with a nil error schedules no retry.
+
+To change the policy for one call only, wrap its context with `WithRequestRetry`. The function gets a copy of the client's `RetryConfig`, so other calls, including concurrent ones on the same `Client`, keep the client's policy. A controller can give up on a rate limit quickly and requeue the work instead of blocking:
+
+```go
+ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+defer cancel()
+
+ctx = scaleset.WithRequestRetry(ctx, func(c *scaleset.RetryConfig) {
+    c.OnRateLimit = scaleset.RateLimitRetries(
+        scaleset.RateLimitRule{},                                     // primary: return immediately
+        scaleset.RateLimitRule{MaxRetries: 2, MaxWait: 5 * time.Second}, // secondary: short retry
+    )
+    c.MaxElapsed = 20 * time.Second
+})
+
+jit, err := client.GenerateJitRunnerConfig(ctx, setting, scaleSetID)
+var rl *scaleset.RateLimitError
+if errors.As(err, &rl) {
+    return ctrl.Result{RequeueAfter: max(rl.RetryAfter, minBackoff)}, nil
+}
+```
+
+`WithRequestRetry` works with every `Client` and `MessageSessionClient` method, and nested calls apply outer first. A `MaxElapsed` set this way applies to each HTTP request the call makes; the context deadline bounds the whole call. The SDK's own per-request adjustments run after yours, so the admin token exchange still retries 401 and 403 within your `Max`. `GetMessage` bounds each poll attempt by `MessagePollTimeout`; retries get a new window, so only the context deadline bounds the whole call.
 
 ### Migrating from the transport options
 
