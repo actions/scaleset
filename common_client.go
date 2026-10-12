@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -70,14 +71,40 @@ func (c *commonClient) do(req *http.Request, opts ...retryOption) (*http.Respons
 // client may be a copy with a longer timeout. It is never the caller's value
 // with a field written on it.
 func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retryOption) (*http.Response, error) {
-	resp, err := c.send(client, req, opts...)
+	cfg := c.retry
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	start := time.Now()
+	sendReq := req
+	budget := func(err error) error { return err }
+	if cfg.MaxElapsed > 0 {
+		// The budget context stays open until the body has been read: the
+		// body is streamed under the context of the attempt that produced it.
+		callerCtx := req.Context()
+		ctx, cancel := context.WithDeadlineCause(callerCtx, start.Add(cfg.MaxElapsed), MaxElapsedExceededError)
+		defer cancel()
+		sendReq = req.WithContext(ctx)
+
+		// An error caused by the budget, rather than by the caller's own
+		// context, is reported as a budget overrun.
+		budget = func(err error) error {
+			if callerCtx.Err() == nil && errors.Is(context.Cause(ctx), MaxElapsedExceededError) {
+				return fmt.Errorf("%w after %s: %w", MaxElapsedExceededError, cfg.MaxElapsed, err)
+			}
+			return err
+		}
+	}
+
+	resp, err := c.send(client, sendReq, cfg, start)
 	if err != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", err))
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", budget(err)))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", err))
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", budget(err)))
 	}
 	if err := resp.Body.Close(); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
@@ -88,21 +115,16 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 	return resp, nil
 }
 
-// send runs the retry loop around the configured HTTP client.
+// send runs the retry loop around the configured HTTP client, under the
+// retry policy cfg. start is when the request began, from which MaxElapsed is
+// measured.
 //
-// The policy for this call lives in a local copy of the configuration, so
-// concurrent requests never observe one another's adjustments, and nothing
-// owned by the caller is written to.
-func (c *commonClient) send(client HTTPClient, req *http.Request, opts ...retryOption) (*http.Response, error) {
-	cfg := c.retry
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-
+// cfg is a copy local to this call, so concurrent requests never observe one
+// another's adjustments, and nothing owned by the caller is written to.
+func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfig, start time.Time) (*http.Response, error) {
 	shouldRetry := cfg.shouldRetryFunc()
 	backoff := cfg.backoffFunc()
 	waitMin, waitMax := cfg.waits()
-	start := time.Now()
 
 	for attempt := 0; ; attempt++ {
 		attemptReq, err := requestForAttempt(req, attempt)
@@ -234,11 +256,11 @@ func (b *cancelOnCloseBody) Close() error {
 // from start. The reason names the limit that would be exceeded.
 func waitOutlasts(req *http.Request, maxElapsed time.Duration, start time.Time, wait time.Duration) (reason string, ok bool) {
 	now := time.Now()
-	if deadline, has := req.Context().Deadline(); has && now.Add(wait).After(deadline) {
-		return "context deadline", true
-	}
 	if maxElapsed > 0 && now.Sub(start)+wait > maxElapsed {
 		return "MaxElapsed budget", true
+	}
+	if deadline, has := req.Context().Deadline(); has && now.Add(wait).After(deadline) {
+		return "context deadline", true
 	}
 	return "", false
 }

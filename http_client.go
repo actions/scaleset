@@ -174,16 +174,21 @@ type RetryConfig struct {
 	WaitMax time.Duration
 
 	// MaxElapsed is the total time budget for a request, measured from the
-	// start of the first attempt and covering both attempts and the waits
-	// between them. When the next wait would exceed the budget, the SDK stops
-	// retrying and reports the last response, without waiting. Zero means no
-	// budget.
+	// start of the first attempt and covering the attempts, the waits between
+	// them, and the read of the final response body. Zero means no budget.
+	//
+	// Every attempt runs under a context whose deadline is the end of the
+	// budget, or the request context's own deadline when that comes first.
+	// An attempt the budget cuts off ends the request with an error matching
+	// MaxElapsedExceededError, which also matches context.DeadlineExceeded.
+	// When the next wait alone would exceed the budget, the SDK does not wait:
+	// it stops retrying and reports the last response.
 	//
 	// The request context's deadline is honored the same way: a wait that
 	// would run past it is not taken, and the last response is reported in
-	// place of a context error. A context that is cancelled, or reaches its
-	// deadline, while a wait is in progress still ends the request with the
-	// context's error.
+	// place of a context error. A request context that is cancelled, or
+	// reaches its own deadline, still ends the request with the context's
+	// error.
 	MaxElapsed time.Duration
 
 	// ShouldRetry reports whether an attempt should be retried. Returning a

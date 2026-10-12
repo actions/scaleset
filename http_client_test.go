@@ -10,7 +10,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -829,4 +831,91 @@ func TestRetryWithoutDeadlineOrBudgetUsesAllRetries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	assert.Equal(t, int64(4), calls.Load())
+}
+
+func TestRetryMaxElapsedBoundsAttempts(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(slow.Close)
+
+	newClient := func(retry RetryConfig) *commonClient {
+		opts := defaultHTTPClientOption()
+		WithRetry(retry)(&opts)
+		return newCommonClient(testSystemInfo, opts)
+	}
+
+	t.Run("a slow attempt is cut off by the budget", func(t *testing.T) {
+		client := newClient(RetryConfig{Max: 2, WaitMin: time.Millisecond, WaitMax: time.Millisecond, MaxElapsed: 200 * time.Millisecond})
+		req, err := http.NewRequest(http.MethodGet, slow.URL, nil)
+		require.NoError(t, err)
+
+		start := time.Now()
+		_, err = client.do(req)
+		assert.Less(t, time.Since(start), time.Second)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, MaxElapsedExceededError)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Contains(t, err.Error(), "MaxElapsed exceeded after 200ms")
+	})
+
+	t.Run("an earlier caller deadline wins", func(t *testing.T) {
+		client := newClient(RetryConfig{Max: 2, WaitMin: time.Millisecond, WaitMax: time.Millisecond, MaxElapsed: 5 * time.Second})
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, slow.URL, nil)
+		require.NoError(t, err)
+
+		start := time.Now()
+		_, err = client.do(req)
+		assert.Less(t, time.Since(start), time.Second)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.NotErrorIs(t, err, MaxElapsedExceededError)
+	})
+
+	t.Run("a caller cancel is reported as such", func(t *testing.T) {
+		client := newClient(RetryConfig{Max: 2, WaitMin: time.Millisecond, WaitMax: time.Millisecond, MaxElapsed: 5 * time.Second})
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(100*time.Millisecond, cancel)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, slow.URL, nil)
+		require.NoError(t, err)
+
+		_, err = client.do(req)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.NotErrorIs(t, err, MaxElapsedExceededError)
+	})
+}
+
+// TestRetryMaxElapsedKeepsBodyReadable guards the budget context's lifetime:
+// the response body is streamed under it, so it must stay open until doWith
+// has read the body.
+func TestRetryMaxElapsedKeepsBodyReadable(t *testing.T) {
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 64*1024) // 1 MiB
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for chunk := range slices.Chunk(payload, 32*1024) {
+			w.Write(chunk)
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	opts := defaultHTTPClientOption()
+	WithRetry(RetryConfig{Max: 2, MaxElapsed: 5 * time.Second})(&opts)
+	client := newCommonClient(testSystemInfo, opts)
+
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+
+	resp, err := client.do(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, payload, body)
 }
