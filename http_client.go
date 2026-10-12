@@ -173,6 +173,19 @@ type RetryConfig struct {
 	// Backoff receives WaitMax and decides whether to respect it.
 	WaitMax time.Duration
 
+	// MaxElapsed is the total time budget for a request, measured from the
+	// start of the first attempt and covering both attempts and the waits
+	// between them. When the next wait would exceed the budget, the SDK stops
+	// retrying and reports the last response, without waiting. Zero means no
+	// budget.
+	//
+	// The request context's deadline is honored the same way: a wait that
+	// would run past it is not taken, and the last response is reported in
+	// place of a context error. A context that is cancelled, or reaches its
+	// deadline, while a wait is in progress still ends the request with the
+	// context's error.
+	MaxElapsed time.Duration
+
 	// ShouldRetry reports whether an attempt should be retried. Returning a
 	// non-nil error abandons the request with that error. Nil applies
 	// DefaultShouldRetry.
@@ -204,7 +217,9 @@ const (
 )
 
 // DefaultRetryConfig returns the retry configuration used when WithRetry is
-// not supplied.
+// not supplied. It sets no MaxElapsed budget, so the request context's
+// deadline is the only limit on the total time spent retrying: a wait that
+// would outlast it is skipped and the last response is reported instead.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		Max:     DefaultRetryMax,

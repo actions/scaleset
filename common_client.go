@@ -102,6 +102,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, opts ...retryO
 	shouldRetry := cfg.shouldRetryFunc()
 	backoff := cfg.backoffFunc()
 	waitMin, waitMax := cfg.waits()
+	start := time.Now()
 
 	for attempt := 0; ; attempt++ {
 		attemptReq, err := requestForAttempt(req, attempt)
@@ -128,6 +129,21 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, opts ...retryO
 		}
 
 		wait := backoff(waitMin, waitMax, attempt, resp)
+
+		// A wait that cannot finish before the context deadline or the
+		// MaxElapsed budget would only end in a context error, losing the
+		// response that explains why the request failed. Return that response
+		// now, as an exhausted retry does, so the caller sees it.
+		if reason, ok := waitOutlasts(req, cfg.MaxElapsed, start, wait); ok {
+			c.logger.Debug("not retrying: wait exceeds "+reason,
+				"method", req.Method,
+				"url", req.URL.Redacted(),
+				"attempt", attempt+1,
+				"wait", wait,
+			)
+			return cancelOnClose(resp, cancelAttempt), doErr
+		}
+
 		c.logger.Debug("retrying request",
 			"method", req.Method,
 			"url", req.URL.Redacted(),
@@ -211,6 +227,20 @@ func (b *cancelOnCloseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.cancel()
 	return err
+}
+
+// waitOutlasts reports whether waiting wait before the next attempt would run
+// past the request context's deadline, or past the maxElapsed budget measured
+// from start. The reason names the limit that would be exceeded.
+func waitOutlasts(req *http.Request, maxElapsed time.Duration, start time.Time, wait time.Duration) (reason string, ok bool) {
+	now := time.Now()
+	if deadline, has := req.Context().Deadline(); has && now.Add(wait).After(deadline) {
+		return "context deadline", true
+	}
+	if maxElapsed > 0 && now.Sub(start)+wait > maxElapsed {
+		return "MaxElapsed budget", true
+	}
+	return "", false
 }
 
 // replayable reports whether a request can be sent more than once.
