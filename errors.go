@@ -137,8 +137,10 @@ func rateLimitFromResponse(resp *http.Response, now time.Time) (*RateLimitError,
 
 	if wait, ok := parseRetryAfter(resp.Header.Get(headerRetryAfter), now); ok {
 		rl.RetryAfter = wait
-	} else if primary && rl.Reset.After(now) {
-		rl.RetryAfter = rl.Reset.Sub(now)
+	} else if primary && !rl.Reset.IsZero() {
+		if wait, ok := durationUntil(rl.Reset, now); ok {
+			rl.RetryAfter = wait
+		}
 	}
 
 	return rl, true
