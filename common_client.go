@@ -71,10 +71,7 @@ func (c *commonClient) do(req *http.Request, opts ...retryOption) (*http.Respons
 // client may be a copy with a longer timeout. It is never the caller's value
 // with a field written on it.
 func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retryOption) (*http.Response, error) {
-	cfg := c.retry
-	for _, opt := range opts {
-		opt(&cfg)
-	}
+	cfg := c.requestRetryConfig(req.Context(), opts...)
 
 	start := time.Now()
 	sendReq := req
@@ -122,6 +119,27 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 	resp.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
 
 	return resp, nil
+}
+
+// requestRetryConfig resolves the retry policy for one request, as a copy
+// local to it, in this order:
+//
+//  1. the client's configuration (WithRetry),
+//  2. the caller's adjusters from WithRequestRetry on ctx, outer first,
+//  3. the SDK's own per-request opts.
+//
+// The SDK's opts run last so that the invariants they carry, such as the
+// admin connection's 401/403 retry, survive whatever the caller set. doWith
+// resolves it before reading MaxElapsed, so a per-call budget applies.
+func (c *commonClient) requestRetryConfig(ctx context.Context, opts ...retryOption) RetryConfig {
+	cfg := c.retry
+	for _, adjust := range requestRetryAdjusters(ctx) {
+		adjust(&cfg)
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
 }
 
 // send runs the retry loop around the configured HTTP client, under the
@@ -455,11 +473,78 @@ func WithHTTPClient(client HTTPClient) HTTPOption {
 }
 
 // WithRetry replaces the retry configuration. A zero RetryConfig.Max disables
-// retries. To adjust individual settings, start from DefaultRetryConfig.
+// retries. To adjust individual settings, start from DefaultRetryConfig. To
+// change the policy for a single call, use WithRequestRetry.
 func WithRetry(retry RetryConfig) HTTPOption {
 	return func(c *httpClientOption) {
 		c.retry = retry
 	}
+}
+
+// requestRetryKey is the context key under which WithRequestRetry stores the
+// adjusters for requests made with a context.
+type requestRetryKey struct{}
+
+// WithRequestRetry returns a context that adjusts the client's retry
+// configuration for requests made with it. adjust receives a copy of the
+// client's RetryConfig; changes never affect other requests. It lets one call
+// use a different policy, such as giving up on a rate limit at once so the
+// caller can requeue, without building another Client:
+//
+//	ctx = scaleset.WithRequestRetry(ctx, func(c *scaleset.RetryConfig) {
+//		c.OnRateLimit = scaleset.RateLimitRetries(
+//			scaleset.RateLimitRule{},
+//			scaleset.RateLimitRule{MaxRetries: 2, MaxWait: 5 * time.Second},
+//		)
+//	})
+//	jit, err := client.GenerateJitRunnerConfig(ctx, setting, scaleSetID)
+//
+// Contexts nest: the adjusters of every enclosing WithRequestRetry apply,
+// outer first. A nil adjust is a no-op.
+//
+// The configuration for each HTTP request is built from the configuration of
+// the client sending it (the one given to WithRetry, or to
+// Client.MessageSessionClient for a message session), then the adjusters,
+// then any adjustment the SDK makes for that request. The last step keeps
+// SDK invariants: the request that exchanges a registration token for an
+// admin token still retries 401 and 403 even when adjust replaces
+// ShouldRetry, though always within Max, so a zero Max still disables it.
+//
+// adjust runs once for every HTTP request made with the context, so it may
+// run several times for one method call, and concurrently when the context is
+// shared. It should only set fields on the RetryConfig it is given. Requests
+// a call makes on its own behalf use the call's context too, so a call that
+// needs a new admin token refreshes it under the same policy.
+//
+// MaxElapsed set here is measured for each HTTP request on its own, from the
+// start of its first attempt, and covers its attempts, the waits between
+// them, and the read of its response body. A request that runs out of it
+// fails with an error matching MaxElapsedExceededError. To bound a whole
+// method call, including any token refresh it makes, use a context deadline.
+//
+// MessageSessionClient.GetMessage bounds each poll attempt by
+// MessagePollTimeout, and every retry gets a new window. The waits between
+// attempts are bounded by MaxElapsed and the ctx deadline, not by that window.
+func WithRequestRetry(ctx context.Context, adjust func(*RetryConfig)) context.Context {
+	if adjust == nil {
+		return ctx
+	}
+
+	outer := requestRetryAdjusters(ctx)
+	// Allocate exactly, so contexts derived from the same parent never share
+	// a backing array.
+	adjusters := make([]func(*RetryConfig), len(outer), len(outer)+1)
+	copy(adjusters, outer)
+	adjusters = append(adjusters, adjust)
+
+	return context.WithValue(ctx, requestRetryKey{}, adjusters)
+}
+
+// requestRetryAdjusters returns the adjusters WithRequestRetry stored on ctx,
+// outer first. The result must not be modified.
+func requestRetryAdjusters(ctx context.Context) []func(*RetryConfig) {
+	adjusters, _ := ctx.Value(requestRetryKey{}).([]func(*RetryConfig))
+	return adjusters
 }
 
 // WithLogger sets a custom logger for the Client.

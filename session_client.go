@@ -108,9 +108,10 @@ func (c *MessageSessionClient) refreshMessageSession(ctx context.Context, expire
 // token refresh gets a new window too, and the refresh itself is not part of
 // any window. RetryConfig.MaxElapsed additionally bounds each HTTP request,
 // including its retries; the poll after a token refresh gets a new budget.
-// Only ctx bounds the call as a whole. A *http.Client with a shorter timeout
-// is copied for the poll and the copy's timeout is raised; the supplied client
-// is not modified.
+// Only ctx bounds the call as a whole. A retry policy set with
+// WithRequestRetry applies across attempts. A *http.Client with a shorter
+// timeout is copied for the poll and the copy's timeout is raised; the
+// supplied client is not modified.
 func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
 	session := c.Session()
 	message, err := c.getMessage(
