@@ -146,7 +146,8 @@ func NewHTTPClient(cfg HTTPClientConfig) *http.Client {
 
 // RetryConfig describes how the SDK retries a request. Retries are owned by
 // the SDK rather than by the HTTP client, so that the policy can differ per
-// request without mutating any shared state.
+// request without mutating any shared state. WithRequestRetry adjusts it for
+// the requests made with one context.
 //
 // WithRetry replaces this configuration wholesale. To adjust the defaults,
 // start from DefaultRetryConfig:
