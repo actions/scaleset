@@ -192,7 +192,8 @@ type RetryConfig struct {
 
 	// ShouldRetry reports whether an attempt should be retried. Returning a
 	// non-nil error abandons the request with that error. Nil applies
-	// DefaultShouldRetry.
+	// DefaultShouldRetry. Rate-limited responses are decided by OnRateLimit
+	// instead.
 	//
 	// resp and err are both non-nil when a message poll received a response
 	// but could not read its body; resp then carries the status and headers
@@ -202,7 +203,8 @@ type RetryConfig struct {
 	ShouldRetry func(ctx context.Context, resp *http.Response, err error) (bool, error)
 
 	// Backoff returns the delay before the next attempt, where attempt counts
-	// from zero. Nil applies DefaultBackoff.
+	// from zero. Nil applies DefaultBackoff. For a rate-limited response it
+	// is used only when OnRateLimit retries with a zero wait.
 	//
 	// It may be called concurrently.
 	Backoff func(waitMin, waitMax time.Duration, attempt int, resp *http.Response) time.Duration
@@ -211,6 +213,25 @@ type RetryConfig struct {
 	// window rather than what an earlier attempt left. Only the SDK sets it,
 	// per request, through withAttemptTimeout.
 	attemptTimeout time.Duration
+
+	// OnRateLimit decides whether and how long to wait before retrying a
+	// rate-limited response (see RateLimitError). It replaces ShouldRetry and
+	// Backoff for those responses. A zero wait with retry=true falls back to
+	// Backoff. Max and MaxElapsed (and the ctx deadline) still apply.
+	//
+	// rl describes the response just received. rl.Retries counts the
+	// rate-limited retries already made for this request, so a hook can stop
+	// after a few and leave the rest to the caller, for example to requeue
+	// the work. rl.Unwrap reports the method, URL, and status, but not the
+	// response body, which is left unread for the caller.
+	//
+	// When the hook declines, the request returns at once, without waiting,
+	// and the caller's error is a *RateLimitError with the same Retries.
+	//
+	// Nil applies DefaultOnRateLimit, which keeps the SDK's default behavior.
+	// RateLimitRetries builds a hook from per-kind limits. It may be called
+	// concurrently.
+	OnRateLimit func(ctx context.Context, rl *RateLimitError) (wait time.Duration, retry bool)
 }
 
 // Defaults applied to a RetryConfig that leaves the corresponding field unset.
@@ -245,6 +266,13 @@ func (c RetryConfig) backoffFunc() func(time.Duration, time.Duration, int, *http
 		return c.Backoff
 	}
 	return DefaultBackoff
+}
+
+func (c RetryConfig) onRateLimitFunc() func(context.Context, *RateLimitError) (time.Duration, bool) {
+	if c.OnRateLimit != nil {
+		return c.OnRateLimit
+	}
+	return DefaultOnRateLimit
 }
 
 func (c RetryConfig) waits() (waitMin, waitMax time.Duration) {
@@ -332,6 +360,86 @@ func DefaultBackoff(waitMin, waitMax time.Duration, attempt int, resp *http.Resp
 	return min(wait, waitMax)
 }
 
+// DefaultOnRateLimit is the OnRateLimit hook used when none is configured. It
+// keeps the behavior the SDK has without a hook: a 429 is retried, either
+// kind, and a rate-limited 403 is not, matching DefaultShouldRetry.
+//
+// It returns a zero wait, so the delay comes from Backoff. DefaultBackoff
+// waits for the full Retry-After the server sent, uncapped, and otherwise
+// backs off exponentially. Retry-After is honored this way rather than
+// through rl.RetryAfter so that a primary limit carrying only
+// X-RateLimit-Reset does not block until the reset, and so that a custom
+// Backoff still applies to 429 responses.
+//
+// The request-wide limits still apply: Max, MaxElapsed, and the context
+// deadline. A wait that would outlast either of the last two is not taken,
+// and the 429 is returned instead.
+func DefaultOnRateLimit(_ context.Context, rl *RateLimitError) (time.Duration, bool) {
+	return 0, rl.StatusCode == http.StatusTooManyRequests
+}
+
+// RateLimitRule limits the retries made for one kind of rate limit. See
+// RateLimitRetries.
+type RateLimitRule struct {
+	// MaxRetries is the number of rate-limited retries allowed for this
+	// kind. Zero returns the rate-limited response immediately.
+	MaxRetries int
+
+	// MaxWait is the longest single wait to accept. Zero means no cap. When
+	// the server asks for a longer wait, the request gives up instead: the
+	// wait is not clamped, since retrying sooner than the server asked only
+	// earns another rate-limited response.
+	MaxWait time.Duration
+}
+
+// RateLimitRetries returns an OnRateLimit hook that applies primary to a
+// spent primary rate limit and secondary to any other rate limit. A 403 rate
+// limit is treated the same as a 429 of the same kind.
+//
+// The hook retries while rl.Retries, the rate-limited retries already made
+// for the request, is below the rule's MaxRetries and the server's
+// RetryAfter fits within MaxWait. It waits for RetryAfter; when the server
+// gave no hint, the wait falls back to Backoff.
+//
+// It suits callers that would rather give up quickly and come back later
+// than block. A controller such as ARC can return immediately on a spent
+// primary limit, absorb short secondary limits in place, and requeue the work
+// after the error's RetryAfter otherwise:
+//
+//	retry := scaleset.DefaultRetryConfig()
+//	retry.OnRateLimit = scaleset.RateLimitRetries(
+//		scaleset.RateLimitRule{},
+//		scaleset.RateLimitRule{MaxRetries: 2, MaxWait: 5 * time.Second},
+//	)
+//	client, err := scaleset.NewClientWithPersonalAccessToken(config,
+//		scaleset.WithRetry(retry),
+//	)
+//
+//	// Later, in the reconciler:
+//	var rl *scaleset.RateLimitError
+//	if errors.As(err, &rl) {
+//		return ctrl.Result{RequeueAfter: rl.RetryAfter}, nil
+//	}
+//
+// Max, MaxElapsed, and the context deadline still apply on top of the rules.
+func RateLimitRetries(primary, secondary RateLimitRule) func(context.Context, *RateLimitError) (time.Duration, bool) {
+	return func(_ context.Context, rl *RateLimitError) (time.Duration, bool) {
+		rule := secondary
+		if rl.Kind == RateLimitPrimary {
+			rule = primary
+		}
+
+		if rl.Retries >= rule.MaxRetries {
+			return 0, false
+		}
+		if rule.MaxWait > 0 && rl.RetryAfter > rule.MaxWait {
+			return 0, false
+		}
+
+		return rl.RetryAfter, true
+	}
+}
+
 // parseRetryAfter reads a Retry-After header in either form RFC 9110 allows:
 // a number of seconds, or an HTTP date measured from now.
 //
@@ -377,8 +485,24 @@ type retryOption func(*RetryConfig)
 
 // retryOnStatus additionally retries the given status codes, keeping the rest
 // of the configured policy intact.
+//
+// A listed status can also be a rate limit, such as a 403 with Retry-After,
+// which OnRateLimit decides instead of ShouldRetry. When the caller left
+// OnRateLimit unset, a listed status is retried even where
+// DefaultOnRateLimit declines, with the wait taken from Backoff, as it was
+// before the hook existed. A caller that sets OnRateLimit has asked to own
+// every rate-limited response, so its decision stands.
 func retryOnStatus(codes ...int) retryOption {
 	return func(cfg *RetryConfig) {
+		if cfg.OnRateLimit == nil {
+			cfg.OnRateLimit = func(ctx context.Context, rl *RateLimitError) (time.Duration, bool) {
+				if slices.Contains(codes, rl.StatusCode) {
+					return 0, true
+				}
+				return DefaultOnRateLimit(ctx, rl)
+			}
+		}
+
 		base := cfg.shouldRetryFunc()
 		cfg.ShouldRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
 			if ctxErr := ctx.Err(); ctxErr != nil {

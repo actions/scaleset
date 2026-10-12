@@ -124,7 +124,9 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfig, start time.Time) (*http.Response, error) {
 	shouldRetry := cfg.shouldRetryFunc()
 	backoff := cfg.backoffFunc()
+	onRateLimit := cfg.onRateLimitFunc()
 	waitMin, waitMax := cfg.waits()
+	rateLimitRetries := 0
 
 	for attempt := 0; ; attempt++ {
 		attemptReq, err := requestForAttempt(req, attempt)
@@ -138,19 +140,50 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 			resp, doErr = readWithinAttempt(resp)
 		}
 
-		// The policy sees the request's own context, so an attempt that ran
-		// out of its window is retried like any other transport error.
-		retry, policyErr := shouldRetry(req.Context(), resp, doErr)
-		if policyErr != nil {
-			drainAndClose(resp)
-			cancelAttempt()
-			return nil, policyErr
-		}
-		if !retry || attempt >= cfg.Max || !replayable(req) {
-			return cancelOnClose(resp, cancelAttempt), doErr
-		}
+		var wait time.Duration
+		rl, limited := rateLimitFromAttempt(req, resp, doErr, rateLimitRetries)
+		if limited {
+			// Rate-limited responses are decided by OnRateLimit alone.
+			if ctxErr := req.Context().Err(); ctxErr != nil {
+				drainAndClose(resp)
+				cancelAttempt()
+				return nil, ctxErr
+			}
+			if attempt >= cfg.Max || !replayable(req) {
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), nil
+			}
 
-		wait := backoff(waitMin, waitMax, attempt, resp)
+			var retry bool
+			wait, retry = onRateLimit(req.Context(), rl)
+			if !retry {
+				c.logger.Debug("not retrying: rate limit hook declined",
+					"method", req.Method,
+					"url", req.URL.Redacted(),
+					"attempt", attempt+1,
+					"kind", rl.Kind,
+					"retry_after", rl.RetryAfter,
+					"rate_limit_retries", rateLimitRetries,
+				)
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), nil
+			}
+			if wait <= 0 {
+				wait = backoff(waitMin, waitMax, attempt, resp)
+			}
+		} else {
+			// The policy sees the request's own context, so an attempt that ran
+			// out of its window is retried like any other transport error.
+			retry, policyErr := shouldRetry(req.Context(), resp, doErr)
+			if policyErr != nil {
+				drainAndClose(resp)
+				cancelAttempt()
+				return nil, policyErr
+			}
+			if !retry || attempt >= cfg.Max || !replayable(req) {
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
+			}
+
+			wait = backoff(waitMin, waitMax, attempt, resp)
+		}
 
 		// A wait that reaches or exceeds the context deadline or MaxElapsed
 		// budget would only end in a context error, losing the
@@ -168,7 +201,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 				cancelAttempt()
 				return nil, ctxErr
 			}
-			return cancelOnClose(resp, cancelAttempt), doErr
+			return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
 		}
 
 		c.logger.Debug("retrying request",
@@ -186,6 +219,10 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 			timer.Stop()
 			return nil, req.Context().Err()
 		case <-timer.C:
+		}
+
+		if limited {
+			rateLimitRetries++
 		}
 	}
 }
@@ -245,6 +282,49 @@ func cancelOnClose(resp *http.Response, cancel context.CancelFunc) *http.Respons
 	return resp
 }
 
+// rateLimitFromAttempt describes the response to one attempt when it was
+// rate limited, for OnRateLimit. It wraps a summary of the request and
+// status; the response body is left unread for the caller.
+func rateLimitFromAttempt(req *http.Request, resp *http.Response, doErr error, retries int) (*RateLimitError, bool) {
+	if doErr != nil {
+		return nil, false
+	}
+
+	rl, ok := rateLimitFromResponse(resp, "", time.Now())
+	if !ok {
+		return nil, false
+	}
+
+	rl.Retries = retries
+	rl.err = fmt.Errorf("request %s %s failed (status=%q)", req.Method, req.URL.Redacted(), resp.Status)
+
+	return rl, true
+}
+
+// rateLimitRetriesKey is the context key under which send records, on the
+// response's request, how many rate-limited retries preceded the response.
+type rateLimitRetriesKey struct{}
+
+// withRateLimitRetries records retries on resp, so that the *RateLimitError
+// later built from it by newRequestResponseError reports them. The count
+// travels with this response alone, which keeps concurrent requests apart.
+//
+// The derived context keeps the attempt's context as its parent, so the
+// MaxElapsed budget that the response body is read under is unaffected.
+func withRateLimitRetries(req *http.Request, resp *http.Response, retries int) *http.Response {
+	if resp == nil || retries == 0 {
+		return resp
+	}
+
+	sent := resp.Request
+	if sent == nil {
+		sent = req
+	}
+	resp.Request = sent.WithContext(context.WithValue(sent.Context(), rateLimitRetriesKey{}, retries))
+
+	return resp
+}
+
 type cancelOnCloseBody struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -254,6 +334,15 @@ func (b *cancelOnCloseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.cancel()
 	return err
+}
+
+// rateLimitRetriesOf reports the count recorded by withRateLimitRetries.
+func rateLimitRetriesOf(resp *http.Response) int {
+	if resp == nil || resp.Request == nil {
+		return 0
+	}
+	retries, _ := resp.Request.Context().Value(rateLimitRetriesKey{}).(int)
+	return retries
 }
 
 // waitOutlasts reports whether waiting wait before the next attempt would run
