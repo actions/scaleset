@@ -318,7 +318,7 @@ if errors.As(err, &rl) {
 }
 ```
 
-`WithRequestRetry` works with every `Client` and `MessageSessionClient` method, and nested calls apply outer first. A `MaxElapsed` set this way applies to each HTTP request the call makes; the context deadline bounds the whole call. The SDK's own per-request adjustments run after yours, so the admin token exchange still retries 401 and 403 within your `Max`. `GetMessage` bounds each poll attempt by `MessagePollTimeout`; retries get a new window, so only the context deadline bounds the whole call.
+`WithRequestRetry` works with every `Client` and `MessageSessionClient` method, and nested calls apply outer first. A `MaxElapsed` set this way applies to each HTTP request the call makes; the context deadline bounds the whole call. The SDK's own per-request adjustments run after yours, so replacing `ShouldRetry` does not stop the admin token exchange from retrying 401 and 403 within your `Max`. A rate-limited 403 is the exception: an `OnRateLimit` you set still decides it. `GetMessage` bounds each poll attempt by `MessagePollTimeout`; retries get a new window, so only the context deadline bounds the whole call.
 
 ### Migrating from the transport options
 
