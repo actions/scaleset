@@ -256,7 +256,7 @@ func (b *cancelOnCloseBody) Close() error {
 // from start. The reason names the limit that would be exceeded.
 func waitOutlasts(req *http.Request, maxElapsed time.Duration, start time.Time, wait time.Duration) (reason string, ok bool) {
 	now := time.Now()
-	if maxElapsed > 0 && now.Sub(start)+wait > maxElapsed {
+	if maxElapsed > 0 && wait > maxElapsed-now.Sub(start) {
 		return "MaxElapsed budget", true
 	}
 	if deadline, has := req.Context().Deadline(); has && now.Add(wait).After(deadline) {
