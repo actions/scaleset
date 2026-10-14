@@ -2,16 +2,14 @@ package scaleset
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
-
-	"github.com/hashicorp/go-retryablehttp"
 )
 
 const (
@@ -20,8 +18,6 @@ const (
 )
 
 type commonClient struct {
-	httpClient *http.Client
-
 	systemInfo SystemInfo // never set directly, use setSystemInfoUnlocked
 
 	userAgent string
@@ -35,32 +31,50 @@ func newCommonClient(systemInfo SystemInfo, httpClientOption httpClientOption) *
 	}
 	c.setSystemInfo(systemInfo)
 
-	retryableHTTPClient, err := httpClientOption.newRetryableHTTPClient()
-	if err != nil {
-		panic(fmt.Sprintf("failed to create retryable HTTP client: %v", err))
-	}
-	c.httpClient = retryableHTTPClient.StandardClient()
-
 	return c
 }
 
-func (c *commonClient) newRetryableHTTPClient() (*retryablehttp.Client, error) {
-	return c.httpClientOption.newRetryableHTTPClient()
+type httpClientOption struct {
+	logger *slog.Logger
+
+	// httpClient is owned by its provider and treated as read-only. It is
+	// shared by a Client and every message session derived from it.
+	httpClient HTTPClient
+
+	// retry is owned by the SDK. It is copied before a request adjusts it, so
+	// a per-request policy never becomes visible to another request.
+	retry RetryConfig
 }
 
-func (c *commonClient) do(req *http.Request) (*http.Response, error) {
-	return sendRequest(c.httpClient, req)
+func (o *httpClientOption) defaults() {
+	if o.logger == nil {
+		o.logger = slog.New(slog.DiscardHandler)
+	}
+	if o.httpClient == nil {
+		o.httpClient = NewHTTPClient(HTTPClientConfig{})
+	}
 }
 
-// sendRequest ensures that the request is sent and the response body is fully read and closed.
-// It trims the BOM when present in the response body.
+// do sends req and returns its response, retrying according to the client's
+// retry configuration. Any opts adjust that configuration for this request
+// alone.
 //
-// Make sure to use this function instead of http.Client.Do directly to avoid issues.
-func sendRequest(c *http.Client, req *http.Request) (*http.Response, error) {
-	resp, err := c.Do(req)
+// It reads the response body to completion, closes it, trims a byte order
+// mark when present, and replaces the body with the result. Use it rather
+// than calling HTTPClient.Do directly.
+func (c *commonClient) do(req *http.Request, opts ...retryOption) (*http.Response, error) {
+	return c.doWith(c.httpClient, req, opts...)
+}
+
+// doWith is do, sending through client instead of the one the SDK was given.
+// client may be a copy with a longer timeout. It is never the caller's value
+// with a field written on it.
+func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retryOption) (*http.Response, error) {
+	resp, err := c.send(client, req, opts...)
 	if err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", err))
 	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", err))
@@ -69,92 +83,160 @@ func sendRequest(c *http.Client, req *http.Request) (*http.Response, error) {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
 	}
 
-	body = trimByteOrderMark(body)
-	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
+
 	return resp, nil
 }
 
-type httpClientOption struct {
-	logger *slog.Logger
-
-	// Options for built-in retryable HTTP client.
-	// Ignored if a custom retryable HTTP client is provided via WithRetryableHTTPClint.
-	retryMax     int
-	retryWaitMax time.Duration
-
-	// fields added to the transport if specified
-	rootCAs               *x509.CertPool
-	tlsInsecureSkipVerify bool
-	tlsClientCertificates []tls.Certificate
-	proxyFunc             ProxyFunc
-	timeout               time.Duration
-
-	retryableHTTPClient *retryablehttp.Client
-}
-
-func (o *httpClientOption) defaults() {
-	if o.logger == nil {
-		o.logger = slog.New(slog.DiscardHandler)
-	}
-	if o.retryMax == 0 {
-		o.retryMax = 4
-	}
-	if o.retryWaitMax == 0 {
-		o.retryWaitMax = 30 * time.Second
-	}
-	if o.timeout == 0 {
-		o.timeout = 5 * time.Minute
-	}
-}
-
-func (o *httpClientOption) newRetryableHTTPClient() (*retryablehttp.Client, error) {
-	var retryClient *retryablehttp.Client
-	if o.retryableHTTPClient != nil {
-		retryClient = o.retryableHTTPClient
-	} else {
-		retryClient = retryablehttp.NewClient()
-		retryClient.RetryMax = o.retryMax
-		retryClient.RetryWaitMax = o.retryWaitMax
+// send runs the retry loop around the configured HTTP client.
+//
+// The policy for this call lives in a local copy of the configuration, so
+// concurrent requests never observe one another's adjustments, and nothing
+// owned by the caller is written to.
+func (c *commonClient) send(client HTTPClient, req *http.Request, opts ...retryOption) (*http.Response, error) {
+	cfg := c.retry
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
-	if retryClient.HTTPClient.Timeout == 0 {
-		retryClient.HTTPClient.Timeout = o.timeout
-	}
+	shouldRetry := cfg.shouldRetryFunc()
+	backoff := cfg.backoffFunc()
+	waitMin, waitMax := cfg.waits()
 
-	retryClient.Logger = o.logger
+	for attempt := 0; ; attempt++ {
+		attemptReq, err := requestForAttempt(req, attempt)
+		if err != nil {
+			return nil, err
+		}
 
-	transport, ok := retryClient.HTTPClient.Transport.(*http.Transport)
-	if !ok {
-		// this should always be true, because retryablehttp.NewClient() uses
-		// cleanhttp.DefaultPooledTransport()
-		return nil, fmt.Errorf("failed to get http transport from retryablehttp client")
-	}
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	}
+		attemptReq, cancelAttempt := withAttemptDeadline(attemptReq, cfg.attemptTimeout)
+		resp, doErr := client.Do(attemptReq)
+		if doErr == nil && cfg.attemptTimeout > 0 {
+			resp, doErr = readWithinAttempt(resp)
+		}
 
-	if o.rootCAs != nil {
-		transport.TLSClientConfig.RootCAs = o.rootCAs
-	}
+		// The policy sees the request's own context, so an attempt that ran
+		// out of its window is retried like any other transport error.
+		retry, policyErr := shouldRetry(req.Context(), resp, doErr)
+		if policyErr != nil {
+			drainAndClose(resp)
+			cancelAttempt()
+			return nil, policyErr
+		}
+		if !retry || attempt >= cfg.Max || !replayable(req) {
+			return cancelOnClose(resp, cancelAttempt), doErr
+		}
 
-	if o.tlsInsecureSkipVerify {
-		transport.TLSClientConfig.InsecureSkipVerify = true
-	}
-
-	if len(o.tlsClientCertificates) > 0 {
-		transport.TLSClientConfig.Certificates = append(
-			transport.TLSClientConfig.Certificates,
-			o.tlsClientCertificates...,
+		wait := backoff(waitMin, waitMax, attempt, resp)
+		c.logger.Debug("retrying request",
+			"method", req.Method,
+			"url", req.URL.Redacted(),
+			"attempt", attempt+1,
+			"wait", wait,
 		)
+		drainAndClose(resp)
+		cancelAttempt()
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-req.Context().Done():
+			timer.Stop()
+			return nil, req.Context().Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// withAttemptDeadline bounds one attempt by timeout, when it is positive. The
+// returned cancel must run once the attempt's response is done with.
+func withAttemptDeadline(req *http.Request, timeout time.Duration) (*http.Request, context.CancelFunc) {
+	if timeout <= 0 {
+		return req, func() {}
 	}
 
-	if o.proxyFunc != nil {
-		transport.Proxy = o.proxyFunc
+	ctx, cancel := context.WithTimeout(req.Context(), timeout)
+
+	return req.WithContext(ctx), cancel
+}
+
+// readWithinAttempt buffers resp's body while its attempt's window is still
+// open. A body that stalls past the window then fails the attempt, which is
+// retried like one whose headers never came, instead of failing the read once
+// the retry loop has returned.
+func readWithinAttempt(resp *http.Response) (*http.Response, error) {
+	if resp == nil || resp.Body == nil {
+		return resp, nil
 	}
 
-	retryClient.HTTPClient.Transport = transport
+	body, err := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	switch {
+	case err != nil:
+		err = fmt.Errorf("failed to read the response body: %w", err)
+	case closeErr != nil:
+		err = fmt.Errorf("failed to close the response body: %w", closeErr)
+	}
+	if err != nil {
+		// The status and headers, such as Retry-After, still inform the
+		// retry policy and the final error. The body is gone.
+		resp.Body = http.NoBody
+		return resp, err
+	}
 
-	return retryClient, nil
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+
+	return resp, nil
+}
+
+// cancelOnClose defers cancel until resp's body is closed, since the body is
+// streamed under the context of the attempt that produced it. Without a body
+// to read, cancel runs at once.
+func cancelOnClose(resp *http.Response, cancel context.CancelFunc) *http.Response {
+	if resp == nil || resp.Body == nil || resp.Body == http.NoBody {
+		cancel()
+		return resp
+	}
+
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+
+	return resp
+}
+
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
+// replayable reports whether a request can be sent more than once.
+func replayable(req *http.Request) bool {
+	return req.Body == nil || req.GetBody != nil
+}
+
+// requestForAttempt returns the request to send for the given attempt.
+//
+// Retries get a shallow copy holding a fresh body. The copy keeps the body of
+// an earlier attempt from being replaced while the transport may still be
+// writing it, and leaves the caller's request untouched.
+func requestForAttempt(req *http.Request, attempt int) (*http.Request, error) {
+	if attempt == 0 || req.Body == nil {
+		return req, nil
+	}
+
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, fmt.Errorf("failed to rewind request body for retry: %w", err)
+	}
+
+	retryReq := *req
+	retryReq.Body = body
+
+	return &retryReq, nil
 }
 
 func (c *commonClient) setSystemInfo(info SystemInfo) {
@@ -175,11 +257,42 @@ func (c *commonClient) setUserAgent() {
 // HTTPOption defines a functional option for configuring the Client.
 type HTTPOption func(*httpClientOption)
 
-// WithRetryableHTTPClint allows users to provide a custom retryable HTTP client.
-// If not set, a default client will be used with the specified retry and timeout settings.
-func WithRetryableHTTPClint(client *retryablehttp.Client) HTTPOption {
+// WithHTTPClient sends every SDK request through the given client.
+//
+// The SDK never modifies the client, its Transport, or its TLS configuration,
+// so transport concerns - TLS, proxies, connection pooling, per-attempt
+// timeouts - stay under the caller's control, except as noted for GetMessage
+// below. Retries are layered above the client and keep their state per
+// request. The client is shared between a Client, its message sessions, and
+// concurrent requests, so Do must be safe for concurrent use, as it is for
+// *http.Client.
+//
+// Use NewHTTPClient to build one, or supply any implementation, including a
+// client wrapping an instrumented http.RoundTripper. A nil client, including a
+// nil *http.Client, selects the SDK default.
+//
+// Per-attempt timeouts come from the client. A client without a Timeout, such
+// as &http.Client{} or http.DefaultClient, puts no limit on an attempt;
+// NewHTTPClient applies DefaultTimeout. MessageSessionClient.GetMessage is the
+// exception: it bounds each poll attempt by MessagePollTimeout, and when a
+// *http.Client has a shorter positive Timeout, it polls through a copy whose
+// Timeout is raised to MessagePollTimeout. The supplied client is not
+// modified.
+func WithHTTPClient(client HTTPClient) HTTPOption {
+	if hc, ok := client.(*http.Client); ok && hc == nil {
+		client = nil
+	}
+
 	return func(c *httpClientOption) {
-		c.retryableHTTPClient = client
+		c.httpClient = client
+	}
+}
+
+// WithRetry replaces the retry configuration. A zero RetryConfig.Max disables
+// retries. To adjust individual settings, start from DefaultRetryConfig.
+func WithRetry(retry RetryConfig) HTTPOption {
+	return func(c *httpClientOption) {
+		c.retry = retry
 	}
 }
 
@@ -194,66 +307,31 @@ func WithLogger(logger *slog.Logger) HTTPOption {
 	}
 }
 
-// WithRetryMax sets the maximum number of retries for the Client.
-func WithRetryMax(retryMax int) HTTPOption {
-	return func(c *httpClientOption) {
-		c.retryMax = retryMax
+// tlsConfigFromClient reports the TLS configuration an HTTP client will use,
+// for tests that assert on transport settings.
+func tlsConfigFromClient(client HTTPClient) (*tls.Config, bool) {
+	transport, ok := transportOf(client)
+	if !ok || transport.TLSClientConfig == nil {
+		return nil, false
 	}
+
+	return transport.TLSClientConfig, true
 }
 
-// WithRetryWaitMax sets the maximum wait time between retries for the Client.
-func WithRetryWaitMax(retryWaitMax time.Duration) HTTPOption {
-	return func(c *httpClientOption) {
-		c.retryWaitMax = retryWaitMax
+// transportOf returns the *http.Transport behind an HTTP client, when there is
+// one. A caller may supply any HTTPClient implementation, so the SDK only
+// inspects a transport for diagnostics and never depends on finding it.
+func transportOf(client HTTPClient) (*http.Transport, bool) {
+	httpClient, ok := client.(*http.Client)
+	if !ok || httpClient == nil {
+		return nil, false
 	}
-}
+	// A client without a Transport sends through http.DefaultTransport.
+	roundTripper := httpClient.Transport
+	if roundTripper == nil {
+		roundTripper = http.DefaultTransport
+	}
+	transport, ok := roundTripper.(*http.Transport)
 
-// WithRootCAs sets custom root certificate authorities for the Client.
-func WithRootCAs(rootCAs *x509.CertPool) HTTPOption {
-	return func(c *httpClientOption) {
-		c.rootCAs = rootCAs
-	}
-}
-
-// WithoutTLSVerify disables TLS certificate verification for the Client.
-func WithoutTLSVerify() HTTPOption {
-	return func(c *httpClientOption) {
-		c.tlsInsecureSkipVerify = true
-	}
-}
-
-// WithTLSClientCertificate configures a TLS client certificate for mTLS authentication.
-// Note: The certificate is added to the TLS transport configuration and will be presented
-// during TLS handshakes for ALL connections made by this client, not just proxy connections.
-// If you need host-scoped certificate selection, consider using a custom transport with
-// tls.Config.GetClientCertificate instead.
-func WithTLSClientCertificate(cert tls.Certificate) HTTPOption {
-	return func(c *httpClientOption) {
-		c.tlsClientCertificates = append(c.tlsClientCertificates, cert)
-	}
-}
-
-// WithTLSClientCertificateFromFile loads a TLS client certificate and key from files.
-// This is a convenience function that wraps WithTLSClientCertificate.
-// See WithTLSClientCertificate for important notes about certificate scope.
-func WithTLSClientCertificateFromFile(certFile, keyFile string) (HTTPOption, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load client certificate: %w", err)
-	}
-	return WithTLSClientCertificate(cert), nil
-}
-
-// WithProxy sets a custom proxy function for the Client.
-func WithProxy(proxyFunc ProxyFunc) HTTPOption {
-	return func(c *httpClientOption) {
-		c.proxyFunc = proxyFunc
-	}
-}
-
-// WithTimeout sets a timeout for the Client.
-func WithTimeout(duration time.Duration) HTTPOption {
-	return func(c *httpClientOption) {
-		c.timeout = duration
-	}
+	return transport, ok
 }
