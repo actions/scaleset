@@ -604,12 +604,15 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var createdRunnerScaleSet RunnerScaleSet
+	var createdRunnerScaleSet *RunnerScaleSet
 	if err := decodeJSONBody(resp.Body, &createdRunnerScaleSet); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode created runner scale set: %w", err))
 	}
+	if createdRunnerScaleSet == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("created runner scale set is null"))
+	}
 
-	return &createdRunnerScaleSet, nil
+	return createdRunnerScaleSet, nil
 }
 
 // UpdateRunnerScaleSet updates an existing runner scale set.
@@ -637,11 +640,14 @@ func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int,
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var updatedRunnerScaleSet RunnerScaleSet
+	var updatedRunnerScaleSet *RunnerScaleSet
 	if err := decodeJSONBody(resp.Body, &updatedRunnerScaleSet); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode updated runner scale set: %w", err))
 	}
-	return &updatedRunnerScaleSet, nil
+	if updatedRunnerScaleSet == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("updated runner scale set is null"))
+	}
+	return updatedRunnerScaleSet, nil
 }
 
 // DeleteRunnerScaleSet deletes a runner scale set by its ID.
@@ -794,6 +800,9 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 	var runnerJitConfig *RunnerScaleSetJitRunnerConfig
 	if err := decodeJSONBody(resp.Body, &runnerJitConfig); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner JIT config: %w", err))
+	}
+	if runnerJitConfig == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("runner JIT config is null"))
 	}
 
 	return runnerJitConfig, nil

@@ -572,6 +572,36 @@ func TestResponseErrorInvalidLists(t *testing.T) {
 	})
 }
 
+// A required object decodes from null without error, so these endpoints used
+// to report success without a value. Lookups such as GetRunnerScaleSetByID
+// keep treating null as not found.
+func TestResponseErrorNullObject(t *testing.T) {
+	for _, endpoint := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"create scale set", func(c *Client) error {
+			_, err := c.CreateRunnerScaleSet(t.Context(), &RunnerScaleSet{Name: "test"})
+			return err
+		}},
+		{"update scale set", func(c *Client) error {
+			_, err := c.UpdateRunnerScaleSet(t.Context(), 1, &RunnerScaleSet{Name: "test"})
+			return err
+		}},
+		{"jit config", func(c *Client) error {
+			_, err := c.GenerateJitRunnerConfig(t.Context(), &RunnerScaleSetJitRunnerSetting{}, 1)
+			return err
+		}},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				return newStubResponse(req, http.StatusOK, "null"), nil
+			}))
+			assertResponseError(t, endpoint.call(client), http.StatusOK, "null")
+		})
+	}
+}
+
 func TestResponseErrorMissingRequestMetadata(t *testing.T) {
 	cause := errors.New("original error")
 	t.Run("missing response request uses the sent request", func(t *testing.T) {
