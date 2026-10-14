@@ -833,6 +833,18 @@ func TestRetryWithoutDeadlineOrBudgetUsesAllRetries(t *testing.T) {
 	assert.Equal(t, int64(4), calls.Load())
 }
 
+// A Retry-After near the time.Duration limit used to wrap negative once the
+// elapsed time was added to it, and pass the budget check.
+func TestWaitOutlastsHugeWait(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	require.NoError(t, err)
+
+	const huge = time.Duration(1<<63 - 1)
+	reason, ok := waitOutlasts(req, time.Minute, time.Now().Add(-time.Second), huge)
+	assert.True(t, ok)
+	assert.Equal(t, "MaxElapsed budget", reason)
+}
+
 func TestRetryMaxElapsedBoundsAttempts(t *testing.T) {
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
