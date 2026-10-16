@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type scalesetError string
@@ -26,6 +28,138 @@ var (
 	UnauthorizedError = scalesetError("unauthorized")
 	ConflictError     = scalesetError("conflict")
 )
+
+const (
+	headerRetryAfter         = "Retry-After"
+	headerRateLimitRemaining = "X-RateLimit-Remaining"
+	headerRateLimitReset     = "X-RateLimit-Reset"
+)
+
+// RateLimitKind tells which kind of rate limit rejected a request.
+type RateLimitKind int
+
+const (
+	// RateLimitPrimary means the primary rate limit is spent: the response
+	// carried X-RateLimit-Remaining: 0.
+	RateLimitPrimary RateLimitKind = iota + 1
+	// RateLimitSecondary is any other rate-limited response, such as a
+	// secondary rate limit or a 429 from the Actions service.
+	RateLimitSecondary
+)
+
+func (k RateLimitKind) String() string {
+	switch k {
+	case RateLimitPrimary:
+		return "primary"
+	case RateLimitSecondary:
+		return "secondary"
+	default:
+		return "RateLimitKind(" + strconv.Itoa(int(k)) + ")"
+	}
+}
+
+// RateLimitError reports a request that the server rejected because of rate
+// limiting, along with the server's hints on when to try again. Detect it
+// with errors.As:
+//
+//	var rl *scaleset.RateLimitError
+//	if errors.As(err, &rl) {
+//		requeueAfter = rl.RetryAfter
+//	}
+//
+// A 429 response is always a rate limit. A 403 response is one only when it
+// carries a Retry-After header or X-RateLimit-Remaining: 0.
+type RateLimitError struct {
+	// Kind tells a spent primary rate limit apart from any other rate limit.
+	Kind RateLimitKind
+
+	// StatusCode is the HTTP status of the rejected response.
+	StatusCode int
+
+	// RetryAfter is the delay the server asked for. It comes from the
+	// Retry-After header, or from X-RateLimit-Reset when the primary limit
+	// is spent. It is zero when the response gave no usable hint.
+	RetryAfter time.Duration
+
+	// Reset is when the rate limit window resets, from X-RateLimit-Reset.
+	// It is the zero time when the header is absent or invalid.
+	Reset time.Time
+
+	// err is the full request/response error: method, URL, status,
+	// activity IDs, and the message from the response body.
+	err error
+}
+
+func (e *RateLimitError) Error() string {
+	msg := "rate limited"
+	if e.RetryAfter > 0 {
+		msg += " (retry after " + e.RetryAfter.String() + ")"
+	}
+	if e.err != nil {
+		msg += ": " + e.err.Error()
+	}
+	return msg
+}
+
+func (e *RateLimitError) Unwrap() error {
+	return e.err
+}
+
+// rateLimitFromResponse reports whether resp was rejected by a rate limit
+// and, if so, describes it. now anchors the RetryAfter derived from an HTTP
+// date or from X-RateLimit-Reset. The returned error wraps nothing; the
+// caller attaches the request/response error.
+func rateLimitFromResponse(resp *http.Response, now time.Time) (*RateLimitError, bool) {
+	if resp == nil {
+		return nil, false
+	}
+
+	primary := resp.Header.Get(headerRateLimitRemaining) == "0"
+
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+	case http.StatusForbidden:
+		if !primary && resp.Header.Get(headerRetryAfter) == "" {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+
+	rl := &RateLimitError{
+		Kind:       RateLimitSecondary,
+		StatusCode: resp.StatusCode,
+		Reset:      parseRateLimitReset(resp.Header.Get(headerRateLimitReset)),
+	}
+	if primary {
+		rl.Kind = RateLimitPrimary
+	}
+
+	if wait, ok := parseRetryAfter(resp.Header.Get(headerRetryAfter), now); ok {
+		rl.RetryAfter = wait
+	} else if primary && !rl.Reset.IsZero() {
+		if wait, ok := durationUntil(rl.Reset, now); ok {
+			rl.RetryAfter = wait
+		}
+	}
+
+	return rl, true
+}
+
+// parseRateLimitReset reads X-RateLimit-Reset, the reset time in UTC epoch
+// seconds. It returns the zero time for a missing or invalid value.
+func parseRateLimitReset(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds <= 0 {
+		return time.Time{}
+	}
+
+	return time.Unix(seconds, 0)
+}
 
 type actionsExceptionError struct {
 	ExceptionName string `json:"typeName,omitempty"`
@@ -103,6 +237,11 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 }
 
 func wrapResponseErrorType(resp *http.Response, err error) error {
+	if rl, ok := rateLimitFromResponse(resp, time.Now()); ok {
+		rl.err = err
+		return rl
+	}
+
 	switch resp.StatusCode {
 	case http.StatusBadRequest:
 		return fmt.Errorf("%w: %w", BadRequestError, err)
