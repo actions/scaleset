@@ -315,7 +315,7 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				testSystemInfo,
 				server.ConfigURLForOrg("my-org"),
 				defaultCreds,
-				WithRetryWaitMax(1*time.Millisecond),
+				WithRetry(RetryConfig{Max: DefaultRetryMax, WaitMax: 1 * time.Millisecond}),
 			)
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
@@ -364,7 +364,7 @@ func TestNewActionsServiceRequest(t *testing.T) {
 				testSystemInfo,
 				server.ConfigURLForOrg("my-org"),
 				defaultCreds,
-				WithRetryWaitMax(1*time.Millisecond),
+				WithRetry(RetryConfig{Max: DefaultRetryMax, WaitMax: 1 * time.Millisecond}),
 			)
 			require.NoError(t, err)
 			expiringToken := "expiring-token"
@@ -493,8 +493,7 @@ func TestGetRunner(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -573,8 +572,7 @@ func TestGetRunnerByName(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -626,8 +624,7 @@ func TestDeleteRunner(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -790,8 +787,7 @@ func TestGetRunnerScaleSet(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -944,8 +940,7 @@ func TestGetRunnerScaleSetByID(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -1070,8 +1065,7 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -1292,8 +1286,7 @@ func TestGenerateJitRunnerConfig(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(1),
-			WithRetryWaitMax(1*time.Millisecond),
+			WithRetry(RetryConfig{Max: 1, WaitMax: 1 * time.Millisecond}),
 		)
 		require.NoError(t, err)
 
@@ -1491,7 +1484,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 			actionsAuth{
 				token: "token",
 			},
-			WithRootCAs(pool),
+			WithHTTPClient(NewHTTPClient(HTTPClientConfig{RootCAs: pool})),
 		)
 		require.NoError(t, err)
 		assert.NotNil(t, client)
@@ -1522,8 +1515,8 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 			actionsAuth{
 				token: "token",
 			},
-			WithRootCAs(pool),
-			WithRetryMax(0),
+			WithHTTPClient(NewHTTPClient(HTTPClientConfig{RootCAs: pool})),
+			WithRetry(RetryConfig{Max: 0}),
 		)
 		require.NoError(t, err)
 		require.NotNil(t, client)
@@ -1542,7 +1535,7 @@ func TestServerWithSelfSignedCertificates(t *testing.T) {
 			actionsAuth{
 				token: "token",
 			},
-			WithoutTLSVerify(),
+			WithHTTPClient(NewHTTPClient(HTTPClientConfig{InsecureSkipVerify: true})),
 		)
 		require.NoError(t, err)
 		assert.NotNil(t, client)
