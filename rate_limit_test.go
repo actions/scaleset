@@ -428,6 +428,7 @@ func TestRateLimitErrorAfterRetriesAreExhausted(t *testing.T) {
 	assert.Equal(t, RateLimitSecondary, rl.Kind)
 	assert.Equal(t, http.StatusTooManyRequests, rl.StatusCode)
 	assert.Equal(t, 120*time.Second, rl.RetryAfter)
+	assert.Equal(t, 2, rl.Retries)
 	assert.Contains(t, err.Error(), "ConfigureTooManyRunnersException")
 }
 
