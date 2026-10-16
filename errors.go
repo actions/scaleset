@@ -1,6 +1,7 @@
 package scaleset
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,19 @@ var (
 	NotFoundError     = scalesetError("not found")
 	UnauthorizedError = scalesetError("unauthorized")
 	ConflictError     = scalesetError("conflict")
+
+	// MaxElapsedExceededError reports that a request ran out of its
+	// RetryConfig.MaxElapsed budget while an attempt, or the read of its
+	// response, was still in progress. It wraps context.DeadlineExceeded, so
+	// errors.Is matches either.
+	MaxElapsedExceededError error = maxElapsedError{}
 )
+
+type maxElapsedError struct{}
+
+func (maxElapsedError) Error() string { return "retry budget MaxElapsed exceeded" }
+
+func (maxElapsedError) Unwrap() error { return context.DeadlineExceeded }
 
 const (
 	headerRetryAfter         = "Retry-After"
