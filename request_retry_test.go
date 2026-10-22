@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -113,6 +115,7 @@ func TestWithRequestRetryAffectsOnlyItsCall(t *testing.T) {
 			_, err = client.updateTokenIfNeeded(context.Background())
 			require.NoError(t, err)
 
+			overridden := WithRequestRetry(t.Context(), adjust)
 			const workers = 16
 			var wg sync.WaitGroup
 			for scaleSetID := range workers {
@@ -120,9 +123,9 @@ func TestWithRequestRetryAffectsOnlyItsCall(t *testing.T) {
 				go func() {
 					defer wg.Done()
 
-					ctx, wantRetries := context.Background(), retryMax
+					ctx, wantRetries := t.Context(), retryMax
 					if scaleSetID%2 == 1 {
-						ctx, wantRetries = WithRequestRetry(ctx, adjust), 0
+						ctx, wantRetries = overridden, 0
 					}
 
 					_, err := client.GenerateJitRunnerConfig(ctx, &RunnerScaleSetJitRunnerSetting{}, scaleSetID)
@@ -231,6 +234,111 @@ func TestWithRequestRetryMaxElapsed(t *testing.T) {
 	jit, err := client.GenerateJitRunnerConfig(context.Background(), &RunnerScaleSetJitRunnerSetting{}, 1)
 	require.NoError(t, err, "a call without the override has no budget")
 	assert.Equal(t, "config", jit.EncodedJITConfig)
+}
+
+func TestWithRequestRetryMaxElapsedClosesBody(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var closed bool
+		client := newStubCommonClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			resp := newStubResponse(req, http.StatusOK, "")
+			resp.Body = io.NopCloser(stalledReader{ctx: req.Context()})
+			return cancelOnClose(resp, func() { closed = true }), nil
+		}), fastRetry(2))
+
+		ctx := WithRequestRetry(t.Context(), func(c *RetryConfig) {
+			c.MaxElapsed = time.Second
+		})
+		start := time.Now()
+		err := doRateLimited(t, ctx, client)
+		require.ErrorIs(t, err, MaxElapsedExceededError)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Equal(t, time.Second, time.Since(start))
+		assert.True(t, closed, "a body that outlives its budget must still be closed")
+		assert.Zero(t, client.retry.MaxElapsed)
+	})
+}
+
+func TestWithRequestRetryTokenRefresh(t *testing.T) {
+	for _, path := range []string{
+		"/orgs/example-org/actions/runners/registration-token",
+		"/actions/runner-registration",
+		"/_apis/runtime/runnerscalesets/1/generatejitconfig",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			var calls int
+			stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == path {
+					calls++
+					if calls <= 2 {
+						return newStubResponse(req, http.StatusTooManyRequests, ""), nil
+					}
+				}
+				switch req.URL.Path {
+				case "/orgs/example-org/actions/runners/registration-token":
+					return newStubResponse(req, http.StatusCreated, `{"token":"registration-token"}`), nil
+				case "/actions/runner-registration":
+					return newStubResponse(req, http.StatusOK, fmt.Sprintf(
+						`{"url":"https://actions.example/","token":%q}`, unsignedJWT(t, time.Now().Add(time.Hour)),
+					)), nil
+				case "/_apis/runtime/runnerscalesets/1/generatejitconfig":
+					return newStubResponse(req, http.StatusOK, `{"encodedJITConfig":"config"}`), nil
+				default:
+					return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL)
+				}
+			})
+			client, err := NewClientWithPersonalAccessToken(NewClientWithPersonalAccessTokenConfig{
+				GitHubConfigURL:     "https://github.com/example-org",
+				PersonalAccessToken: "example-token",
+			}, WithHTTPClient(stub), WithRetry(fastRetry(2)))
+			require.NoError(t, err)
+
+			ctx := WithRequestRetry(t.Context(), func(c *RetryConfig) { c.Max = 0 })
+			_, err = client.GenerateJitRunnerConfig(ctx, &RunnerScaleSetJitRunnerSetting{}, 1)
+			var rl *RateLimitError
+			require.ErrorAs(t, err, &rl)
+			assert.Zero(t, rl.Retries)
+			assert.Equal(t, 1, calls, "the override also applies to authentication requests")
+
+			jit, err := client.GenerateJitRunnerConfig(t.Context(), &RunnerScaleSetJitRunnerSetting{}, 1)
+			require.NoError(t, err)
+			assert.Equal(t, "config", jit.EncodedJITConfig)
+			assert.Equal(t, 3, calls, "the default policy still retries after an overridden refresh")
+		})
+	}
+}
+
+func TestWithRequestRetryKeepsPollTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls int
+		client := newStubCommonClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			deadline, ok := req.Context().Deadline()
+			require.True(t, ok, "replacing the config must not remove the SDK's poll timeout")
+			assert.Equal(t, MessagePollTimeout, time.Until(deadline))
+			if calls == 1 {
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			}
+			return newStubResponse(req, http.StatusAccepted, ""), nil
+		}), fastRetry(0))
+		session := &MessageSessionClient{commonClient: client}
+		session.session.Store(&RunnerScaleSetSession{MessageQueueURL: "https://actions.example/queue"})
+
+		var adjustments int
+		ctx := WithRequestRetry(t.Context(), func(c *RetryConfig) {
+			adjustments++
+			*c = fastRetry(1)
+		})
+		start := time.Now()
+		message, err := session.GetMessage(ctx, 0, 1)
+		require.NoError(t, err)
+		assert.Nil(t, message)
+		assert.Equal(t, 2, calls)
+		assert.Equal(t, 1, adjustments, "adjust once per request, not once per retry")
+		assert.Equal(t, MessagePollTimeout+time.Millisecond, time.Since(start))
+		assert.Zero(t, client.retry.Max)
+	})
 }
 
 func TestWithRequestRetryMessageSession(t *testing.T) {

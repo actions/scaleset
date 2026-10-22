@@ -108,12 +108,13 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 	}
 
 	body, err := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
 	if err != nil {
 		defer resp.Body.Close()
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", budget(err)))
 	}
-	if err := resp.Body.Close(); err != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
+	if closeErr != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", closeErr))
 	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
@@ -509,6 +510,7 @@ type requestRetryKey struct{}
 // SDK invariants: the request that exchanges a registration token for an
 // admin token still retries 401 and 403 even when adjust replaces
 // ShouldRetry, though always within Max, so a zero Max still disables it.
+// An OnRateLimit set by the caller still decides rate-limited 403 responses.
 //
 // adjust runs once for every HTTP request made with the context, so it may
 // run several times for one method call, and concurrently when the context is
