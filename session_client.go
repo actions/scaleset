@@ -100,6 +100,15 @@ func (c *MessageSessionClient) refreshMessageSession(ctx context.Context, expire
 // GetMessage fetches a message from the runner scale set message queue. If there are no messages available, it returns (nil, nil).
 // Unless a message is deleted after being processed (using DeleteMessage), it will be returned again in subsequent calls.
 // If the current session token is expired, it refreshes the session and tries one more time.
+//
+// Each poll attempt, reading the response included, waits at most
+// MessagePollTimeout. A failed attempt, including one that ran out of that
+// window, is retried under the client's RetryConfig, and each retry gets a
+// new window rather than what the earlier attempt left. The poll after a
+// token refresh gets a new window too, and the refresh itself is not part of
+// any window. Only ctx bounds the call as a whole. A *http.Client with a
+// shorter timeout is copied for the poll and the copy's timeout is raised;
+// the supplied client is not modified.
 func (c *MessageSessionClient) GetMessage(ctx context.Context, lastMessageID int, maxCapacity int) (*RunnerScaleSetMessage, error) {
 	session := c.Session()
 	message, err := c.getMessage(
@@ -150,7 +159,11 @@ func (c *MessageSessionClient) getMessage(ctx context.Context, session RunnerSca
 	req.Header.Set("User-Agent", c.commonClient.userAgent)
 	req.Header.Set(HeaderScaleSetMaxCapacity, strconv.Itoa(maxCapacity))
 
-	resp, err := c.commonClient.do(req)
+	resp, err := c.commonClient.doWith(
+		clientForMessagePoll(c.commonClient.httpClient),
+		req,
+		withAttemptTimeout(MessagePollTimeout),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue the request: %w", err)
 	}

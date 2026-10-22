@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
@@ -124,8 +128,7 @@ func TestCreateMessageSession(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		require.NoError(t, err)
 
@@ -133,12 +136,280 @@ func TestCreateMessageSession(t *testing.T) {
 			ctx,
 			runnerScaleSet.ID,
 			owner,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(retryWaitMax),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: retryWaitMax}),
 		)
 		assert.NotNil(t, err)
 		assert.Equalf(t, gotRetries, wantRetries, "CreateMessageSession got unexpected retry count: got=%v, want=%v", gotRetries, wantRetries)
 	})
+}
+
+func TestGetMessageBoundsTheLongPoll(t *testing.T) {
+	assert.GreaterOrEqual(t, MessagePollTimeout, time.Minute)
+	assert.Equal(t, 2*time.Minute, MessagePollTimeout)
+
+	var deadline time.Time
+	var hasDeadline bool
+	stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+		deadline, hasDeadline = req.Context().Deadline()
+		return newStubResponse(req, http.StatusAccepted, ""), nil
+	})
+
+	sessionClient := &MessageSessionClient{
+		commonClient: newCommonClient(testSystemInfo, httpClientOption{
+			httpClient: stub,
+			retry:      RetryConfig{Max: 0},
+		}),
+	}
+	sessionClient.session.Store(&RunnerScaleSetSession{
+		MessageQueueURL:         "https://actions.example/queue",
+		MessageQueueAccessToken: "token",
+	})
+
+	_, err := sessionClient.GetMessage(context.Background(), 0, 1)
+	require.NoError(t, err)
+	require.True(t, hasDeadline)
+	assert.WithinDuration(t, time.Now().Add(MessagePollTimeout), deadline, time.Second)
+
+	t.Run("a sooner parent deadline wins", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		_, err := sessionClient.GetMessage(ctx, 0, 1)
+		require.NoError(t, err)
+		assert.WithinDuration(t, time.Now().Add(time.Second), deadline, 200*time.Millisecond)
+	})
+}
+
+// TestGetMessageRetriesAStuckPoll covers a poll that hangs: it must time out
+// on its own and be retried, not spend the window of every later attempt.
+// Three hung attempts take longer than MessagePollTimeout in total, which a
+// window shared by the retries would turn into an error that stops the
+// listener.
+func TestGetMessageRetriesAStalledBody(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var attempts atomic.Int32
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			if attempts.Add(1) == 1 {
+				resp := newStubResponse(req, http.StatusOK, "")
+				resp.Body = io.NopCloser(stalledReader{ctx: req.Context()})
+				return resp, nil
+			}
+			return newStubResponse(req, http.StatusAccepted, ""), nil
+		})
+
+		sessionClient := &MessageSessionClient{
+			commonClient: newCommonClient(testSystemInfo, httpClientOption{
+				logger:     slog.New(slog.DiscardHandler),
+				httpClient: stub,
+				retry:      DefaultRetryConfig(),
+			}),
+		}
+		sessionClient.session.Store(&RunnerScaleSetSession{
+			MessageQueueURL:         "https://actions.example/queue",
+			MessageQueueAccessToken: "token",
+		})
+
+		msg, err := sessionClient.GetMessage(context.Background(), 0, 1)
+		require.NoError(t, err)
+		assert.Nil(t, msg)
+		assert.EqualValues(t, 2, attempts.Load())
+	})
+}
+
+// stalledReader blocks until ctx is done, like a response body whose
+// connection stops sending after the headers.
+type stalledReader struct {
+	ctx context.Context
+}
+
+func (s stalledReader) Read([]byte) (int, error) {
+	<-s.ctx.Done()
+	return 0, s.ctx.Err()
+}
+
+func TestGetMessageHonorsRetryAfterWhenTheBodyFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const retryAfter = 120 * time.Second
+
+		var attempts atomic.Int32
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			if attempts.Add(1) == 1 {
+				resp := newStubResponse(req, http.StatusServiceUnavailable, "")
+				resp.Header.Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+				resp.Body = io.NopCloser(iotest.ErrReader(errors.New("connection reset")))
+				return resp, nil
+			}
+			return newStubResponse(req, http.StatusAccepted, ""), nil
+		})
+
+		sessionClient := &MessageSessionClient{
+			commonClient: newCommonClient(testSystemInfo, httpClientOption{
+				logger:     slog.New(slog.DiscardHandler),
+				httpClient: stub,
+				retry:      DefaultRetryConfig(),
+			}),
+		}
+		sessionClient.session.Store(&RunnerScaleSetSession{
+			MessageQueueURL:         "https://actions.example/queue",
+			MessageQueueAccessToken: "token",
+		})
+
+		start := time.Now()
+		msg, err := sessionClient.GetMessage(context.Background(), 0, 1)
+		require.NoError(t, err)
+		assert.Nil(t, msg)
+		assert.EqualValues(t, 2, attempts.Load())
+		assert.GreaterOrEqual(t, time.Since(start), retryAfter)
+	})
+}
+
+func TestGetMessageRetriesAStuckPoll(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const hung = 3
+
+		var attempts atomic.Int32
+		var deadlines []time.Time
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			deadline, ok := req.Context().Deadline()
+			require.True(t, ok)
+			deadlines = append(deadlines, deadline)
+
+			if attempts.Add(1) <= hung {
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			}
+			return newStubResponse(req, http.StatusAccepted, ""), nil
+		})
+
+		sessionClient := &MessageSessionClient{
+			commonClient: newCommonClient(testSystemInfo, httpClientOption{
+				logger:     slog.New(slog.DiscardHandler),
+				httpClient: stub,
+				retry:      DefaultRetryConfig(),
+			}),
+		}
+		sessionClient.session.Store(&RunnerScaleSetSession{
+			MessageQueueURL:         "https://actions.example/queue",
+			MessageQueueAccessToken: "token",
+		})
+
+		start := time.Now()
+		msg, err := sessionClient.GetMessage(context.Background(), 0, 1)
+		require.NoError(t, err)
+		assert.Nil(t, msg)
+		assert.EqualValues(t, hung+1, attempts.Load())
+		assert.Greater(t, time.Since(start), hung*MessagePollTimeout)
+
+		require.Len(t, deadlines, hung+1)
+		for i := 1; i < len(deadlines); i++ {
+			assert.GreaterOrEqual(t, deadlines[i].Sub(deadlines[i-1]), MessagePollTimeout, "attempt %d shares a window", i+1)
+		}
+	})
+}
+
+// pollDeadlineTransport records the client-side deadline of each message-queue
+// poll. The first poll is held so a shared timer and a fresh timer disagree.
+type pollDeadlineTransport struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	dls  []time.Time
+}
+
+func (p *pollDeadlineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && (req.URL.Path == "/" || req.URL.Path == "") {
+		if dl, ok := req.Context().Deadline(); ok {
+			p.mu.Lock()
+			first := len(p.dls) == 0
+			p.dls = append(p.dls, dl)
+			p.mu.Unlock()
+			if first {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+	}
+	return p.base.RoundTrip(req)
+}
+
+func TestGetMessageRefreshStartsANewPollWindow(t *testing.T) {
+	ctx := context.Background()
+	auth := actionsAuth{token: "token"}
+
+	var handleSessionRequest http.HandlerFunc
+	type state int
+	const (
+		createSession state = iota
+		firstGetMessage
+		refreshToken
+		secondGetMessage
+	)
+	currentState := createSession
+	server := newActionsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "sessions") && !strings.Contains(r.URL.Path, "/sessions/") {
+			require.Equal(t, createSession, currentState)
+			handleSessionRequest(w, r)
+			currentState = firstGetMessage
+			return
+		}
+		if strings.Contains(r.URL.Path, "/sessions/") {
+			require.Equal(t, refreshToken, currentState)
+			handleSessionRequest(w, r)
+			currentState = secondGetMessage
+			return
+		}
+		if currentState == firstGetMessage {
+			w.WriteHeader(http.StatusUnauthorized)
+			currentState = refreshToken
+			return
+		}
+		require.Equal(t, secondGetMessage, currentState)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	handleSessionRequest = newTestSessionRequestHandler(t, server.testRunnerScaleSetSession())
+
+	base := NewHTTPClient(HTTPClientConfig{})
+	recorder := &pollDeadlineTransport{base: base.Transport}
+	base.Transport = recorder
+
+	client, err := newClient(
+		testSystemInfo,
+		server.configURLForOrg("my-org"),
+		auth,
+		WithHTTPClient(base),
+	)
+	require.NoError(t, err)
+
+	sessionClient, err := client.MessageSessionClient(ctx, 1, "my-org")
+	require.NoError(t, err)
+
+	_, err = sessionClient.GetMessage(ctx, 0, 10)
+	require.NoError(t, err)
+
+	recorder.mu.Lock()
+	deadlines := append([]time.Time(nil), recorder.dls...)
+	recorder.mu.Unlock()
+	require.Len(t, deadlines, 2)
+	// The first poll is held for 200ms. A timer created once in GetMessage would
+	// be the same instant on both polls. A timer created in getMessage is later
+	// on the retry by about that hold.
+	gap := deadlines[1].Sub(deadlines[0])
+	assert.Greater(t, gap, 100*time.Millisecond)
+	assert.Less(t, gap, 5*time.Second)
+}
+
+func TestClientForMessagePoll(t *testing.T) {
+	short := &http.Client{Timeout: 30 * time.Second, Transport: http.DefaultTransport}
+	lifted, ok := clientForMessagePoll(short).(*http.Client)
+	require.True(t, ok)
+	assert.Equal(t, 30*time.Second, short.Timeout)
+	assert.NotSame(t, short, lifted)
+	assert.Equal(t, MessagePollTimeout, lifted.Timeout)
+	assert.Same(t, short.Transport, lifted.Transport)
+
+	long := &http.Client{Timeout: DefaultTimeout}
+	assert.Same(t, long, clientForMessagePoll(long))
+
+	unlimited := &http.Client{}
+	assert.Same(t, unlimited, clientForMessagePoll(unlimited))
 }
 
 func TestGetMessage(t *testing.T) {
@@ -231,8 +502,7 @@ func TestGetMessage(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Millisecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Millisecond}),
 		)
 		require.NoError(t, err)
 
@@ -240,8 +510,7 @@ func TestGetMessage(t *testing.T) {
 			ctx,
 			1,
 			"my-org",
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Millisecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Millisecond}),
 		)
 		require.NoError(t, err)
 
@@ -673,8 +942,7 @@ func TestDeleteMessage(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 
@@ -682,8 +950,7 @@ func TestDeleteMessage(t *testing.T) {
 			ctx,
 			1,
 			"my-org",
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 
@@ -895,8 +1162,7 @@ func TestAcquireJobs(t *testing.T) {
 			testSystemInfo,
 			server.configURLForOrg("my-org"),
 			auth,
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 
@@ -904,8 +1170,7 @@ func TestAcquireJobs(t *testing.T) {
 			ctx,
 			1,
 			"my-org",
-			WithRetryMax(retryMax),
-			WithRetryWaitMax(1*time.Nanosecond),
+			WithRetry(RetryConfig{Max: retryMax, WaitMax: 1 * time.Nanosecond}),
 		)
 		require.NoError(t, err)
 
