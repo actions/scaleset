@@ -246,6 +246,14 @@ client, err := scaleset.NewClientWithPersonalAccessToken(config,
 
 `RetryConfig{}` (or `Max: 0`) disables retries entirely.
 
+`RetryConfig.MaxElapsed` optionally limits each HTTP request, including all
+attempts, waits, and reading the final response body. Zero leaves it unlimited.
+A wait that would reach or pass this budget or the request context's deadline is
+skipped, preserving the last response and any `RateLimitError.RetryAfter` hint.
+If the budget expires during an attempt or body read, the error matches both
+`MaxElapsedExceededError` and `context.DeadlineExceeded`. If the caller cancels or
+its deadline fires first, its context error is preserved instead.
+
 ### Migrating from the transport options
 
 If you never passed an HTTP option, you change no code. The constructors are the same, and the defaults are the same.

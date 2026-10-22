@@ -931,3 +931,120 @@ func TestRetryMaxElapsedKeepsBodyReadable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, payload, body)
 }
+
+func TestRetryWaitAtDeadlineReturnsResponse(t *testing.T) {
+	for _, useBudget := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MaxElapsed=%t", useBudget), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				retry := RetryConfig{
+					Max: 2,
+					Backoff: func(time.Duration, time.Duration, int, *http.Response) time.Duration {
+						return time.Second
+					},
+				}
+				if useBudget {
+					retry.MaxElapsed = time.Second
+				} else {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, time.Second)
+					defer cancel()
+				}
+
+				var calls int
+				stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					return newStubResponse(req, http.StatusServiceUnavailable, "unavailable"), nil
+				})
+				opts := defaultHTTPClientOption()
+				WithHTTPClient(stub)(&opts)
+				WithRetry(retry)(&opts)
+				client := newCommonClient(testSystemInfo, opts)
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://actions.example/", nil)
+				require.NoError(t, err)
+
+				start := time.Now()
+				resp, err := client.do(req)
+				require.NoError(t, err)
+				assert.Zero(t, time.Since(start))
+				assert.Equal(t, 1, calls)
+				assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				assert.Equal(t, "unavailable", string(body))
+			})
+		})
+	}
+}
+
+func TestRetryMaxElapsedKeepsFirstCancellationCause(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			<-req.Context().Done()
+			cancel()
+			return nil, req.Context().Err()
+		})
+		opts := defaultHTTPClientOption()
+		WithHTTPClient(stub)(&opts)
+		WithRetry(RetryConfig{MaxElapsed: time.Second})(&opts)
+		client := newCommonClient(testSystemInfo, opts)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://actions.example/", nil)
+		require.NoError(t, err)
+
+		_, err = client.do(req)
+		require.ErrorIs(t, err, MaxElapsedExceededError)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.NotErrorIs(t, err, context.Canceled)
+	})
+}
+
+type trackedResponseBody struct {
+	io.Reader
+	closes int
+}
+
+func (b *trackedResponseBody) Close() error {
+	b.closes++
+	return nil
+}
+
+func TestRetryMaxElapsedClosesStalledBody(t *testing.T) {
+	for _, poll := range []bool{false, true} {
+		t.Run(fmt.Sprintf("poll=%t", poll), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var body trackedResponseBody
+				var attemptCtx context.Context
+				var calls int
+				stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					attemptCtx = req.Context()
+					body.Reader = stalledReader{ctx: attemptCtx}
+					resp := newStubResponse(req, http.StatusOK, "")
+					resp.Body = &body
+					return resp, nil
+				})
+				opts := defaultHTTPClientOption()
+				WithHTTPClient(stub)(&opts)
+				WithRetry(RetryConfig{Max: 2, MaxElapsed: time.Second})(&opts)
+				client := newCommonClient(testSystemInfo, opts)
+				req, err := http.NewRequest(http.MethodGet, "https://actions.example/", nil)
+				require.NoError(t, err)
+
+				var retryOpts []retryOption
+				if poll {
+					retryOpts = append(retryOpts, withAttemptTimeout(MessagePollTimeout))
+				}
+				start := time.Now()
+				_, err = client.do(req, retryOpts...)
+				require.ErrorIs(t, err, MaxElapsedExceededError)
+				assert.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.Equal(t, time.Second, time.Since(start))
+				assert.Equal(t, 1, calls)
+				assert.Equal(t, 1, body.closes)
+				assert.ErrorIs(t, attemptCtx.Err(), context.DeadlineExceeded)
+			})
+		})
+	}
+}

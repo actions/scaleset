@@ -181,14 +181,13 @@ type RetryConfig struct {
 	// budget, or the request context's own deadline when that comes first.
 	// An attempt the budget cuts off ends the request with an error matching
 	// MaxElapsedExceededError, which also matches context.DeadlineExceeded.
-	// When the next wait alone would exceed the budget, the SDK does not wait:
-	// it stops retrying and reports the last response.
+	// When the next wait alone would reach or exceed the budget, the SDK
+	// stops retrying and reports the last response without waiting.
 	//
 	// The request context's deadline is honored the same way: a wait that
-	// would run past it is not taken, and the last response is reported in
-	// place of a context error. A request context that is cancelled, or
-	// reaches its own deadline, still ends the request with the context's
-	// error.
+	// would reach or run past it is not taken, and the last response is
+	// reported in place of a context error. When the caller cancels or its
+	// deadline fires first, the request still ends with the context's error.
 	MaxElapsed time.Duration
 
 	// ShouldRetry reports whether an attempt should be retried. Returning a
@@ -224,7 +223,8 @@ const (
 // DefaultRetryConfig returns the retry configuration used when WithRetry is
 // not supplied. It sets no MaxElapsed budget, so the request context's
 // deadline is the only limit on the total time spent retrying: a wait that
-// would outlast it is skipped and the last response is reported instead.
+// would reach or outlast it is skipped and the last response is reported
+// instead.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		Max:     DefaultRetryMax,
