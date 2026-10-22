@@ -195,6 +195,31 @@ func TestWithRequestRetryKeepsAdminConnectionRetry(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("OnRateLimit can decline a rate-limited admin 403", func(t *testing.T) {
+		t.Parallel()
+		var calls int
+		client := newStubCommonClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			const body = `{"message":"You have exceeded a secondary rate limit."}`
+			resp := newStubResponse(req, http.StatusForbidden, body)
+			resp.ContentLength = int64(len(body))
+			resp.Header.Set(headerRateLimitRemaining, "0")
+			return resp, nil
+		}), fastRetry(2))
+
+		ctx := WithRequestRetry(t.Context(), func(c *RetryConfig) {
+			c.ShouldRetry = neverRetry
+			c.OnRateLimit = func(_ context.Context, rl *RateLimitError) (time.Duration, bool) {
+				assert.Equal(t, RateLimitSecondary, rl.Kind)
+				return 0, false
+			}
+		})
+		rl := requireRateLimitError(t, doRateLimited(t, ctx, client, adminRetry))
+		assert.Equal(t, RateLimitSecondary, rl.Kind)
+		assert.Zero(t, rl.Retries)
+		assert.Equal(t, 1, calls)
+	})
 }
 
 // TestWithRequestRetryMaxElapsed checks that a budget set per call is in
