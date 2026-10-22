@@ -263,11 +263,11 @@ func TestWithRequestRetryMaxElapsed(t *testing.T) {
 
 func TestWithRequestRetryMaxElapsedClosesBody(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		var closed bool
+		var closes int
 		client := newStubCommonClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
 			resp := newStubResponse(req, http.StatusOK, "")
 			resp.Body = io.NopCloser(stalledReader{ctx: req.Context()})
-			return cancelOnClose(resp, func() { closed = true }), nil
+			return cancelOnClose(resp, func() { closes++ }), nil
 		}), fastRetry(2))
 
 		ctx := WithRequestRetry(t.Context(), func(c *RetryConfig) {
@@ -278,7 +278,7 @@ func TestWithRequestRetryMaxElapsedClosesBody(t *testing.T) {
 		require.ErrorIs(t, err, MaxElapsedExceededError)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 		assert.Equal(t, time.Second, time.Since(start))
-		assert.True(t, closed, "a body that outlives its budget must still be closed")
+		assert.Equal(t, 1, closes, "a body that outlives its budget must be closed exactly once")
 		assert.Zero(t, client.retry.MaxElapsed)
 	})
 }

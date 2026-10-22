@@ -108,13 +108,12 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 	}
 
 	body, err := io.ReadAll(resp.Body)
-	closeErr := resp.Body.Close()
 	if err != nil {
 		defer resp.Body.Close()
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", budget(err)))
 	}
-	if closeErr != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", closeErr))
+	if err := resp.Body.Close(); err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
 	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
