@@ -223,7 +223,10 @@ type RetryConfig struct {
 	// rate-limited retries already made for this request, so a hook can stop
 	// after a few and leave the rest to the caller, for example to requeue
 	// the work. rl.Unwrap reports the method, URL, and status, but not the
-	// response body, which is left unread for the caller.
+	// response body. The body is buffered to classify secondary-limit
+	// messages and remains available to the caller.
+	// If the body cannot be read, status and headers can still identify a
+	// rate limit; the final error preserves the read failure.
 	//
 	// When the hook declines, the request returns at once, without waiting,
 	// and the caller's error is a *RateLimitError with the same Retries.
@@ -381,14 +384,14 @@ func DefaultOnRateLimit(_ context.Context, rl *RateLimitError) (time.Duration, b
 // RateLimitRule limits the retries made for one kind of rate limit. See
 // RateLimitRetries.
 type RateLimitRule struct {
-	// MaxRetries is the number of rate-limited retries allowed for this
-	// kind. Zero returns the rate-limited response immediately.
+	// MaxRetries limits the request's rate-limited retry count when this
+	// kind is received. The count includes both kinds. Zero returns the
+	// rate-limited response immediately.
 	MaxRetries int
 
-	// MaxWait is the longest single wait to accept. Zero means no cap. When
-	// the server asks for a longer wait, the request gives up instead: the
-	// wait is not clamped, since retrying sooner than the server asked only
-	// earns another rate-limited response.
+	// MaxWait is the longest server-requested wait to accept. Zero means no
+	// cap. A longer wait is rejected, not shortened. It does not cap the
+	// Backoff fallback when the server gives no usable delay.
 	MaxWait time.Duration
 }
 

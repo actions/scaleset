@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -507,6 +509,155 @@ func TestRateLimitRetriesThroughClient(t *testing.T) {
 			assert.Equal(t, int(tc.wantCalls-1), rl.Retries, kind.String())
 		}
 	})
+}
+
+func TestOnRateLimitResponseMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		remaining   string
+	}{
+		{
+			name:        "body-only JSON 403",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"message":"You have exceeded a secondary rate limit."}`,
+		},
+		{
+			name:        "body-only plain text 403",
+			status:      http.StatusForbidden,
+			contentType: "text/plain",
+			body:        "You have exceeded a secondary rate limit.",
+		},
+		{
+			name:        "secondary message overrides spent primary quota on 403",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"message":"You have exceeded a secondary rate limit."}`,
+			remaining:   "0",
+		},
+		{
+			name:        "secondary message overrides spent primary quota on 429",
+			status:      http.StatusTooManyRequests,
+			contentType: "application/json",
+			body:        `{"message":"You have exceeded a secondary rate limit."}`,
+			remaining:   "0",
+		},
+		{
+			name:        "JSON 403 with byte order mark",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        "\xef\xbb\xbf" + `{"message":"You have exceeded a secondary rate limit."}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", tc.contentType)
+				if tc.remaining != "" {
+					w.Header().Set(headerRateLimitRemaining, tc.remaining)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			t.Cleanup(server.Close)
+
+			var seen []int
+			client := newStubCommonClient(server.Client(), RetryConfig{
+				Max: 3,
+				OnRateLimit: func(_ context.Context, rl *RateLimitError) (time.Duration, bool) {
+					assert.Equal(t, RateLimitSecondary, rl.Kind)
+					seen = append(seen, rl.Retries)
+					return time.Nanosecond, rl.Retries < 1
+				},
+			})
+			req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+			require.NoError(t, err)
+
+			resp, err := client.do(req)
+			require.NoError(t, err)
+			rl := requireRateLimitError(t, newRequestResponseError(req, resp, errors.New("unexpected status")))
+			assert.Equal(t, int64(2), calls.Load())
+			assert.Equal(t, []int{0, 1}, seen)
+			assert.Equal(t, RateLimitSecondary, rl.Kind)
+			assert.Equal(t, 1, rl.Retries)
+			assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+		})
+	}
+}
+
+func TestOnRateLimitWithResponseReadError(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			readErr := errors.New("connection reset while reading response")
+			var calls atomic.Int64
+			stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				resp, err := rateLimitedStub(&calls, status, http.Header{headerRetryAfter: {"60"}})(req)
+				resp.Body = io.NopCloser(iotest.ErrReader(readErr))
+				return resp, err
+			})
+			var seen []int
+			client := newStubCommonClient(stub, RetryConfig{
+				Max: 3,
+				ShouldRetry: func(context.Context, *http.Response, error) (bool, error) {
+					t.Error("a failed body must not bypass the rate-limit hook")
+					return false, nil
+				},
+				OnRateLimit: func(_ context.Context, rl *RateLimitError) (time.Duration, bool) {
+					assert.Equal(t, time.Minute, rl.RetryAfter)
+					seen = append(seen, rl.Retries)
+					return time.Nanosecond, rl.Retries < 1
+				},
+			})
+
+			err := doRateLimited(t, context.Background(), client)
+			assert.ErrorIs(t, err, readErr)
+			rl := requireRateLimitError(t, err)
+			assert.Equal(t, status, rl.StatusCode)
+			assert.Equal(t, int64(2), calls.Load())
+			assert.Equal(t, []int{0, 1}, seen)
+			assert.Equal(t, 1, rl.Retries)
+		})
+	}
+}
+
+func TestOnRateLimitRetrySafety(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		max  int
+		body io.Reader
+	}{
+		{name: "retries disabled"},
+		{name: "body cannot be replayed", max: 3, body: io.NopCloser(strings.NewReader("payload"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			client := newStubCommonClient(
+				rateLimitedStub(&calls, http.StatusTooManyRequests, http.Header{}),
+				RetryConfig{
+					Max: tc.max,
+					OnRateLimit: func(context.Context, *RateLimitError) (time.Duration, bool) {
+						t.Error("the hook must not override retry safety")
+						return time.Nanosecond, true
+					},
+				},
+			)
+			req, err := http.NewRequest(http.MethodPost, "http://example.com", tc.body)
+			require.NoError(t, err)
+
+			resp, err := client.do(req)
+			require.NoError(t, err)
+			rl := requireRateLimitError(t, newRequestResponseError(req, resp, errors.New("unexpected status")))
+			assert.Equal(t, int64(1), calls.Load())
+			assert.Zero(t, rl.Retries)
+			assert.Contains(t, rl.Error(), "rate limited")
+		})
+	}
 }
 
 // TestOnRateLimitWaitBeyondLimits covers a hook that asks for a wait the

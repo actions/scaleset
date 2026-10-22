@@ -136,12 +136,14 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 
 		attemptReq, cancelAttempt := withAttemptDeadline(attemptReq, cfg.attemptTimeout)
 		resp, doErr := client.Do(attemptReq)
-		if doErr == nil && cfg.attemptTimeout > 0 {
-			resp, doErr = readWithinAttempt(resp)
+		var body []byte
+		if doErr == nil && (cfg.attemptTimeout > 0 || resp != nil &&
+			(resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests)) {
+			body, doErr = readForRetry(resp)
 		}
 
 		var wait time.Duration
-		rl, limited := rateLimitFromAttempt(req, resp, doErr, rateLimitRetries)
+		rl, limited := rateLimitFromAttempt(req, resp, body, rateLimitRetries)
 		if limited {
 			// Rate-limited responses are decided by OnRateLimit alone.
 			if ctxErr := req.Context().Err(); ctxErr != nil {
@@ -150,7 +152,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 				return nil, ctxErr
 			}
 			if attempt >= cfg.Max || !replayable(req) {
-				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), nil
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
 			}
 
 			var retry bool
@@ -164,7 +166,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 					"retry_after", rl.RetryAfter,
 					"rate_limit_retries", rateLimitRetries,
 				)
-				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), nil
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
 			}
 			if wait <= 0 {
 				wait = backoff(waitMin, waitMax, attempt, resp)
@@ -239,13 +241,12 @@ func withAttemptDeadline(req *http.Request, timeout time.Duration) (*http.Reques
 	return req.WithContext(ctx), cancel
 }
 
-// readWithinAttempt buffers resp's body while its attempt's window is still
-// open. A body that stalls past the window then fails the attempt, which is
-// retried like one whose headers never came, instead of failing the read once
-// the retry loop has returned.
-func readWithinAttempt(resp *http.Response) (*http.Response, error) {
+// readForRetry buffers resp's body before the retry decision, under the
+// attempt's context. Polls need this to retry stalled bodies; 403s and 429s
+// need the message to distinguish primary and secondary limits.
+func readForRetry(resp *http.Response) ([]byte, error) {
 	if resp == nil || resp.Body == nil {
-		return resp, nil
+		return nil, nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -260,12 +261,12 @@ func readWithinAttempt(resp *http.Response) (*http.Response, error) {
 		// The status and headers, such as Retry-After, still inform the
 		// retry policy and the final error. The body is gone.
 		resp.Body = http.NoBody
-		return resp, err
+		return nil, err
 	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
-	return resp, nil
+	return body, nil
 }
 
 // cancelOnClose defers cancel until resp's body is closed, since the body is
@@ -282,16 +283,18 @@ func cancelOnClose(resp *http.Response, cancel context.CancelFunc) *http.Respons
 	return resp
 }
 
-// rateLimitFromAttempt describes the response to one attempt when it was
-// rate limited, for OnRateLimit. It wraps a summary of the request and
-// status; the response body is left unread for the caller.
-func rateLimitFromAttempt(req *http.Request, resp *http.Response, doErr error, retries int) (*RateLimitError, bool) {
-	if doErr != nil {
+// rateLimitFromAttempt uses the final error's classification without
+// consuming the buffered response the caller will read.
+func rateLimitFromAttempt(req *http.Request, resp *http.Response, body []byte, retries int) (*RateLimitError, bool) {
+	if resp == nil ||
+		(resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests) {
 		return nil, false
 	}
 
-	rl, ok := rateLimitFromResponse(resp, "", time.Now())
-	if !ok {
+	response := *resp
+	response.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
+	var rl *RateLimitError
+	if !errors.As(newRequestResponseError(req, &response, errors.New("unexpected status")), &rl) {
 		return nil, false
 	}
 
