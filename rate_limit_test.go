@@ -53,6 +53,7 @@ func TestRateLimitFromResponse(t *testing.T) {
 		name           string
 		status         int
 		header         http.Header
+		message        string
 		wantOK         bool
 		wantKind       RateLimitKind
 		wantRetryAfter time.Duration
@@ -72,6 +73,13 @@ func TestRateLimitFromResponse(t *testing.T) {
 			wantOK:         true,
 			wantKind:       RateLimitSecondary,
 			wantRetryAfter: 30 * time.Second,
+		},
+		{
+			name:     "429 with zero Retry-After",
+			status:   http.StatusTooManyRequests,
+			header:   http.Header{headerRetryAfter: {"0"}},
+			wantOK:   true,
+			wantKind: RateLimitSecondary,
 		},
 		{
 			name:           "429 with Retry-After date",
@@ -141,6 +149,48 @@ func TestRateLimitFromResponse(t *testing.T) {
 			wantRetryAfter: time.Minute,
 		},
 		{
+			name:     "403 with secondary-limit message",
+			status:   http.StatusForbidden,
+			message:  "You have exceeded a secondary rate limit.",
+			wantOK:   true,
+			wantKind: RateLimitSecondary,
+		},
+		{
+			name:     "403 with secondary limit and remaining primary quota",
+			status:   http.StatusForbidden,
+			header:   http.Header{headerRateLimitRemaining: {"10"}},
+			message:  "You have exceeded a secondary rate limit.",
+			wantOK:   true,
+			wantKind: RateLimitSecondary,
+		},
+		{
+			name:   "secondary-limit message takes precedence over spent primary quota",
+			status: http.StatusForbidden,
+			header: http.Header{
+				headerRateLimitRemaining: {"0"},
+				headerRateLimitReset:     {unixString(now.Add(2 * time.Minute))},
+			},
+			message:        "You have exceeded a secondary rate limit.",
+			wantOK:         true,
+			wantKind:       RateLimitSecondary,
+			wantRetryAfter: 2 * time.Minute,
+			wantReset:      now.Add(2 * time.Minute),
+		},
+		{
+			name:   "secondary limit honors Retry-After before reset",
+			status: http.StatusForbidden,
+			header: http.Header{
+				headerRetryAfter:         {"10"},
+				headerRateLimitRemaining: {"0"},
+				headerRateLimitReset:     {unixString(now.Add(2 * time.Minute))},
+			},
+			message:        "You have exceeded a secondary rate limit.",
+			wantOK:         true,
+			wantKind:       RateLimitSecondary,
+			wantRetryAfter: 10 * time.Second,
+			wantReset:      now.Add(2 * time.Minute),
+		},
+		{
 			name:   "403 with spent primary limit",
 			status: http.StatusForbidden,
 			header: http.Header{
@@ -164,6 +214,18 @@ func TestRateLimitFromResponse(t *testing.T) {
 			wantKind:       RateLimitPrimary,
 			wantRetryAfter: 10 * time.Second,
 			wantReset:      now.Add(2 * time.Minute),
+		},
+		{
+			name:   "zero Retry-After takes precedence over X-RateLimit-Reset",
+			status: http.StatusForbidden,
+			header: http.Header{
+				headerRetryAfter:         {"0"},
+				headerRateLimitRemaining: {"0"},
+				headerRateLimitReset:     {unixString(now.Add(2 * time.Minute))},
+			},
+			wantOK:    true,
+			wantKind:  RateLimitPrimary,
+			wantReset: now.Add(2 * time.Minute),
 		},
 		{
 			name:   "unusable Retry-After falls back to X-RateLimit-Reset",
@@ -245,6 +307,16 @@ func TestRateLimitFromResponse(t *testing.T) {
 			header: http.Header{},
 		},
 		{
+			name:    "403 message must have a word boundary",
+			status:  http.StatusForbidden,
+			message: "nonsecondary rate limit",
+		},
+		{
+			name:    "404 with secondary-limit message",
+			status:  http.StatusNotFound,
+			message: "You have exceeded a secondary rate limit.",
+		},
+		{
 			name:   "403 with remaining quota",
 			status: http.StatusForbidden,
 			header: http.Header{
@@ -264,7 +336,7 @@ func TestRateLimitFromResponse(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rl, ok := rateLimitFromResponse(&http.Response{StatusCode: tc.status, Header: canonical(tc.header)}, now)
+			rl, ok := rateLimitFromResponse(&http.Response{StatusCode: tc.status, Header: canonical(tc.header)}, tc.message, now)
 			require.Equal(t, tc.wantOK, ok)
 			if !ok {
 				assert.Nil(t, rl)
@@ -279,7 +351,7 @@ func TestRateLimitFromResponse(t *testing.T) {
 	}
 
 	t.Run("nil response", func(t *testing.T) {
-		rl, ok := rateLimitFromResponse(nil, now)
+		rl, ok := rateLimitFromResponse(nil, "", now)
 		assert.False(t, ok)
 		assert.Nil(t, rl)
 	})
@@ -370,6 +442,74 @@ func TestNewRequestResponseErrorRateLimit(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, rl.StatusCode)
 	})
 
+	for _, tc := range []struct {
+		name        string
+		body        string
+		contentType string
+		wantLimit   bool
+	}{
+		{
+			name:      "secondary limit without headers",
+			body:      `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`,
+			wantLimit: true,
+		},
+		{
+			name:      "secondary limit with mixed case",
+			body:      `{"message":"You have exceeded a SECONDARY RATE LIMIT."}`,
+			wantLimit: true,
+		},
+		{
+			name:      "secondary limit with JSON escapes",
+			body:      `{"message":"You have exceeded a secondary \u0072ate limit."}`,
+			wantLimit: true,
+		},
+		{
+			name:        "plain text secondary limit",
+			body:        "You have exceeded a secondary rate limit.",
+			contentType: "text/plain; charset=utf-8",
+			wantLimit:   true,
+		},
+		{
+			name: "secondary limit mentioned outside the message",
+			body: `{"message":"Resource not accessible by integration","documentation":"secondary rate limits"}`,
+		},
+		{
+			name: "secondary limit mentioned in malformed JSON",
+			body: `{"message":"You have exceeded a secondary rate limit."`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := errors.New("unexpected status code: 403")
+			resp := newResp(http.StatusForbidden, nil, tc.body)
+			resp.Header.Set(headerGitHubRequestID, "request-id")
+			if tc.contentType != "" {
+				resp.Header.Set("Content-Type", tc.contentType)
+			}
+
+			err := newRequestResponseError(newReq(t), resp, base)
+
+			var rl *RateLimitError
+			require.Equal(t, tc.wantLimit, errors.As(err, &rl))
+			if !tc.wantLimit {
+				return
+			}
+
+			assert.Equal(t, RateLimitSecondary, rl.Kind)
+			assert.Equal(t, http.StatusForbidden, rl.StatusCode)
+			assert.Zero(t, rl.RetryAfter)
+			assert.True(t, rl.Reset.IsZero())
+			assert.ErrorIs(t, err, base)
+			assert.Contains(t, err.Error(), "request POST https://example.com/_apis/runtime/runnerscalesets/1/generatejitconfig failed")
+			assert.Contains(t, err.Error(), `activity_id="activity-id"`)
+			assert.Contains(t, err.Error(), `github_request_id="request-id"`)
+			if tc.contentType == "" {
+				var ex actionsExceptionError
+				require.ErrorAs(t, err, &ex)
+				assert.Contains(t, strings.ToLower(ex.Message), "secondary rate limit")
+			}
+		})
+	}
+
 	t.Run("unrelated 403 is untouched", func(t *testing.T) {
 		base := errors.New("unexpected status code: 403")
 		resp := newResp(http.StatusForbidden, http.Header{}, `{"typeName":"AccessDeniedException","message":"forbidden"}`)
@@ -429,6 +569,39 @@ func TestRateLimitErrorAfterRetriesAreExhausted(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, rl.StatusCode)
 	assert.Equal(t, 120*time.Second, rl.RetryAfter)
 	assert.Contains(t, err.Error(), "ConfigureTooManyRunnersException")
+}
+
+func TestSecondaryRateLimitErrorFromRegistrationToken(t *testing.T) {
+	var attempts atomic.Int64
+	client, err := newClient(
+		testSystemInfo,
+		"https://github.com/my-org",
+		actionsAuth{token: "token"},
+		WithHTTPClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			attempts.Add(1)
+			assert.Equal(t, http.MethodPost, req.Method)
+			assert.Equal(t, "/orgs/my-org/actions/runners/registration-token", req.URL.Path)
+			resp := newStubResponse(req, http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit."}`)
+			resp.ContentLength = -1
+			return resp, nil
+		})),
+		WithRetry(RetryConfig{
+			Max:     2,
+			WaitMin: time.Millisecond,
+			WaitMax: time.Millisecond,
+		}),
+	)
+	require.NoError(t, err)
+
+	_, err = client.getRunnerRegistrationToken(context.Background())
+
+	var rl *RateLimitError
+	require.ErrorAs(t, err, &rl)
+	assert.Equal(t, RateLimitSecondary, rl.Kind)
+	assert.Equal(t, http.StatusForbidden, rl.StatusCode)
+	assert.Zero(t, rl.RetryAfter)
+	assert.Contains(t, err.Error(), "You have exceeded a secondary rate limit.")
+	assert.Equal(t, int64(1), attempts.Load(), "classification must not enable automatic retries for 403s")
 }
 
 // canonical rebuilds h with canonical keys, as a received response has.

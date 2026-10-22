@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,15 +36,15 @@ const (
 	headerRateLimitReset     = "X-RateLimit-Reset"
 )
 
+var secondaryRateLimitPattern = regexp.MustCompile(`(?i)\bsecondary rate\b`)
+
 // RateLimitKind tells which kind of rate limit rejected a request.
 type RateLimitKind int
 
 const (
-	// RateLimitPrimary means the primary rate limit is spent: the response
-	// carried X-RateLimit-Remaining: 0.
+	// RateLimitPrimary means X-RateLimit-Remaining: 0 without a secondary-limit message.
 	RateLimitPrimary RateLimitKind = iota + 1
-	// RateLimitSecondary is any other rate-limited response, such as a
-	// secondary rate limit or a 429 from the Actions service.
+	// RateLimitSecondary covers all other rate-limited responses.
 	RateLimitSecondary
 )
 
@@ -58,17 +59,9 @@ func (k RateLimitKind) String() string {
 	}
 }
 
-// RateLimitError reports a request that the server rejected because of rate
-// limiting, along with the server's hints on when to try again. Detect it
-// with errors.As:
-//
-//	var rl *scaleset.RateLimitError
-//	if errors.As(err, &rl) {
-//		requeueAfter = rl.RetryAfter
-//	}
-//
-// A 429 response is always a rate limit. A 403 response is one only when it
-// carries a Retry-After header or X-RateLimit-Remaining: 0.
+// RateLimitError reports rate-limited responses; detect it with errors.As.
+// It covers 429s and 403s with Retry-After, X-RateLimit-Remaining: 0,
+// or a secondary-limit message.
 type RateLimitError struct {
 	// Kind tells a spent primary rate limit apart from any other rate limit.
 	Kind RateLimitKind
@@ -76,17 +69,16 @@ type RateLimitError struct {
 	// StatusCode is the HTTP status of the rejected response.
 	StatusCode int
 
-	// RetryAfter is the delay the server asked for. It comes from the
-	// Retry-After header, or from X-RateLimit-Reset when the primary limit
-	// is spent. It is zero when the response gave no usable hint.
+	// RetryAfter comes from Retry-After, then X-RateLimit-Reset if quota is spent.
+	// Zero means no usable delay or an explicit zero. For secondary limits,
+	// fall back to at least one minute with bounded exponential retries.
 	RetryAfter time.Duration
 
 	// Reset is when the rate limit window resets, from X-RateLimit-Reset.
 	// It is the zero time when the header is absent or invalid.
 	Reset time.Time
 
-	// err is the full request/response error: method, URL, status,
-	// activity IDs, and the message from the response body.
+	// err preserves the request/response error and its context.
 	err error
 }
 
@@ -105,21 +97,20 @@ func (e *RateLimitError) Unwrap() error {
 	return e.err
 }
 
-// rateLimitFromResponse reports whether resp was rejected by a rate limit
-// and, if so, describes it. now anchors the RetryAfter derived from an HTTP
-// date or from X-RateLimit-Reset. The returned error wraps nothing; the
-// caller attaches the request/response error.
-func rateLimitFromResponse(resp *http.Response, now time.Time) (*RateLimitError, bool) {
+// rateLimitFromResponse classifies the status, headers, and response message.
+// now anchors retry hints; the caller attaches the underlying error.
+func rateLimitFromResponse(resp *http.Response, message string, now time.Time) (*RateLimitError, bool) {
 	if resp == nil {
 		return nil, false
 	}
 
 	primary := resp.Header.Get(headerRateLimitRemaining) == "0"
+	secondary := secondaryRateLimitPattern.MatchString(message)
 
 	switch resp.StatusCode {
 	case http.StatusTooManyRequests:
 	case http.StatusForbidden:
-		if !primary && resp.Header.Get(headerRetryAfter) == "" {
+		if !primary && !secondary && resp.Header.Get(headerRetryAfter) == "" {
 			return nil, false
 		}
 	default:
@@ -131,7 +122,7 @@ func rateLimitFromResponse(resp *http.Response, now time.Time) (*RateLimitError,
 		StatusCode: resp.StatusCode,
 		Reset:      parseRateLimitReset(resp.Header.Get(headerRateLimitReset)),
 	}
-	if primary {
+	if primary && !secondary {
 		rl.Kind = RateLimitPrimary
 	}
 
@@ -198,46 +189,46 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 	sb.WriteRune(')')
 
 	if resp.Body == nil || resp.ContentLength == 0 {
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: unknown error", sb.String(), err))
+		return wrapResponseErrorType(resp, "", fmt.Errorf("%s: %w: unknown error", sb.String(), err))
 	}
 
 	body, bodyErr := io.ReadAll(resp.Body)
 	if bodyErr != nil {
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: failed to read error response body: %w", sb.String(), err, bodyErr))
+		return wrapResponseErrorType(resp, "", fmt.Errorf("%s: %w: failed to read error response body: %w", sb.String(), err, bodyErr))
 	}
 	if len(body) == 0 {
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: unknown error", sb.String(), err))
+		return wrapResponseErrorType(resp, "", fmt.Errorf("%s: %w: unknown error", sb.String(), err))
 	}
 
 	var scalesetErr scalesetError
 	if errors.As(err, &scalesetErr) {
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), err, string(body)))
+		return wrapResponseErrorType(resp, string(body), fmt.Errorf("%s: %w: %s", sb.String(), err, string(body)))
 	}
 
 	contentType := resp.Header.Get("Content-Type")
 	if len(contentType) > 0 && strings.Contains(contentType, "text/plain") {
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), err, string(body)))
+		return wrapResponseErrorType(resp, string(body), fmt.Errorf("%s: %w: %s", sb.String(), err, string(body)))
 	}
 
 	var exception actionsExceptionError
 	if err := json.Unmarshal(body, &exception); err != nil {
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: failed to unmarshal error response body: %q", sb.String(), err, string(body)))
+		return wrapResponseErrorType(resp, "", fmt.Errorf("%s: %w: failed to unmarshal error response body: %q", sb.String(), err, string(body)))
 	}
 
 	switch {
 	case strings.Contains(exception.ExceptionName, "AgentExistsException"):
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), RunnerExistsError, exception.Message))
+		return wrapResponseErrorType(resp, exception.Message, fmt.Errorf("%s: %w: %s", sb.String(), RunnerExistsError, exception.Message))
 	case strings.Contains(exception.ExceptionName, "AgentNotFoundException"):
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), RunnerNotFoundError, exception.Message))
+		return wrapResponseErrorType(resp, exception.Message, fmt.Errorf("%s: %w: %s", sb.String(), RunnerNotFoundError, exception.Message))
 	case strings.Contains(exception.ExceptionName, "JobStillRunningException"):
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %s", sb.String(), JobStillRunningError, exception.Message))
+		return wrapResponseErrorType(resp, exception.Message, fmt.Errorf("%s: %w: %s", sb.String(), JobStillRunningError, exception.Message))
 	default:
-		return wrapResponseErrorType(resp, fmt.Errorf("%s: %w: %w", sb.String(), err, exception))
+		return wrapResponseErrorType(resp, exception.Message, fmt.Errorf("%s: %w: %w", sb.String(), err, exception))
 	}
 }
 
-func wrapResponseErrorType(resp *http.Response, err error) error {
-	if rl, ok := rateLimitFromResponse(resp, time.Now()); ok {
+func wrapResponseErrorType(resp *http.Response, message string, err error) error {
+	if rl, ok := rateLimitFromResponse(resp, message, time.Now()); ok {
 		rl.err = err
 		return rl
 	}
