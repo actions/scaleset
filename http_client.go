@@ -294,7 +294,7 @@ func isCertificateError(err error) bool {
 // waitMin stays the minimum.
 func DefaultBackoff(waitMin, waitMax time.Duration, attempt int, resp *http.Response) time.Duration {
 	if resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
-		if wait, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+		if wait, ok := parseRetryAfter(resp.Header.Get(headerRetryAfter), time.Now()); ok {
 			return wait
 		}
 	}
@@ -312,9 +312,13 @@ func DefaultBackoff(waitMin, waitMax time.Duration, attempt int, resp *http.Resp
 	return min(wait, waitMax)
 }
 
-// parseRetryAfter reads a Retry-After header, which holds either a number of
-// seconds or an HTTP date.
-func parseRetryAfter(value string) (time.Duration, bool) {
+// parseRetryAfter reads a Retry-After header in either form RFC 9110 allows:
+// a number of seconds, or an HTTP date measured from now.
+//
+// It reports false for a value it cannot use: an empty or malformed value, a
+// negative number, a value that overflows time.Duration, or a date that has
+// already passed.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 	if value == "" {
 		return 0, false
 	}
@@ -331,8 +335,16 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 		return 0, false
 	}
 
-	wait := time.Until(when)
-	if wait < 0 {
+	return durationUntil(when, now)
+}
+
+// durationUntil returns how long from now until when. It reports false when
+// when has passed, or when the gap does not fit in a time.Duration: Time.Sub
+// saturates instead of failing, which would turn a far-future date into a
+// delay of about 292 years.
+func durationUntil(when, now time.Time) (time.Duration, bool) {
+	wait := when.Sub(now)
+	if wait < 0 || !now.Add(wait).Equal(when) {
 		return 0, false
 	}
 
