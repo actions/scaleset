@@ -163,6 +163,11 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 				"attempt", attempt+1,
 				"wait", wait,
 			)
+			if ctxErr := req.Context().Err(); ctxErr != nil {
+				drainAndClose(resp)
+				cancelAttempt()
+				return nil, ctxErr
+			}
 			return cancelOnClose(resp, cancelAttempt), doErr
 		}
 

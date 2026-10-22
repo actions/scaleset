@@ -812,6 +812,51 @@ func TestRetryCancelDuringWait(t *testing.T) {
 	assert.Equal(t, int64(1), calls.Load())
 }
 
+func TestRetryCancelDuringBackoff(t *testing.T) {
+	for _, poll := range []bool{false, true} {
+		t.Run(fmt.Sprintf("poll=%t", poll), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var calls int
+			var attemptCtx context.Context
+			body := trackedResponseBody{Reader: strings.NewReader(`{"message":"rate limited"}`)}
+			stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				attemptCtx = req.Context()
+				resp := newStubResponse(req, http.StatusTooManyRequests, "")
+				resp.Body = &body
+				return resp, nil
+			})
+			opts := defaultHTTPClientOption()
+			WithHTTPClient(stub)(&opts)
+			WithRetry(RetryConfig{
+				Max:        2,
+				MaxElapsed: time.Minute,
+				Backoff: func(time.Duration, time.Duration, int, *http.Response) time.Duration {
+					cancel()
+					return time.Hour
+				},
+			})(&opts)
+			client := newCommonClient(testSystemInfo, opts)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://actions.example/", nil)
+			require.NoError(t, err)
+
+			var retryOpts []retryOption
+			if poll {
+				retryOpts = append(retryOpts, withAttemptTimeout(MessagePollTimeout))
+			}
+			resp, err := client.do(req, retryOpts...)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.NotErrorIs(t, err, MaxElapsedExceededError)
+			assert.Nil(t, resp)
+			assert.Equal(t, 1, calls)
+			assert.Equal(t, 1, body.closes)
+			assert.ErrorIs(t, attemptCtx.Err(), context.Canceled)
+		})
+	}
+}
+
 func TestRetryWithoutDeadlineOrBudgetUsesAllRetries(t *testing.T) {
 	var calls atomic.Int64
 	stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
