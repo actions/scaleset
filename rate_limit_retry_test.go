@@ -2,6 +2,7 @@ package scaleset
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -691,17 +692,21 @@ func TestOnRateLimitWithResponseReadError(t *testing.T) {
 
 func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		contentType string
-		body        string
-		retryAfter  string
-		wantErr     error
+		name            string
+		statusCode      int
+		contentType     string
+		body            string
+		retryAfter      string
+		wantErr         error
+		wantSyntaxError bool
 	}{
-		{name: "JSON", contentType: "application/json", body: `{"message":"You have exceeded a secondary rate limit."}`},
-		{name: "plain text", contentType: "text/plain", body: "You have exceeded a secondary rate limit."},
-		{name: "JSON with byte order mark", contentType: "application/json", body: "\xef\xbb\xbf" + `{"message":"You have exceeded a secondary rate limit."}`},
-		{name: "malformed JSON with rate-limit header", contentType: "application/json", body: `{"message":"You have exceeded a secondary rate limit."`, retryAfter: "0"},
-		{name: "mapped exception", contentType: "application/json", body: `{"typeName":"AgentExistsException","message":"You have exceeded a secondary rate limit."}`, wantErr: RunnerExistsError},
+		{name: "JSON", statusCode: http.StatusForbidden, contentType: "application/json", body: `{"message":"You have exceeded a secondary rate limit."}`},
+		{name: "plain text", statusCode: http.StatusForbidden, contentType: "text/plain", body: "You have exceeded a secondary rate limit."},
+		{name: "JSON with byte order mark", statusCode: http.StatusForbidden, contentType: "application/json", body: "\xef\xbb\xbf" + `{"message":"You have exceeded a secondary rate limit."}`},
+		{name: "malformed JSON with rate-limit header", statusCode: http.StatusForbidden, contentType: "application/json", body: `{"message":"You have exceeded a secondary rate limit."`, retryAfter: "0", wantSyntaxError: true},
+		{name: "mapped exception", statusCode: http.StatusForbidden, contentType: "application/json", body: `{"typeName":"AgentExistsException","message":"You have exceeded a secondary rate limit."}`, wantErr: RunnerExistsError},
+		{name: "429 with malformed JSON", statusCode: http.StatusTooManyRequests, contentType: "application/json", body: `{"message":"You have exceeded a secondary rate limit."`, wantSyntaxError: true},
+		{name: "429 with HTML", statusCode: http.StatusTooManyRequests, contentType: "text/html", body: "<html>You have exceeded a secondary rate limit.</html>", wantSyntaxError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -712,7 +717,7 @@ func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 				body := &trackedResponseBody{Reader: strings.NewReader(tc.body), closeErr: closeErr}
 				bodies = append(bodies, body)
 				attemptCtxs = append(attemptCtxs, req.Context())
-				resp := newStubResponse(req, http.StatusForbidden, "")
+				resp := newStubResponse(req, tc.statusCode, "")
 				resp.Body = body
 				resp.ContentLength = int64(len(tc.body))
 				resp.Header.Set("Content-Type", tc.contentType)
@@ -740,9 +745,13 @@ func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 			if tc.wantErr != nil {
 				assert.ErrorIs(t, err, tc.wantErr)
 			}
+			if tc.wantSyntaxError {
+				var syntaxErr *json.SyntaxError
+				assert.ErrorAs(t, err, &syntaxErr)
+			}
 			rl := requireRateLimitError(t, err)
 			assert.Equal(t, RateLimitSecondary, rl.Kind)
-			assert.Equal(t, http.StatusForbidden, rl.StatusCode)
+			assert.Equal(t, tc.statusCode, rl.StatusCode)
 			assert.Equal(t, 1, rl.Retries)
 			assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
 			assert.Equal(t, []int{0, 1}, seen)
