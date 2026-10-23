@@ -228,8 +228,9 @@ type RetryConfig struct {
 	// If the body cannot be read, status and headers can still identify a
 	// rate limit; the final error preserves the read failure.
 	//
-	// When the hook declines, the request returns at once, without waiting,
-	// and the caller's error is a *RateLimitError with the same Retries.
+	// When the hook declines and the context is still active, the request
+	// returns without waiting, with a *RateLimitError with the same Retries.
+	// Cancellation or a deadline reached during the hook takes precedence.
 	//
 	// Nil applies DefaultOnRateLimit, which keeps the SDK's default behavior.
 	// RateLimitRetries builds a hook from per-kind limits. It may be called
@@ -421,7 +422,11 @@ type RateLimitRule struct {
 //	// Later, in the reconciler:
 //	var rl *scaleset.RateLimitError
 //	if errors.As(err, &rl) {
-//		return ctrl.Result{RequeueAfter: rl.RetryAfter}, nil
+//		wait := rl.RetryAfter
+//		if wait <= 0 {
+//			wait = time.Minute
+//		}
+//		return ctrl.Result{RequeueAfter: wait}, nil
 //	}
 //
 // Max, MaxElapsed, and the context deadline still apply on top of the rules.

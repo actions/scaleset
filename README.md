@@ -284,6 +284,10 @@ transport and other HTTP retries do not increase it. A server hint longer than
 `MaxWait` is rejected, not shortened. `Max`, `MaxElapsed`, and the context
 deadline still bound retries. Hooks may run concurrently.
 
+When requeuing rate-limited work, preserve a positive `RetryAfter` hint and
+use a positive fallback (for example, one minute) when it is zero.
+In controller-runtime, `RequeueAfter: 0` with a nil error schedules no retry.
+
 ### Migrating from the transport options
 
 If you never passed an HTTP option, you change no code. The constructors are the same, and the defaults are the same.

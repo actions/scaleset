@@ -98,6 +98,9 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 
 	resp, err := c.send(client, sendReq, cfg, start)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			defer resp.Body.Close()
+		}
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", budget(err)))
 	}
 
@@ -157,6 +160,11 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 
 			var retry bool
 			wait, retry = onRateLimit(req.Context(), rl)
+			if ctxErr := req.Context().Err(); ctxErr != nil {
+				drainAndClose(resp)
+				cancelAttempt()
+				return nil, ctxErr
+			}
 			if !retry {
 				c.logger.Debug("not retrying: rate limit hook declined",
 					"method", req.Method,
@@ -251,20 +259,18 @@ func readForRetry(resp *http.Response) ([]byte, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	closeErr := resp.Body.Close()
-	switch {
-	case err != nil:
-		err = fmt.Errorf("failed to read the response body: %w", err)
-	case closeErr != nil:
-		err = fmt.Errorf("failed to close the response body: %w", closeErr)
-	}
 	if err != nil {
 		// The status and headers, such as Retry-After, still inform the
 		// retry policy and the final error. The body is gone.
 		resp.Body = http.NoBody
-		return nil, err
+		return nil, fmt.Errorf("failed to read the response body: %w", err)
 	}
 
+	body = trimByteOrderMark(body)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if closeErr != nil {
+		return body, fmt.Errorf("failed to close the response body: %w", closeErr)
+	}
 
 	return body, nil
 }
