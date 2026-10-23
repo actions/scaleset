@@ -220,9 +220,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 		if limited {
 			// Rate-limited responses are decided by OnRateLimit alone.
 			if ctxErr := req.Context().Err(); ctxErr != nil {
-				drainAndClose(resp)
-				cancelAttempt()
-				return nil, ctxErr
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), errors.Join(resultErr, ctxErr)
 			}
 			if attempt >= cfg.Max || !replayable(req) {
 				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
