@@ -294,7 +294,9 @@ transport and other HTTP retries do not increase it. A server hint longer than
 deadline still bound retries. Hooks may run concurrently.
 
 When requeuing rate-limited work, preserve a positive `RetryAfter` hint and
-use a positive fallback (for example, one minute) when it is zero.
+choose a positive fallback (for example, one minute) when it is zero. The SDK
+leaves the field at zero when no usable hint exists; it does not supply that
+fallback.
 In controller-runtime, `RequeueAfter: 0` with a nil error schedules no retry.
 
 To change the policy for one call only, wrap its context with `WithRequestRetry`. The function gets a copy of the client's `RetryConfig`, so other calls, including concurrent ones on the same `Client`, keep the client's policy. A controller can give up on a rate limit quickly and requeue the work instead of blocking:
@@ -361,7 +363,8 @@ inspection but are not used to classify rate-limit messages; status and headers
 still apply. Treat the body and `Response.Request`
 as sensitive: they can contain tokens or JIT configuration. Raw bodies, URL
 credentials, and query strings are not added to the error message; structured
-GitHub error messages and request IDs are still included.
+GitHub error messages and request IDs are still included. SDK URL log fields and
+rate-limit hook errors omit URL credentials, query strings, and fragments too.
 Underlying errors and server-provided messages may themselves contain sensitive
 details, so review them before logging.
 
@@ -374,7 +377,8 @@ decoding errors can also be inspected with `errors.As`. Expected bodyless 204
 deletes, 202 no-message polls, and documented not-found results remain successful.
 `GetRunnerScaleSetByID` and `GetRunner` keep returning `(nil, nil)` for JSON `null`.
 Required JSON responses must contain a single JSON value, without trailing
-garbage. Creating or refreshing a session rejects a `null` response without
+garbage. `ListRunnerScaleSets` rejects a `null` response object; valid empty
+lists remain successful. Creating or refreshing a session rejects `null` without
 replacing the current session. Invalid token responses are rejected before using
 their credentials.
 

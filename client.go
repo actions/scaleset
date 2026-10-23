@@ -486,9 +486,12 @@ func (c *Client) ListRunnerScaleSets(ctx context.Context, runnerGroupID int) ([]
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var list runnerScaleSetsResponse
+	var list *runnerScaleSetsResponse
 	if err := decodeJSONBody(resp.Body, &list); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set list: %w", err))
+	}
+	if list == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("runner scale set list is null"))
 	}
 
 	return list.RunnerScaleSets, nil
@@ -929,7 +932,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	req.Header.Set("Content-Type", "application/vnd.github.v3+json")
 	req.Header.Set("Authorization", bearerToken)
 
-	c.logger.Info("getting runner registration token", "registrationTokenURL", req.URL.String())
+	c.logger.Info("getting runner registration token", "registrationTokenURL", redactedURL(req.URL))
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -973,7 +976,7 @@ func (c *Client) fetchAccessToken(ctx context.Context) (*accessToken, error) {
 	req.Header.Set("Content-Type", "application/vnd.github+json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessTokenJWT))
 
-	c.logger.Info("getting access token for GitHub App auth", "accessTokenURL", req.URL.String())
+	c.logger.Info("getting access token for GitHub App auth", "accessTokenURL", redactedURL(req.URL))
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -1029,7 +1032,7 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("RemoteAuth %s", *rt.Token))
 
-	c.logger.Info("getting Actions tenant URL and JWT", "registrationURL", req.URL.String())
+	c.logger.Info("getting Actions tenant URL and JWT", "registrationURL", redactedURL(req.URL))
 
 	adminConnection, err := c.getActionsServiceAdminConnectionRequest(req)
 	if err != nil {
@@ -1128,12 +1131,8 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) (actionsServiceAdminTo
 		return token, nil
 	}
 
-	configURL := ""
-	if c.config.configURL != nil {
-		configURL = c.config.configURL.String()
-	}
 	if c.logger != nil {
-		c.logger.Info("refreshing token", "githubConfigUrl", configURL)
+		c.logger.Info("refreshing token", "githubConfigUrl", redactedURL(c.config.configURL))
 	}
 	rt, err := c.getRunnerRegistrationToken(ctx)
 	if err != nil {

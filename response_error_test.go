@@ -1,11 +1,13 @@
 package scaleset
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -206,6 +208,103 @@ func TestResponseErrorMetadataAndClassification(t *testing.T) {
 			assert.NotContains(t, err.Error(), "secret")
 			assert.NotContains(t, err.Error(), "private")
 			assert.NotContains(t, err.Error(), "fragment")
+		})
+	}
+}
+
+func TestResponseErrorURLRedaction(t *testing.T) {
+	const rawURL = "https://sensitive-user:sensitive-password@actions.example/queue?token=sensitive-query#sensitive-fragment"
+	const safeURL = "https://actions.example/queue"
+	for _, tc := range []struct {
+		name       string
+		status     int
+		retry      bool
+		wait       time.Duration
+		maxElapsed time.Duration
+		calls      int
+		log        string
+	}{
+		{
+			name: "rate limit declined", status: http.StatusTooManyRequests,
+			calls: 1, log: "rate limit hook declined",
+		},
+		{
+			name: "wait exceeds budget", status: http.StatusTooManyRequests,
+			retry: true, wait: time.Hour, maxElapsed: time.Minute,
+			calls: 1, log: "wait reaches or exceeds MaxElapsed budget",
+		},
+		{
+			name: "ordinary retry", status: http.StatusServiceUnavailable,
+			calls: 2, log: "retrying request",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls, hooks int
+			client := newStubCommonClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				assert.Equal(t, rawURL, req.URL.String())
+				return newStubResponse(req, tc.status, `{"message":"unavailable"}`), nil
+			}), RetryConfig{
+				Max: 1, MaxElapsed: tc.maxElapsed,
+				Backoff: func(time.Duration, time.Duration, int, *http.Response) time.Duration {
+					return time.Nanosecond
+				},
+				OnRateLimit: func(_ context.Context, rl *RateLimitError) (time.Duration, bool) {
+					hooks++
+					assert.Contains(t, rl.Error(), safeURL)
+					assert.NotContains(t, rl.Error(), "sensitive-")
+					return tc.wait, tc.retry
+				},
+			})
+			var logs bytes.Buffer
+			client.logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
+			require.NoError(t, err)
+
+			resp, err := client.do(req)
+			require.NoError(t, err)
+			responseErr := newRequestResponseError(req, resp, errors.New("unexpected status"))
+			snapshot := assertResponseError(t, responseErr, tc.status, `{"message":"unavailable"}`)
+			assert.Equal(t, rawURL, snapshot.Request.URL.String())
+			assert.Equal(t, rawURL, req.URL.String())
+			assert.Equal(t, tc.calls, calls)
+			if tc.status == http.StatusTooManyRequests {
+				assert.Equal(t, 1, hooks)
+			} else {
+				assert.Zero(t, hooks)
+			}
+			assert.Contains(t, logs.String(), tc.log)
+			assert.Contains(t, logs.String(), `"url":"`+safeURL+`"`)
+			assert.NotContains(t, logs.String(), "sensitive-")
+			assert.Contains(t, responseErr.Error(), safeURL)
+			assert.NotContains(t, responseErr.Error(), "sensitive-")
+		})
+	}
+}
+
+func TestResponseErrorListRunnerScaleSets(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		err  bool
+	}{
+		{name: "null object", body: "null", err: true},
+		{name: "empty object", body: "{}"},
+		{name: "empty list", body: `{"count":0,"value":[]}`},
+		{name: "null list", body: `{"count":0,"value":null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				return newStubResponse(req, http.StatusOK, tc.body), nil
+			}))
+			got, err := client.ListRunnerScaleSets(t.Context(), 1)
+			if tc.err {
+				assertResponseError(t, err, http.StatusOK, tc.body)
+				assert.Nil(t, got)
+			} else {
+				require.NoError(t, err)
+				assert.Empty(t, got)
+			}
 		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -113,8 +114,9 @@ type RateLimitError struct {
 	StatusCode int
 
 	// RetryAfter comes from Retry-After, then X-RateLimit-Reset if quota is spent.
-	// Zero means no usable delay or an explicit zero. For secondary limits,
-	// fall back to at least one minute with bounded exponential retries.
+	// Zero means no usable delay or an explicit zero; the SDK does not set a
+	// fallback here. Callers scheduling retries must choose a positive fallback,
+	// for example at least one minute for secondary limits.
 	RetryAfter time.Duration
 
 	// Reset is when the rate limit window resets, from X-RateLimit-Reset.
@@ -209,6 +211,17 @@ func (e actionsExceptionError) Error() string {
 	return fmt.Sprintf("%s: %s", e.ExceptionName, e.Message)
 }
 
+func redactedURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	copy := *u
+	copy.User = nil
+	copy.RawQuery, copy.Fragment, copy.RawFragment = "", "", ""
+	copy.ForceQuery = false
+	return copy.String()
+}
+
 // newRequestResponseError retains the response and cause, adding known API error
 // classifications without dumping raw response bodies or request credentials.
 func newRequestResponseError(req *http.Request, resp *http.Response, err error) error {
@@ -237,11 +250,7 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 	if req != nil {
 		fmt.Fprintf(&sb, " %s", req.Method)
 		if req.URL != nil {
-			u := *req.URL
-			u.User = nil
-			u.RawQuery, u.Fragment, u.RawFragment = "", "", ""
-			u.ForceQuery = false
-			fmt.Fprintf(&sb, " %s", u.String())
+			fmt.Fprintf(&sb, " %s", redactedURL(req.URL))
 		}
 	}
 	sb.WriteString(" failed")
