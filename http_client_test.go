@@ -1066,7 +1066,7 @@ func TestRetryMaxElapsedClosesStalledBody(t *testing.T) {
 				stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
 					calls++
 					attemptCtx = req.Context()
-					body.Reader = stalledReader{ctx: attemptCtx}
+					body.Reader = io.MultiReader(strings.NewReader("partial response"), stalledReader{ctx: attemptCtx})
 					resp := newStubResponse(req, http.StatusOK, "")
 					resp.Body = &body
 					return resp, nil
@@ -1086,6 +1086,7 @@ func TestRetryMaxElapsedClosesStalledBody(t *testing.T) {
 				_, err = client.do(req, retryOpts...)
 				require.ErrorIs(t, err, MaxElapsedExceededError)
 				assert.ErrorIs(t, err, context.DeadlineExceeded)
+				assertResponseError(t, err, http.StatusOK, "partial response")
 				assert.Equal(t, time.Second, time.Since(start))
 				assert.Equal(t, 1, calls)
 				assert.Equal(t, 1, body.closes)

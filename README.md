@@ -294,7 +294,9 @@ transport and other HTTP retries do not increase it. A server hint longer than
 deadline still bound retries. Hooks may run concurrently.
 
 When requeuing rate-limited work, preserve a positive `RetryAfter` hint and
-use a positive fallback (for example, one minute) when it is zero.
+choose a positive fallback (for example, one minute) when it is zero. The SDK
+leaves the field at zero when no usable hint exists; it does not supply that
+fallback.
 In controller-runtime, `RequeueAfter: 0` with a nil error schedules no retry.
 
 To change the policy for one call only, wrap its context with `WithRequestRetry`. The function gets a copy of the client's `RetryConfig`, so other calls, including concurrent ones on the same `Client`, keep the client's policy. A controller can give up on a rate limit quickly and requeue the work instead of blocking:
@@ -319,6 +321,66 @@ if errors.As(err, &rl) {
 ```
 
 `WithRequestRetry` works with every `Client` and `MessageSessionClient` method, and nested calls apply outer first. A `MaxElapsed` set this way applies to each HTTP request the call makes; the context deadline bounds the whole call. The SDK's own per-request adjustments run after yours, so replacing `ShouldRetry` does not stop the admin token exchange from retrying 401 and 403 within your `Max`. A rate-limited 403 is the exception: an `OnRateLimit` you set still decides it. `GetMessage` bounds each poll attempt by `MessagePollTimeout`; retries get a new window, so only the context deadline bounds the whole call.
+
+### Inspecting HTTP failures
+
+Request failures, unexpected HTTP statuses, and missing or malformed required
+response bodies return a `*scaleset.RequestResponseError`, including failures
+with a successful HTTP status. Use `errors.As` through any outer error wrapping:
+
+```go
+_, err := client.GetRunner(ctx, runnerID)
+if err != nil {
+    var responseErr *scaleset.RequestResponseError
+    if errors.As(err, &responseErr) && responseErr.Response != nil {
+        resp := responseErr.Response
+        log.Printf("GitHub response: status=%d request_id=%q activity_id=%q",
+            resp.StatusCode,
+            resp.Header.Get("X-GitHub-Request-Id"),
+            resp.Header.Get("ActivityId"),
+        )
+    }
+    return err
+}
+```
+
+`Response` is a snapshot of the final response, not an earlier retried response
+or an earlier 401 that triggered a session refresh. It is nil when no response
+was received, such as a transport-only failure or a custom `HTTPClient` returning
+neither a response nor an error. A 401 can indicate an authentication problem;
+a 5xx can indicate a server problem; a 2xx with a decoding error indicates an
+unusable response despite the successful status.
+
+Cancellation between retry attempts can also leave `Response` nil, because
+responses discarded for retry are not retained.
+
+`Response.Body` is an independent in-memory reader of the bytes returned by the
+HTTP client, even after decoding has consumed them, with any byte order mark
+preserved. On a read failure it contains only the bytes received. The original
+body is already closed, and closing the snapshot is a no-op. Headers, trailers,
+and other response metadata are retained. Incomplete bodies are kept for
+inspection but are not used to classify rate-limit messages; status and headers
+still apply. Treat the body and `Response.Request`
+as sensitive: they can contain tokens or JIT configuration. Raw bodies, URL
+credentials, and query strings are not added to the error message; structured
+GitHub error messages and request IDs are still included. SDK URL log fields and
+rate-limit hook errors omit URL credentials, query strings, and fragments too.
+Underlying errors and server-provided messages may themselves contain sensitive
+details, so review them before logging.
+
+`Unwrap()` returns `Err`, which preserves the original cause and any recognized
+status/domain errors. Existing `errors.Is` checks such as `UnauthorizedError`,
+`RunnerExistsError`, `io.EOF`, and `context.DeadlineExceeded` continue to work.
+Rate-limited failures support both `errors.As` to `*RateLimitError` and to
+`*RequestResponseError`, so retry hints and response metadata remain available;
+decoding errors can also be inspected with `errors.As`. Expected bodyless 204
+deletes, 202 no-message polls, and documented not-found results remain successful.
+`GetRunnerScaleSetByID` and `GetRunner` keep returning `(nil, nil)` for JSON `null`.
+Required JSON responses must contain a single JSON value, without trailing
+garbage. `ListRunnerScaleSets` rejects a `null` response object; valid empty
+lists remain successful. Creating or refreshing a session rejects `null` without
+replacing the current session. Invalid token responses are rejected before using
+their credentials.
 
 ### Migrating from the transport options
 

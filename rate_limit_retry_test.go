@@ -644,12 +644,18 @@ func TestOnRateLimitResponseMessage(t *testing.T) {
 
 			resp, err := client.do(req)
 			require.NoError(t, err)
-			rl := requireRateLimitError(t, newRequestResponseError(req, resp, errors.New("unexpected status")))
+			responseErr := newRequestResponseError(req, resp, errors.New("unexpected status"))
+			rl := requireRateLimitError(t, responseErr)
+			assertResponseError(t, responseErr, tc.status, tc.body)
 			assert.Equal(t, int64(2), calls.Load())
 			assert.Equal(t, []int{0, 1}, seen)
 			assert.Equal(t, RateLimitSecondary, rl.Kind)
 			assert.Equal(t, 1, rl.Retries)
-			assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			if tc.contentType == "text/plain" {
+				assert.NotContains(t, rl.Error(), tc.body)
+			} else {
+				assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			}
 		})
 	}
 }
@@ -853,7 +859,12 @@ func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 			assert.Equal(t, RateLimitSecondary, rl.Kind)
 			assert.Equal(t, tc.statusCode, rl.StatusCode)
 			assert.Equal(t, 1, rl.Retries)
-			assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			assertResponseError(t, err, tc.statusCode, tc.body)
+			if tc.contentType == "text/plain" || tc.wantSyntaxError {
+				assert.NotContains(t, rl.Error(), tc.body)
+			} else {
+				assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			}
 			assert.Equal(t, []int{0, 1}, seen)
 			require.Len(t, bodies, 2)
 			for i, body := range bodies {

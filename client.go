@@ -449,12 +449,15 @@ func (c *Client) GetRunnerScaleSet(ctx context.Context, runnerGroupID int, runne
 	}
 
 	var runnerScaleSetList runnerScaleSetsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&runnerScaleSetList); err != nil {
+	if err := decodeJSONBody(resp.Body, &runnerScaleSetList); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set list: %w", err))
 	}
 
 	switch runnerScaleSetList.Count {
 	case 1:
+		if len(runnerScaleSetList.RunnerScaleSets) == 0 {
+			return nil, newRequestResponseError(req, resp, errors.New("runner scale set list missing value"))
+		}
 		return &runnerScaleSetList.RunnerScaleSets[0], nil
 	case 0:
 		return nil, nil
@@ -483,9 +486,12 @@ func (c *Client) ListRunnerScaleSets(ctx context.Context, runnerGroupID int) ([]
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var list runnerScaleSetsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	var list *runnerScaleSetsResponse
+	if err := decodeJSONBody(resp.Body, &list); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set list: %w", err))
+	}
+	if list == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("runner scale set list is null"))
 	}
 
 	return list.RunnerScaleSets, nil
@@ -510,7 +516,7 @@ func (c *Client) GetRunnerScaleSetByID(ctx context.Context, runnerScaleSetID int
 	}
 
 	var runnerScaleSet *RunnerScaleSet
-	if err := json.NewDecoder(resp.Body).Decode(&runnerScaleSet); err != nil {
+	if err := decodeJSONBody(resp.Body, &runnerScaleSet); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner scale set: %w", err))
 	}
 	return runnerScaleSet, nil
@@ -534,12 +540,15 @@ func (c *Client) GetRunnerGroupByName(ctx context.Context, runnerGroup string) (
 	}
 
 	var runnerGroupList RunnerGroupList
-	if err := json.NewDecoder(resp.Body).Decode(&runnerGroupList); err != nil {
+	if err := decodeJSONBody(resp.Body, &runnerGroupList); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner group list: %w", err))
 	}
 
 	switch runnerGroupList.Count {
 	case 1:
+		if len(runnerGroupList.RunnerGroups) == 0 {
+			return nil, newRequestResponseError(req, resp, errors.New("runner group list missing value"))
+		}
 		return &runnerGroupList.RunnerGroups[0], nil
 	case 0:
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("no runner group found with name %q", runnerGroup))
@@ -598,12 +607,15 @@ func (c *Client) CreateRunnerScaleSet(ctx context.Context, runnerScaleSet *Runne
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var createdRunnerScaleSet RunnerScaleSet
-	if err := json.NewDecoder(resp.Body).Decode(&createdRunnerScaleSet); err != nil {
+	var createdRunnerScaleSet *RunnerScaleSet
+	if err := decodeJSONBody(resp.Body, &createdRunnerScaleSet); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode created runner scale set: %w", err))
 	}
+	if createdRunnerScaleSet == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("created runner scale set is null"))
+	}
 
-	return &createdRunnerScaleSet, nil
+	return createdRunnerScaleSet, nil
 }
 
 // UpdateRunnerScaleSet updates an existing runner scale set.
@@ -631,11 +643,14 @@ func (c *Client) UpdateRunnerScaleSet(ctx context.Context, runnerScaleSetID int,
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
-	var updatedRunnerScaleSet RunnerScaleSet
-	if err := json.NewDecoder(resp.Body).Decode(&updatedRunnerScaleSet); err != nil {
+	var updatedRunnerScaleSet *RunnerScaleSet
+	if err := decodeJSONBody(resp.Body, &updatedRunnerScaleSet); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode updated runner scale set: %w", err))
 	}
-	return &updatedRunnerScaleSet, nil
+	if updatedRunnerScaleSet == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("updated runner scale set is null"))
+	}
+	return updatedRunnerScaleSet, nil
 }
 
 // DeleteRunnerScaleSet deletes a runner scale set by its ID.
@@ -661,7 +676,7 @@ func (c *Client) DeleteRunnerScaleSet(ctx context.Context, runnerScaleSetID int)
 
 func parseRunnerScaleSetMessageResponse(respBody io.Reader) (*RunnerScaleSetMessage, error) {
 	var messageResponse runnerScaleSetMessageResponse
-	if err := json.NewDecoder(respBody).Decode(&messageResponse); err != nil {
+	if err := decodeJSONBody(respBody, &messageResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode runner scale set message response: %w", err)
 	}
 
@@ -786,8 +801,11 @@ func (c *Client) GenerateJitRunnerConfig(ctx context.Context, jitRunnerSetting *
 	}
 
 	var runnerJitConfig *RunnerScaleSetJitRunnerConfig
-	if err := json.NewDecoder(resp.Body).Decode(&runnerJitConfig); err != nil {
+	if err := decodeJSONBody(resp.Body, &runnerJitConfig); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner JIT config: %w", err))
+	}
+	if runnerJitConfig == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("runner JIT config is null"))
 	}
 
 	return runnerJitConfig, nil
@@ -813,7 +831,7 @@ func (c *Client) GetRunner(ctx context.Context, runnerID int) (*RunnerReference,
 	}
 
 	var runnerReference *RunnerReference
-	if err := json.NewDecoder(resp.Body).Decode(&runnerReference); err != nil {
+	if err := decodeJSONBody(resp.Body, &runnerReference); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner reference: %w", err))
 	}
 
@@ -839,17 +857,23 @@ func (c *Client) GetRunnerByName(ctx context.Context, runnerName string) (*Runne
 	}
 
 	var runnerList *RunnerReferenceList
-	if err := json.NewDecoder(resp.Body).Decode(&runnerList); err != nil {
+	if err := decodeJSONBody(resp.Body, &runnerList); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner reference list: %w", err))
+	}
+	if runnerList == nil {
+		return nil, newRequestResponseError(req, resp, errors.New("runner reference list is null"))
 	}
 
 	switch runnerList.Count {
 	case 1:
+		if len(runnerList.RunnerReferences) == 0 {
+			return nil, newRequestResponseError(req, resp, errors.New("runner reference list missing value"))
+		}
 		return &runnerList.RunnerReferences[0], nil
 	case 0:
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("multiple runners found with name %q", runnerName)
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("multiple runners found with name %q", runnerName))
 	}
 }
 
@@ -908,7 +932,7 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	req.Header.Set("Content-Type", "application/vnd.github.v3+json")
 	req.Header.Set("Authorization", bearerToken)
 
-	c.logger.Info("getting runner registration token", "registrationTokenURL", req.URL.String())
+	c.logger.Info("getting runner registration token", "registrationTokenURL", redactedURL(req.URL))
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -921,8 +945,11 @@ func (c *Client) getRunnerRegistrationToken(ctx context.Context) (*registrationT
 	}
 
 	var registrationToken *registrationToken
-	if err := json.NewDecoder(resp.Body).Decode(&registrationToken); err != nil {
+	if err := decodeJSONBody(resp.Body, &registrationToken); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode runner registration token: %w", err))
+	}
+	if registrationToken == nil || registrationToken.Token == nil || *registrationToken.Token == "" {
+		return nil, newRequestResponseError(req, resp, errors.New("runner registration token missing token"))
 	}
 
 	return registrationToken, nil
@@ -949,7 +976,7 @@ func (c *Client) fetchAccessToken(ctx context.Context) (*accessToken, error) {
 	req.Header.Set("Content-Type", "application/vnd.github+json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessTokenJWT))
 
-	c.logger.Info("getting access token for GitHub App auth", "accessTokenURL", req.URL.String())
+	c.logger.Info("getting access token for GitHub App auth", "accessTokenURL", redactedURL(req.URL))
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -963,8 +990,11 @@ func (c *Client) fetchAccessToken(ctx context.Context) (*accessToken, error) {
 
 	// Format: https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
 	var accessToken accessToken
-	if err := json.NewDecoder(resp.Body).Decode(&accessToken); err != nil {
+	if err := decodeJSONBody(resp.Body, &accessToken); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode access token for GitHub App auth: %w", err))
+	}
+	if accessToken.Token == "" {
+		return nil, newRequestResponseError(req, resp, errors.New("GitHub App access token missing token"))
 	}
 	return &accessToken, nil
 }
@@ -972,6 +1002,7 @@ func (c *Client) fetchAccessToken(ctx context.Context) (*accessToken, error) {
 type actionsServiceAdminConnection struct {
 	ActionsServiceURL *string `json:"url,omitempty"`
 	AdminToken        *string `json:"token,omitempty"`
+	expiresAt         time.Time
 }
 
 func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *registrationToken) (*actionsServiceAdminConnection, error) {
@@ -1001,7 +1032,7 @@ func (c *Client) getActionsServiceAdminConnection(ctx context.Context, rt *regis
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("RemoteAuth %s", *rt.Token))
 
-	c.logger.Info("getting Actions tenant URL and JWT", "registrationURL", req.URL.String())
+	c.logger.Info("getting Actions tenant URL and JWT", "registrationURL", redactedURL(req.URL))
 
 	adminConnection, err := c.getActionsServiceAdminConnectionRequest(req)
 	if err != nil {
@@ -1026,15 +1057,20 @@ func (c *Client) getActionsServiceAdminConnectionRequest(req *http.Request) (*ac
 	}
 
 	var actionsServiceAdminConnection actionsServiceAdminConnection
-	if err := json.NewDecoder(resp.Body).Decode(&actionsServiceAdminConnection); err != nil {
+	if err := decodeJSONBody(resp.Body, &actionsServiceAdminConnection); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode actions service admin connection: %w", err))
 	}
 	if actionsServiceAdminConnection.ActionsServiceURL == nil || *actionsServiceAdminConnection.ActionsServiceURL == "" {
-		return nil, fmt.Errorf("actions service admin connection missing url")
+		return nil, newRequestResponseError(req, resp, errors.New("actions service admin connection missing url"))
 	}
 	if actionsServiceAdminConnection.AdminToken == nil || *actionsServiceAdminConnection.AdminToken == "" {
-		return nil, fmt.Errorf("actions service admin connection missing token")
+		return nil, newRequestResponseError(req, resp, errors.New("actions service admin connection missing token"))
 	}
+	expiresAt, err := actionsServiceAdminTokenExpiresAt(*actionsServiceAdminConnection.AdminToken)
+	if err != nil {
+		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to get admin token expire at: %w", err))
+	}
+	actionsServiceAdminConnection.expiresAt = expiresAt
 
 	return &actionsServiceAdminConnection, nil
 }
@@ -1074,6 +1110,9 @@ func actionsServiceAdminTokenExpiresAt(jwtToken string) (time.Time, error) {
 	}
 
 	if claims, ok := token.Claims.(*JwtClaims); ok {
+		if claims.ExpiresAt == nil {
+			return time.Time{}, errors.New("admin token missing expiration")
+		}
 		return claims.ExpiresAt.Time, nil
 	}
 
@@ -1092,12 +1131,8 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) (actionsServiceAdminTo
 		return token, nil
 	}
 
-	configURL := ""
-	if c.config.configURL != nil {
-		configURL = c.config.configURL.String()
-	}
 	if c.logger != nil {
-		c.logger.Info("refreshing token", "githubConfigUrl", configURL)
+		c.logger.Info("refreshing token", "githubConfigUrl", redactedURL(c.config.configURL))
 	}
 	rt, err := c.getRunnerRegistrationToken(ctx)
 	if err != nil {
@@ -1112,14 +1147,10 @@ func (c *Client) updateTokenIfNeeded(ctx context.Context) (actionsServiceAdminTo
 		return actionsServiceAdminToken{}, fmt.Errorf("failed to get actions service admin connection on refresh: missing url or token")
 	}
 
-	expiresAt, err := actionsServiceAdminTokenExpiresAt(*adminConnInfo.AdminToken)
-	if err != nil {
-		return actionsServiceAdminToken{}, fmt.Errorf("failed to get admin token expire at on refresh: %w", err)
-	}
 	token := actionsServiceAdminToken{
 		token:               *adminConnInfo.AdminToken,
 		authorizationHeader: "Bearer " + *adminConnInfo.AdminToken,
-		expiresAt:           expiresAt,
+		expiresAt:           adminConnInfo.expiresAt,
 		url:                 *adminConnInfo.ActionsServiceURL,
 	}
 
