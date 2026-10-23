@@ -654,15 +654,109 @@ func TestOnRateLimitResponseMessage(t *testing.T) {
 	}
 }
 
+func TestRetryWithForbiddenResponseBodyError(t *testing.T) {
+	for _, policy := range []struct {
+		name      string
+		opts      []retryOption
+		poll      bool
+		wantCalls int
+	}{
+		{name: "ordinary request", wantCalls: 1},
+		{name: "message poll", opts: []retryOption{withAttemptTimeout(time.Hour)}, poll: true, wantCalls: 3},
+		{name: "admin request", opts: []retryOption{retryOnStatus(http.StatusUnauthorized, http.StatusForbidden)}, wantCalls: 3},
+	} {
+		for _, failure := range []struct {
+			name       string
+			readFails  bool
+			closeFails bool
+		}{
+			{name: "read", readFails: true},
+			{name: "close", closeFails: true},
+			{name: "read and close", readFails: true, closeFails: true},
+		} {
+			t.Run(policy.name+"/"+failure.name, func(t *testing.T) {
+				t.Parallel()
+				readErr := errors.New("failed to read response")
+				closeErr := errors.New("failed to close response")
+				var bodies []*trackedResponseBody
+				var attemptCtxs []context.Context
+				stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
+					body := &trackedResponseBody{Reader: strings.NewReader(`{"message":"forbidden"}`)}
+					if failure.readFails {
+						body.Reader = iotest.ErrReader(readErr)
+					}
+					if failure.closeFails {
+						body.closeErr = closeErr
+					}
+					bodies = append(bodies, body)
+					attemptCtxs = append(attemptCtxs, req.Context())
+					resp := newStubResponse(req, http.StatusForbidden, `{"message":"forbidden"}`)
+					resp.Body = body
+					return resp, nil
+				})
+				client := newStubCommonClient(stub, RetryConfig{
+					Max:     2,
+					WaitMin: time.Nanosecond,
+					WaitMax: time.Nanosecond,
+					ShouldRetry: func(ctx context.Context, resp *http.Response, err error) (bool, error) {
+						if !policy.poll {
+							assert.NoError(t, err, "buffering failures are not transport failures")
+						}
+						return DefaultShouldRetry(ctx, resp, err)
+					},
+					OnRateLimit: func(context.Context, *RateLimitError) (time.Duration, bool) {
+						t.Error("an ordinary 403 must not invoke the rate-limit hook")
+						return 0, false
+					},
+				})
+
+				err := doRateLimited(t, context.Background(), client, policy.opts...)
+				require.Error(t, err)
+				if failure.readFails {
+					assert.ErrorIs(t, err, readErr)
+				}
+				if failure.closeFails {
+					assert.ErrorIs(t, err, closeErr)
+				}
+				var rl *RateLimitError
+				assert.NotErrorAs(t, err, &rl)
+				require.Len(t, bodies, policy.wantCalls)
+				for i, body := range bodies {
+					assert.Equal(t, 1, body.closes)
+					if policy.poll {
+						assert.ErrorIs(t, attemptCtxs[i].Err(), context.Canceled)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestOnRateLimitWithResponseReadError(t *testing.T) {
-	for _, status := range []int{http.StatusTooManyRequests, http.StatusForbidden} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		closeFails bool
+	}{
+		{name: "429 read failure", status: http.StatusTooManyRequests},
+		{name: "403 read failure", status: http.StatusForbidden},
+		{name: "429 read and close failures", status: http.StatusTooManyRequests, closeFails: true},
+		{name: "403 read and close failures", status: http.StatusForbidden, closeFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			readErr := errors.New("connection reset while reading response")
+			closeErr := errors.New("failed to close response")
 			var calls atomic.Int64
+			var bodies []*trackedResponseBody
 			stub := httpClientFunc(func(req *http.Request) (*http.Response, error) {
-				resp, err := rateLimitedStub(&calls, status, http.Header{headerRetryAfter: {"60"}})(req)
-				resp.Body = io.NopCloser(iotest.ErrReader(readErr))
+				resp, err := rateLimitedStub(&calls, tc.status, http.Header{headerRetryAfter: {"60"}})(req)
+				body := &trackedResponseBody{Reader: iotest.ErrReader(readErr)}
+				if tc.closeFails {
+					body.closeErr = closeErr
+				}
+				bodies = append(bodies, body)
+				resp.Body = body
 				return resp, err
 			})
 			var seen []int
@@ -681,11 +775,17 @@ func TestOnRateLimitWithResponseReadError(t *testing.T) {
 
 			err := doRateLimited(t, context.Background(), client)
 			assert.ErrorIs(t, err, readErr)
+			if tc.closeFails {
+				assert.ErrorIs(t, err, closeErr)
+			}
 			rl := requireRateLimitError(t, err)
-			assert.Equal(t, status, rl.StatusCode)
+			assert.Equal(t, tc.status, rl.StatusCode)
 			assert.Equal(t, int64(2), calls.Load())
 			assert.Equal(t, []int{0, 1}, seen)
 			assert.Equal(t, 1, rl.Retries)
+			for _, body := range bodies {
+				assert.Equal(t, 1, body.closes)
+			}
 		})
 	}
 }

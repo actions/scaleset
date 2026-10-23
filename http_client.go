@@ -196,8 +196,10 @@ type RetryConfig struct {
 	// instead.
 	//
 	// resp and err are both non-nil when a message poll received a response
-	// but could not read its body; resp then carries the status and headers
-	// with an empty body.
+	// but could not read or close its body. After a failed read, resp carries
+	// the status and headers with an empty body. For other requests, body
+	// failures remain in the final error but do not become retryable
+	// transport failures.
 	//
 	// It may be called concurrently.
 	ShouldRetry func(ctx context.Context, resp *http.Response, err error) (bool, error)

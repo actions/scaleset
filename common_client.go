@@ -146,10 +146,12 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 		attemptReq, cancelAttempt := withAttemptDeadline(attemptReq, cfg.attemptTimeout)
 		resp, doErr := client.Do(attemptReq)
 		var body []byte
+		var bodyErr error
 		if doErr == nil && (cfg.attemptTimeout > 0 || resp != nil &&
 			(resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests)) {
-			body, doErr = readForRetry(resp)
+			body, bodyErr = readForRetry(resp)
 		}
+		resultErr := errors.Join(doErr, bodyErr)
 
 		var wait time.Duration
 		rl, limited := rateLimitFromAttempt(req, resp, body, rateLimitRetries)
@@ -161,7 +163,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 				return nil, ctxErr
 			}
 			if attempt >= cfg.Max || !replayable(req) {
-				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
 			}
 
 			var retry bool
@@ -180,7 +182,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 					"retry_after", rl.RetryAfter,
 					"rate_limit_retries", rateLimitRetries,
 				)
-				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
 			}
 			if wait <= 0 {
 				wait = backoff(waitMin, waitMax, attempt, resp)
@@ -188,14 +190,18 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 		} else {
 			// The policy sees the request's own context, so an attempt that ran
 			// out of its window is retried like any other transport error.
-			retry, policyErr := shouldRetry(req.Context(), resp, doErr)
+			retryErr := doErr
+			if cfg.attemptTimeout > 0 {
+				retryErr = resultErr
+			}
+			retry, policyErr := shouldRetry(req.Context(), resp, retryErr)
 			if policyErr != nil {
 				drainAndClose(resp)
 				cancelAttempt()
 				return nil, policyErr
 			}
 			if !retry || attempt >= cfg.Max || !replayable(req) {
-				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
 			}
 
 			wait = backoff(waitMin, waitMax, attempt, resp)
@@ -217,7 +223,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 				cancelAttempt()
 				return nil, ctxErr
 			}
-			return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), doErr
+			return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
 		}
 
 		c.logger.Debug("retrying request",
@@ -265,20 +271,19 @@ func readForRetry(resp *http.Response) ([]byte, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	closeErr := resp.Body.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("failed to close the response body: %w", closeErr)
+	}
 	if err != nil {
 		// The status and headers, such as Retry-After, still inform the
 		// retry policy and the final error. The body is gone.
 		resp.Body = http.NoBody
-		return nil, fmt.Errorf("failed to read the response body: %w", err)
+		return nil, errors.Join(fmt.Errorf("failed to read the response body: %w", err), closeErr)
 	}
 
 	body = trimByteOrderMark(body)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
-	if closeErr != nil {
-		return body, fmt.Errorf("failed to close the response body: %w", closeErr)
-	}
-
-	return body, nil
+	return body, closeErr
 }
 
 // cancelOnClose defers cancel until resp's body is closed, since the body is
