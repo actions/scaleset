@@ -1048,7 +1048,8 @@ func TestCreateRunnerScaleSet(t *testing.T) {
 		_, err = client.CreateRunnerScaleSet(ctx, &runnerScaleSet)
 		require.NotNil(t, err)
 		assert.Contains(t, err.Error(), "status=\"400 Bad Request\"")
-		assert.Contains(t, err.Error(), plainBody)
+		assert.NotContains(t, err.Error(), plainBody)
+		assertResponseError(t, err, http.StatusBadRequest, plainBody)
 	})
 
 	t.Run("Default retries on server error", func(t *testing.T) {
