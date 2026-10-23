@@ -694,10 +694,14 @@ func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 		name        string
 		contentType string
 		body        string
+		retryAfter  string
+		wantErr     error
 	}{
 		{name: "JSON", contentType: "application/json", body: `{"message":"You have exceeded a secondary rate limit."}`},
 		{name: "plain text", contentType: "text/plain", body: "You have exceeded a secondary rate limit."},
 		{name: "JSON with byte order mark", contentType: "application/json", body: "\xef\xbb\xbf" + `{"message":"You have exceeded a secondary rate limit."}`},
+		{name: "malformed JSON with rate-limit header", contentType: "application/json", body: `{"message":"You have exceeded a secondary rate limit."`, retryAfter: "0"},
+		{name: "mapped exception", contentType: "application/json", body: `{"typeName":"AgentExistsException","message":"You have exceeded a secondary rate limit."}`, wantErr: RunnerExistsError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -712,6 +716,9 @@ func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 				resp.Body = body
 				resp.ContentLength = int64(len(tc.body))
 				resp.Header.Set("Content-Type", tc.contentType)
+				if tc.retryAfter != "" {
+					resp.Header.Set(headerRetryAfter, tc.retryAfter)
+				}
 				return resp, nil
 			})
 			var seen []int
@@ -730,6 +737,9 @@ func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 
 			err := doRateLimited(t, context.Background(), client, withAttemptTimeout(time.Hour))
 			require.ErrorIs(t, err, closeErr)
+			if tc.wantErr != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+			}
 			rl := requireRateLimitError(t, err)
 			assert.Equal(t, RateLimitSecondary, rl.Kind)
 			assert.Equal(t, http.StatusForbidden, rl.StatusCode)

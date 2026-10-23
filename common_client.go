@@ -101,7 +101,13 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 		if resp != nil && resp.Body != nil {
 			defer resp.Body.Close()
 		}
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", budget(err)))
+		sendErr := fmt.Errorf("failed to send request: %w", budget(err))
+		responseErr := newRequestResponseError(req, resp, sendErr)
+		// Error-body parsing may replace the cause with a service or JSON error.
+		if !errors.Is(responseErr, sendErr) {
+			responseErr = fmt.Errorf("%w: %w", responseErr, sendErr)
+		}
+		return nil, responseErr
 	}
 
 	body, err := io.ReadAll(resp.Body)

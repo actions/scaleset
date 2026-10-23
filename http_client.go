@@ -226,7 +226,7 @@ type RetryConfig struct {
 	// response body. The body is buffered to classify secondary-limit
 	// messages and remains available to the caller.
 	// If the body cannot be read, status and headers can still identify a
-	// rate limit; the final error preserves the read failure.
+	// rate limit. Read and close failures remain in the final error chain.
 	//
 	// When the hook declines and the context is still active, the request
 	// returns without waiting, with a *RateLimitError with the same Retries.

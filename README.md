@@ -278,7 +278,8 @@ client, err := scaleset.NewClientWithPersonalAccessToken(config,
 ```
 
 The hook and final error use the same classification, including secondary-limit
-messages in JSON or plain-text 403/429 bodies. `RateLimitError.Retries` counts
+messages in JSON or plain-text 403/429 bodies. Read and close failures remain in
+the final error chain. `RateLimitError.Retries` counts
 the rate-limited retries already made for this request, across both kinds;
 transport and other HTTP retries do not increase it. A server hint longer than
 `MaxWait` is rejected, not shortened. `Max`, `MaxElapsed`, and the context
