@@ -57,7 +57,9 @@ func TestE2E(t *testing.T) {
 	cmdCh := make(chan error, 1)
 	t.Cleanup(func() {
 		_ = runCmd.Process.Signal(os.Interrupt)
-		<-cmdCh
+		if err := <-cmdCh; err != nil {
+			t.Logf("dockerscaleset exited after interrupt: %v", err)
+		}
 	})
 
 	// Wait for log line
