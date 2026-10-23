@@ -1047,12 +1047,13 @@ func TestRetryMaxElapsedKeepsFirstCancellationCause(t *testing.T) {
 
 type trackedResponseBody struct {
 	io.Reader
-	closes int
+	closes   int
+	closeErr error
 }
 
 func (b *trackedResponseBody) Close() error {
 	b.closes++
-	return nil
+	return b.closeErr
 }
 
 func TestRetryMaxElapsedClosesStalledBody(t *testing.T) {

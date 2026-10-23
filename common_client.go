@@ -98,7 +98,16 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 
 	resp, err := c.send(client, sendReq, cfg, start)
 	if err != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to send request: %w", budget(err)))
+		if resp != nil && resp.Body != nil {
+			defer resp.Body.Close()
+		}
+		sendErr := fmt.Errorf("failed to send request: %w", budget(err))
+		responseErr := newRequestResponseError(req, resp, sendErr)
+		// Error-body parsing may replace the cause with a service or JSON error.
+		if !errors.Is(responseErr, sendErr) {
+			responseErr = fmt.Errorf("%w: %w", responseErr, sendErr)
+		}
+		return nil, responseErr
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -124,7 +133,9 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfig, start time.Time) (*http.Response, error) {
 	shouldRetry := cfg.shouldRetryFunc()
 	backoff := cfg.backoffFunc()
+	onRateLimit := cfg.onRateLimitFunc()
 	waitMin, waitMax := cfg.waits()
+	rateLimitRetries := 0
 
 	for attempt := 0; ; attempt++ {
 		attemptReq, err := requestForAttempt(req, attempt)
@@ -134,23 +145,67 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 
 		attemptReq, cancelAttempt := withAttemptDeadline(attemptReq, cfg.attemptTimeout)
 		resp, doErr := client.Do(attemptReq)
-		if doErr == nil && cfg.attemptTimeout > 0 {
-			resp, doErr = readWithinAttempt(resp)
+		var body []byte
+		var bodyErr error
+		if doErr == nil && (cfg.attemptTimeout > 0 || resp != nil &&
+			(resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests)) {
+			body, bodyErr = readForRetry(resp)
 		}
+		resultErr := errors.Join(doErr, bodyErr)
 
-		// The policy sees the request's own context, so an attempt that ran
-		// out of its window is retried like any other transport error.
-		retry, policyErr := shouldRetry(req.Context(), resp, doErr)
-		if policyErr != nil {
-			drainAndClose(resp)
-			cancelAttempt()
-			return nil, policyErr
-		}
-		if !retry || attempt >= cfg.Max || !replayable(req) {
-			return cancelOnClose(resp, cancelAttempt), doErr
-		}
+		var wait time.Duration
+		rl, limited := rateLimitFromAttempt(req, resp, body, rateLimitRetries)
+		if limited {
+			// Rate-limited responses are decided by OnRateLimit alone.
+			if ctxErr := req.Context().Err(); ctxErr != nil {
+				drainAndClose(resp)
+				cancelAttempt()
+				return nil, ctxErr
+			}
+			if attempt >= cfg.Max || !replayable(req) {
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
+			}
 
-		wait := backoff(waitMin, waitMax, attempt, resp)
+			var retry bool
+			wait, retry = onRateLimit(req.Context(), rl)
+			if ctxErr := req.Context().Err(); ctxErr != nil {
+				drainAndClose(resp)
+				cancelAttempt()
+				return nil, ctxErr
+			}
+			if !retry {
+				c.logger.Debug("not retrying: rate limit hook declined",
+					"method", req.Method,
+					"url", req.URL.Redacted(),
+					"attempt", attempt+1,
+					"kind", rl.Kind,
+					"retry_after", rl.RetryAfter,
+					"rate_limit_retries", rateLimitRetries,
+				)
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
+			}
+			if wait <= 0 {
+				wait = backoff(waitMin, waitMax, attempt, resp)
+			}
+		} else {
+			// The policy sees the request's own context, so an attempt that ran
+			// out of its window is retried like any other transport error.
+			retryErr := doErr
+			if cfg.attemptTimeout > 0 {
+				retryErr = resultErr
+			}
+			retry, policyErr := shouldRetry(req.Context(), resp, retryErr)
+			if policyErr != nil {
+				drainAndClose(resp)
+				cancelAttempt()
+				return nil, policyErr
+			}
+			if !retry || attempt >= cfg.Max || !replayable(req) {
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
+			}
+
+			wait = backoff(waitMin, waitMax, attempt, resp)
+		}
 
 		// A wait that reaches or exceeds the context deadline or MaxElapsed
 		// budget would only end in a context error, losing the
@@ -168,7 +223,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 				cancelAttempt()
 				return nil, ctxErr
 			}
-			return cancelOnClose(resp, cancelAttempt), doErr
+			return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
 		}
 
 		c.logger.Debug("retrying request",
@@ -187,6 +242,10 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 			return nil, req.Context().Err()
 		case <-timer.C:
 		}
+
+		if limited {
+			rateLimitRetries++
+		}
 	}
 }
 
@@ -202,33 +261,29 @@ func withAttemptDeadline(req *http.Request, timeout time.Duration) (*http.Reques
 	return req.WithContext(ctx), cancel
 }
 
-// readWithinAttempt buffers resp's body while its attempt's window is still
-// open. A body that stalls past the window then fails the attempt, which is
-// retried like one whose headers never came, instead of failing the read once
-// the retry loop has returned.
-func readWithinAttempt(resp *http.Response) (*http.Response, error) {
+// readForRetry buffers resp's body before the retry decision, under the
+// attempt's context. Polls need this to retry stalled bodies; 403s and 429s
+// need the message to distinguish primary and secondary limits.
+func readForRetry(resp *http.Response) ([]byte, error) {
 	if resp == nil || resp.Body == nil {
-		return resp, nil
+		return nil, nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	closeErr := resp.Body.Close()
-	switch {
-	case err != nil:
-		err = fmt.Errorf("failed to read the response body: %w", err)
-	case closeErr != nil:
-		err = fmt.Errorf("failed to close the response body: %w", closeErr)
+	if closeErr != nil {
+		closeErr = fmt.Errorf("failed to close the response body: %w", closeErr)
 	}
 	if err != nil {
 		// The status and headers, such as Retry-After, still inform the
 		// retry policy and the final error. The body is gone.
 		resp.Body = http.NoBody
-		return resp, err
+		return nil, errors.Join(fmt.Errorf("failed to read the response body: %w", err), closeErr)
 	}
 
+	body = trimByteOrderMark(body)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
-
-	return resp, nil
+	return body, closeErr
 }
 
 // cancelOnClose defers cancel until resp's body is closed, since the body is
@@ -245,6 +300,51 @@ func cancelOnClose(resp *http.Response, cancel context.CancelFunc) *http.Respons
 	return resp
 }
 
+// rateLimitFromAttempt uses the final error's classification without
+// consuming the buffered response the caller will read.
+func rateLimitFromAttempt(req *http.Request, resp *http.Response, body []byte, retries int) (*RateLimitError, bool) {
+	if resp == nil ||
+		(resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests) {
+		return nil, false
+	}
+
+	response := *resp
+	response.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
+	var rl *RateLimitError
+	if !errors.As(newRequestResponseError(req, &response, errors.New("unexpected status")), &rl) {
+		return nil, false
+	}
+
+	rl.Retries = retries
+	rl.err = fmt.Errorf("request %s %s failed (status=%q)", req.Method, req.URL.Redacted(), resp.Status)
+
+	return rl, true
+}
+
+// rateLimitRetriesKey is the context key under which send records, on the
+// response's request, how many rate-limited retries preceded the response.
+type rateLimitRetriesKey struct{}
+
+// withRateLimitRetries records retries on resp, so that the *RateLimitError
+// later built from it by newRequestResponseError reports them. The count
+// travels with this response alone, which keeps concurrent requests apart.
+//
+// The derived context keeps the attempt's context as its parent, so the
+// MaxElapsed budget that the response body is read under is unaffected.
+func withRateLimitRetries(req *http.Request, resp *http.Response, retries int) *http.Response {
+	if resp == nil || retries == 0 {
+		return resp
+	}
+
+	sent := resp.Request
+	if sent == nil {
+		sent = req
+	}
+	resp.Request = sent.WithContext(context.WithValue(sent.Context(), rateLimitRetriesKey{}, retries))
+
+	return resp
+}
+
 type cancelOnCloseBody struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -254,6 +354,15 @@ func (b *cancelOnCloseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.cancel()
 	return err
+}
+
+// rateLimitRetriesOf reports the count recorded by withRateLimitRetries.
+func rateLimitRetriesOf(resp *http.Response) int {
+	if resp == nil || resp.Request == nil {
+		return 0
+	}
+	retries, _ := resp.Request.Context().Value(rateLimitRetriesKey{}).(int)
+	return retries
 }
 
 // waitOutlasts reports whether waiting wait before the next attempt would run

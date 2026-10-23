@@ -91,6 +91,11 @@ type RateLimitError struct {
 	// It is the zero time when the header is absent or invalid.
 	Reset time.Time
 
+	// Retries is the number of rate-limited retries the client already made
+	// for this request before this response, of either kind. It is zero when
+	// the first rate-limited response was the last one.
+	Retries int
+
 	// err preserves the request/response error and its context.
 	err error
 }
@@ -242,6 +247,7 @@ func newRequestResponseError(req *http.Request, resp *http.Response, err error) 
 
 func wrapResponseErrorType(resp *http.Response, message string, err error) error {
 	if rl, ok := rateLimitFromResponse(resp, message, time.Now()); ok {
+		rl.Retries = rateLimitRetriesOf(resp)
 		rl.err = err
 		return rl
 	}

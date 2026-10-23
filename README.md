@@ -254,6 +254,41 @@ If the budget expires during an attempt or body read, the error matches both
 `MaxElapsedExceededError` and `context.DeadlineExceeded`. If the caller cancels or
 its deadline fires first, its context error is preserved instead.
 
+### Rate-limit retry decisions
+
+Set `RetryConfig.OnRateLimit` to decide whether and how long to retry a
+`*RateLimitError`. It replaces `ShouldRetry` for rate-limited responses; a zero
+wait with `retry=true` uses `Backoff`. Without a hook, 429s keep using `Backoff`
+and rate-limited 403s are not retried, except on the admin-connection request
+that already retries 401/403.
+
+`RateLimitRetries` builds a hook with separate rules for primary and secondary
+limits. For example, return primary limits immediately and retry short
+secondary limits at most twice:
+
+```go
+retry := scaleset.DefaultRetryConfig()
+retry.OnRateLimit = scaleset.RateLimitRetries(
+    scaleset.RateLimitRule{},
+    scaleset.RateLimitRule{MaxRetries: 2, MaxWait: 5 * time.Second},
+)
+client, err := scaleset.NewClientWithPersonalAccessToken(config,
+    scaleset.WithRetry(retry),
+)
+```
+
+The hook and final error use the same classification, including secondary-limit
+messages in JSON or plain-text 403/429 bodies. Read and close failures remain in
+the final error chain. `RateLimitError.Retries` counts
+the rate-limited retries already made for this request, across both kinds;
+transport and other HTTP retries do not increase it. A server hint longer than
+`MaxWait` is rejected, not shortened. `Max`, `MaxElapsed`, and the context
+deadline still bound retries. Hooks may run concurrently.
+
+When requeuing rate-limited work, preserve a positive `RetryAfter` hint and
+use a positive fallback (for example, one minute) when it is zero.
+In controller-runtime, `RequeueAfter: 0` with a nil error schedules no retry.
+
 ### Migrating from the transport options
 
 If you never passed an HTTP option, you change no code. The constructors are the same, and the defaults are the same.
