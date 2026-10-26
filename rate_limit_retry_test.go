@@ -480,6 +480,86 @@ func TestOnRateLimitHookContextExpires(t *testing.T) {
 	}
 }
 
+func TestOnRateLimitStalledBodyContextExpires(t *testing.T) {
+	for _, cause := range []string{"cancel", "deadline", "budget"} {
+		for _, status := range []int{http.StatusTooManyRequests, http.StatusForbidden} {
+			for _, poll := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%d/poll=%t", cause, status, poll), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						ctx, cancel := context.WithCancel(context.Background())
+						defer cancel()
+						var maxElapsed time.Duration
+						wantErr := context.Canceled
+						switch cause {
+						case "cancel":
+							timer := time.AfterFunc(time.Second, cancel)
+							defer timer.Stop()
+						case "deadline":
+							var cancelDeadline context.CancelFunc
+							ctx, cancelDeadline = context.WithTimeout(ctx, time.Second)
+							defer cancelDeadline()
+							wantErr = context.DeadlineExceeded
+						case "budget":
+							maxElapsed = time.Second
+							wantErr = MaxElapsedExceededError
+						}
+
+						const partial = "\xef\xbb\xbf" + `{"message":"secondary rate limit"}`
+						closeErr := errors.New("failed to close response")
+						var body trackedResponseBody
+						var attemptCtx context.Context
+						var calls, hookCalls int
+						client := newStubCommonClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
+							calls++
+							resp := newStubResponse(req, status, `{"message":"rate limited"}`)
+							resp.Header.Set(headerRateLimitRemaining, "0")
+							resp.Header.Set(headerRetryAfter, "2")
+							resp.Header.Set(headerGitHubRequestID, fmt.Sprintf("attempt-%d", calls))
+							if calls == 2 {
+								attemptCtx = req.Context()
+								body.Reader = io.MultiReader(strings.NewReader(partial), stalledReader{ctx: attemptCtx})
+								body.closeErr = closeErr
+								resp.Body = &body
+							}
+							return resp, nil
+						}), RetryConfig{
+							Max: 3, MaxElapsed: maxElapsed,
+							OnRateLimit: func(context.Context, *RateLimitError) (time.Duration, bool) {
+								hookCalls++
+								return time.Nanosecond, true
+							},
+						})
+						var opts []retryOption
+						if poll {
+							opts = append(opts, withAttemptTimeout(time.Hour))
+						}
+
+						err := doRateLimited(t, ctx, client, opts...)
+						require.ErrorIs(t, err, wantErr)
+						assert.ErrorIs(t, err, closeErr)
+						if cause == "budget" {
+							assert.ErrorIs(t, err, context.DeadlineExceeded)
+						} else {
+							assert.NotErrorIs(t, err, MaxElapsedExceededError)
+						}
+						resp := assertResponseError(t, err, status, partial)
+						assert.Equal(t, "attempt-2", resp.Header.Get(headerGitHubRequestID))
+						rl := requireRateLimitError(t, err)
+						assert.Equal(t, RateLimitPrimary, rl.Kind)
+						assert.Equal(t, status, rl.StatusCode)
+						assert.Equal(t, 2*time.Second, rl.RetryAfter)
+						assert.Equal(t, 1, rl.Retries)
+						assert.Equal(t, 2, calls)
+						assert.Equal(t, 1, hookCalls)
+						assert.Equal(t, 1, body.closes)
+						assert.Error(t, attemptCtx.Err(), "the attempt context must be released")
+					})
+				})
+			}
+		}
+	}
+}
+
 func TestRateLimitRetriesThroughClient(t *testing.T) {
 	arc := RetryConfig{
 		Max:     DefaultRetryMax,

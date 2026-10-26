@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -276,6 +277,12 @@ func TestResponseErrorURLRedaction(t *testing.T) {
 			assert.Contains(t, logs.String(), tc.log)
 			assert.Contains(t, logs.String(), `"url":"`+safeURL+`"`)
 			assert.NotContains(t, logs.String(), "sensitive-")
+			assert.Equal(t, 1, strings.Count(logs.String(), "\n"))
+			assert.NotContains(t, logs.String(), "\r")
+			var entry map[string]any
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+			assert.Equal(t, "DEBUG", entry["level"])
+			assert.Equal(t, safeURL, entry["url"])
 			assert.Contains(t, responseErr.Error(), safeURL)
 			assert.NotContains(t, responseErr.Error(), "sensitive-")
 		})
@@ -581,6 +588,61 @@ func TestResponseErrorAuthentication(t *testing.T) {
 				assert.True(t, client.actionsServiceAdminToken.expiresAt.IsZero())
 			})
 		}
+	}
+}
+
+func TestResponseErrorAuthenticationURLLogs(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			jwt := unsignedJWT(t, time.Now().Add(time.Hour))
+			client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case strings.HasSuffix(req.URL.Path, "/access_tokens"):
+					return newStubResponse(req, http.StatusCreated, `{"token":"installation-token"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/registration-token"):
+					return newStubResponse(req, http.StatusCreated, `{"token":"registration-token"}`), nil
+				default:
+					require.Equal(t, "/actions/runner-registration", req.URL.Path)
+					return newStubResponse(req, http.StatusOK, fmt.Sprintf(`{"url":"https://actions.example","token":%q}`, jwt)), nil
+				}
+			}))
+			const organization = "example\r\nlevel=ERROR msg=\"forged\""
+			client.config.organization = organization
+			client.config.configURL.Path = "/" + organization
+			client.config.configURL.User = url.UserPassword("sensitive-user", "sensitive-password")
+			client.config.configURL.RawQuery = "token=sensitive-query"
+			client.config.configURL.Fragment = "sensitive-fragment"
+			client.actionsServiceAdminToken = actionsServiceAdminToken{}
+			client.creds = actionsAuth{
+				installationID: 1,
+				jwtProvider: JWTProviderFunc(func(context.Context) (string, error) {
+					return "test-jwt", nil
+				}),
+			}
+			var logs bytes.Buffer
+			if format == "text" {
+				client.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			} else {
+				client.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			}
+
+			_, err := client.updateTokenIfNeeded(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, 4, strings.Count(logs.String(), "\n"))
+			assert.NotContains(t, logs.String(), "\r")
+			assert.NotContains(t, logs.String(), "sensitive-")
+			assert.Contains(t, logs.String(), "%0D%0Alevel=ERROR")
+			for _, key := range []string{"githubConfigUrl", "accessTokenURL", "registrationTokenURL", "registrationURL"} {
+				assert.Contains(t, logs.String(), key)
+			}
+			if format == "json" {
+				for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+					var entry map[string]any
+					require.NoError(t, json.Unmarshal([]byte(line), &entry))
+					assert.Equal(t, "INFO", entry["level"])
+				}
+			}
+		})
 	}
 }
 
