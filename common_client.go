@@ -144,6 +144,23 @@ func bufferResponseBody(resp *http.Response) ([]byte, error) {
 	return body, errors.Join(readErr, closeErr)
 }
 
+// decodeJSONBody requires exactly one JSON value; a decoder alone accepts
+// trailing garbage after a valid value. Endpoint-specific nulls remain valid.
+func decodeJSONBody(body io.Reader, target any) error {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return errors.New("response body contains multiple JSON values")
+	}
+	return nil
+}
+
 // requestRetryConfig resolves the retry policy for one request, as a copy
 // local to it, in this order:
 //
