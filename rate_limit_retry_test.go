@@ -480,6 +480,86 @@ func TestOnRateLimitHookContextExpires(t *testing.T) {
 	}
 }
 
+func TestOnRateLimitStalledBodyContextExpires(t *testing.T) {
+	for _, cause := range []string{"cancel", "deadline", "budget"} {
+		for _, status := range []int{http.StatusTooManyRequests, http.StatusForbidden} {
+			for _, poll := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%d/poll=%t", cause, status, poll), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						ctx, cancel := context.WithCancel(context.Background())
+						defer cancel()
+						var maxElapsed time.Duration
+						wantErr := context.Canceled
+						switch cause {
+						case "cancel":
+							timer := time.AfterFunc(time.Second, cancel)
+							defer timer.Stop()
+						case "deadline":
+							var cancelDeadline context.CancelFunc
+							ctx, cancelDeadline = context.WithTimeout(ctx, time.Second)
+							defer cancelDeadline()
+							wantErr = context.DeadlineExceeded
+						case "budget":
+							maxElapsed = time.Second
+							wantErr = MaxElapsedExceededError
+						}
+
+						const partial = "\xef\xbb\xbf" + `{"message":"secondary rate limit"}`
+						closeErr := errors.New("failed to close response")
+						var body trackedResponseBody
+						var attemptCtx context.Context
+						var calls, hookCalls int
+						client := newStubCommonClient(httpClientFunc(func(req *http.Request) (*http.Response, error) {
+							calls++
+							resp := newStubResponse(req, status, `{"message":"rate limited"}`)
+							resp.Header.Set(headerRateLimitRemaining, "0")
+							resp.Header.Set(headerRetryAfter, "2")
+							resp.Header.Set(headerGitHubRequestID, fmt.Sprintf("attempt-%d", calls))
+							if calls == 2 {
+								attemptCtx = req.Context()
+								body.Reader = io.MultiReader(strings.NewReader(partial), stalledReader{ctx: attemptCtx})
+								body.closeErr = closeErr
+								resp.Body = &body
+							}
+							return resp, nil
+						}), RetryConfig{
+							Max: 3, MaxElapsed: maxElapsed,
+							OnRateLimit: func(context.Context, *RateLimitError) (time.Duration, bool) {
+								hookCalls++
+								return time.Nanosecond, true
+							},
+						})
+						var opts []retryOption
+						if poll {
+							opts = append(opts, withAttemptTimeout(time.Hour))
+						}
+
+						err := doRateLimited(t, ctx, client, opts...)
+						require.ErrorIs(t, err, wantErr)
+						assert.ErrorIs(t, err, closeErr)
+						if cause == "budget" {
+							assert.ErrorIs(t, err, context.DeadlineExceeded)
+						} else {
+							assert.NotErrorIs(t, err, MaxElapsedExceededError)
+						}
+						resp := assertResponseError(t, err, status, partial)
+						assert.Equal(t, "attempt-2", resp.Header.Get(headerGitHubRequestID))
+						rl := requireRateLimitError(t, err)
+						assert.Equal(t, RateLimitPrimary, rl.Kind)
+						assert.Equal(t, status, rl.StatusCode)
+						assert.Equal(t, 2*time.Second, rl.RetryAfter)
+						assert.Equal(t, 1, rl.Retries)
+						assert.Equal(t, 2, calls)
+						assert.Equal(t, 1, hookCalls)
+						assert.Equal(t, 1, body.closes)
+						assert.Error(t, attemptCtx.Err(), "the attempt context must be released")
+					})
+				})
+			}
+		}
+	}
+}
+
 func TestRateLimitRetriesThroughClient(t *testing.T) {
 	arc := RetryConfig{
 		Max:     DefaultRetryMax,
@@ -644,12 +724,18 @@ func TestOnRateLimitResponseMessage(t *testing.T) {
 
 			resp, err := client.do(req)
 			require.NoError(t, err)
-			rl := requireRateLimitError(t, newRequestResponseError(req, resp, errors.New("unexpected status")))
+			responseErr := newRequestResponseError(req, resp, errors.New("unexpected status"))
+			rl := requireRateLimitError(t, responseErr)
+			assertResponseError(t, responseErr, tc.status, tc.body)
 			assert.Equal(t, int64(2), calls.Load())
 			assert.Equal(t, []int{0, 1}, seen)
 			assert.Equal(t, RateLimitSecondary, rl.Kind)
 			assert.Equal(t, 1, rl.Retries)
-			assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			if tc.contentType == "text/plain" {
+				assert.NotContains(t, rl.Error(), tc.body)
+			} else {
+				assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			}
 		})
 	}
 }
@@ -853,7 +939,12 @@ func TestOnRateLimitWithResponseCloseError(t *testing.T) {
 			assert.Equal(t, RateLimitSecondary, rl.Kind)
 			assert.Equal(t, tc.statusCode, rl.StatusCode)
 			assert.Equal(t, 1, rl.Retries)
-			assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			assertResponseError(t, err, tc.statusCode, tc.body)
+			if tc.contentType == "text/plain" || tc.wantSyntaxError {
+				assert.NotContains(t, rl.Error(), tc.body)
+			} else {
+				assert.Contains(t, rl.Error(), "You have exceeded a secondary rate limit.")
+			}
 			assert.Equal(t, []int{0, 1}, seen)
 			require.Len(t, bodies, 2)
 			for i, body := range bodies {
