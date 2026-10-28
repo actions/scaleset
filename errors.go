@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -179,6 +180,17 @@ func (e actionsExceptionError) Error() string {
 	return fmt.Sprintf("%s: %s", e.ExceptionName, e.Message)
 }
 
+func redactedURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	copy := *u
+	copy.User = nil
+	copy.RawQuery, copy.Fragment, copy.RawFragment = "", "", ""
+	copy.ForceQuery = false
+	return copy.String()
+}
+
 // newRequestResponseError creates a detailed error message based on the HTTP request and response,
 // including parsing the response body for known error formats.
 //
@@ -189,7 +201,7 @@ func (e actionsExceptionError) Error() string {
 // includes useful metadata like activity IDs and request IDs, and handles well-known error cases.
 func newRequestResponseError(req *http.Request, resp *http.Response, err error) error {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "request %s %s failed", req.Method, req.URL.String())
+	fmt.Fprintf(&sb, "request %s %s failed", req.Method, redactedURL(req.URL))
 
 	if resp == nil {
 		return fmt.Errorf("%s: %w", sb.String(), err)

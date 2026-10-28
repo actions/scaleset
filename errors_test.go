@@ -31,6 +31,24 @@ func TestActionsExceptionError(t *testing.T) {
 	})
 }
 
+func TestRedactedURL(t *testing.T) {
+	assert.Empty(t, redactedURL(nil))
+	for _, raw := range []string{
+		"https://example.com/path%2Fsegment?",
+		"https://example.com/path%2Fsegment#fragment%2Fvalue",
+		"https://sensitive-user:sensitive-password@example.com/path%2Fsegment?token=sensitive-query#sensitive-fragment",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			u, err := url.Parse(raw)
+			require.NoError(t, err)
+			original := *u
+			assert.Equal(t, "https://example.com/path%2Fsegment", redactedURL(u))
+			assert.Equal(t, original, *u)
+			assert.Equal(t, raw, u.String())
+		})
+	}
+}
+
 func TestNewRequestResponseError(t *testing.T) {
 	req := func(t *testing.T) *http.Request {
 		t.Helper()

@@ -346,6 +346,11 @@ Change code only if you used one of the options below. Four things still differ 
 
 ## Security Notes
 
+- URLs formatted by SDK request errors, URL log fields, and rate-limit hook errors
+  omit URL credentials, query strings, and fragments. Outgoing requests and
+  response URLs are unchanged. Underlying errors, response bodies, and
+  server-provided messages may still contain sensitive details; review them
+  before logging.
 - Always prefer GitHub App credentials; rotate PATs if you must use them.
 - Use `SignerJWTProvider` or `JWTProviderFunc` to keep private key material in a KMS/HSM.
 - Treat JIT configs as secrets until consumed.
