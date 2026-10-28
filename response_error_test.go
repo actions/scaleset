@@ -130,6 +130,8 @@ func TestResponseErrorRequiredBodies(t *testing.T) {
 			{name: "whitespace", body: " \r\n\t", cause: io.EOF},
 			{name: "truncated JSON", body: `{"token":`, cause: io.ErrUnexpectedEOF},
 			{name: "malformed JSON", body: "<html>upstream failed</html>", syntax: true},
+			{name: "BOM and trailing garbage", body: "\xef\xbb\xbf{} garbage", syntax: true},
+			{name: "multiple JSON values", body: "{} {}"},
 		} {
 			t.Run(endpoint.name+"/"+tc.name, func(t *testing.T) {
 				client, session := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
@@ -203,6 +205,33 @@ func TestResponseErrorMetadataAndClassification(t *testing.T) {
 			assert.Equal(t, "trailer-value", got.Trailer.Get("X-Trailer"))
 			assert.NotContains(t, err.Error(), "private")
 			assert.NotContains(t, err.Error(), "fragment")
+		})
+	}
+}
+
+func TestResponseErrorListRunnerScaleSets(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		err  bool
+	}{
+		{name: "null object", body: "null", err: true},
+		{name: "empty object", body: "{}"},
+		{name: "empty list", body: `{"count":0,"value":[]}`},
+		{name: "null list", body: `{"count":0,"value":null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				return newStubResponse(req, http.StatusOK, tc.body), nil
+			}))
+			got, err := client.ListRunnerScaleSets(t.Context(), 1)
+			if tc.err {
+				assertResponseError(t, err, http.StatusOK, tc.body)
+				assert.Nil(t, got)
+			} else {
+				require.NoError(t, err)
+				assert.Empty(t, got)
+			}
 		})
 	}
 }
@@ -405,6 +434,83 @@ func TestResponseErrorFinalRetry(t *testing.T) {
 	}
 }
 
+func TestResponseErrorAuthentication(t *testing.T) {
+	stages := []struct {
+		name   string
+		path   string
+		status int
+		body   string
+	}{
+		{"installation access token", "/app/installations/1/access_tokens", http.StatusCreated, `{"token":"installation-token"}`},
+		{"runner registration token", "/orgs/example/actions/runners/registration-token", http.StatusCreated, `{"token":"registration-token"}`},
+		{"admin connection", "/actions/runner-registration", http.StatusOK, fmt.Sprintf(`{"url":"https://actions.example","token":%q}`, unsignedJWT(t, time.Now().Add(time.Hour)))},
+	}
+	for target, stage := range stages {
+		type authResponseCase struct {
+			name    string
+			status  int
+			body    string
+			nilBody bool
+			cause   error
+		}
+		cases := []authResponseCase{
+			{name: "empty body", status: stage.status, cause: io.EOF},
+			{name: "absent body", status: stage.status, nilBody: true, cause: io.EOF},
+			{name: "truncated JSON", status: stage.status, body: "{", cause: io.ErrUnexpectedEOF},
+			{name: "null body", status: stage.status, body: "null"},
+			{name: "missing fields", status: stage.status, body: "{}"},
+			{name: "missing token", status: stage.status, body: `{"url":"https://actions.example","token":""}`},
+			{name: "unauthorized", status: http.StatusUnauthorized, body: `{"message":"bad credentials"}`, cause: UnauthorizedError},
+			{name: "server error", status: http.StatusBadGateway, body: "<html>bad gateway</html>"},
+			{name: "unexpected no content", status: http.StatusNoContent},
+		}
+		if stage.name == "admin connection" {
+			cases = append(cases,
+				authResponseCase{name: "missing url", status: stage.status, body: `{"token":"private-token"}`},
+				authResponseCase{name: "invalid JWT", status: stage.status, body: `{"url":"https://actions.example","token":"private-token"}`},
+				authResponseCase{name: "JWT missing expiration", status: stage.status, body: `{"url":"https://actions.example","token":"eyJhbGciOiJub25lIn0.e30."}`},
+			)
+		}
+		for _, tc := range cases {
+			t.Run(stage.name+"/"+tc.name, func(t *testing.T) {
+				var calls int
+				client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+					require.LessOrEqual(t, calls, target, "must not continue with invalid credentials")
+					current := calls
+					calls++
+					assert.Equal(t, stages[current].path, req.URL.Path)
+					if current < target {
+						return newStubResponse(req, stages[current].status, stages[current].body), nil
+					}
+					resp := newStubResponse(req, tc.status, tc.body)
+					resp.Header.Set(headerGitHubRequestID, "auth-request-id")
+					if tc.nilBody {
+						resp.Body = nil
+					}
+					return resp, nil
+				}))
+				client.actionsServiceAdminToken = actionsServiceAdminToken{}
+				client.creds = actionsAuth{
+					installationID: 1,
+					jwtProvider: JWTProviderFunc(func(context.Context) (string, error) {
+						return "test-jwt", nil
+					}),
+				}
+				_, err := client.GetRunner(t.Context(), 1)
+				resp := assertResponseError(t, err, tc.status, tc.body)
+				assert.Equal(t, target+1, calls)
+				assert.Equal(t, stage.path, resp.Request.URL.Path)
+				assert.Equal(t, "auth-request-id", resp.Header.Get(headerGitHubRequestID))
+				if tc.cause != nil {
+					assert.ErrorIs(t, err, tc.cause)
+				}
+				assert.NotContains(t, err.Error(), "private-token")
+				assert.True(t, client.actionsServiceAdminToken.expiresAt.IsZero())
+			})
+		}
+	}
+}
+
 func TestResponseErrorFinalAuthRetry(t *testing.T) {
 	attempts := 0
 	client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
@@ -545,6 +651,81 @@ func TestResponseErrorOptionalBodiesAndStatuses(t *testing.T) {
 				return newStubResponse(req, http.StatusCreated, ""), nil
 			}))
 			assertResponseError(t, endpoint.call(client, session), http.StatusCreated, "")
+		})
+	}
+}
+
+func TestResponseErrorInvalidLists(t *testing.T) {
+	for _, endpoint := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"runner", func(c *Client) error {
+			_, err := c.GetRunnerByName(t.Context(), "test")
+			return err
+		}},
+		{"runner group", func(c *Client) error {
+			_, err := c.GetRunnerGroupByName(t.Context(), "test")
+			return err
+		}},
+		{"scale set", func(c *Client) error {
+			_, err := c.GetRunnerScaleSet(t.Context(), 1, "test")
+			return err
+		}},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			const body = `{"count":1,"value":[]}`
+			client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				return newStubResponse(req, http.StatusOK, body), nil
+			}))
+			assertResponseError(t, endpoint.call(client), http.StatusOK, body)
+		})
+	}
+
+	t.Run("null runner list", func(t *testing.T) {
+		client, _ := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+			return newStubResponse(req, http.StatusOK, "null"), nil
+		}))
+		_, err := client.GetRunnerByName(t.Context(), "test")
+		assertResponseError(t, err, http.StatusOK, "null")
+	})
+}
+
+// A required object decodes from null without error, so these endpoints used
+// to report success without a value. Lookups such as GetRunnerScaleSetByID
+// keep treating null as not found.
+func TestResponseErrorNullObject(t *testing.T) {
+	for _, endpoint := range []struct {
+		name string
+		call func(*Client, *MessageSessionClient) error
+	}{
+		{"create scale set", func(c *Client, _ *MessageSessionClient) error {
+			_, err := c.CreateRunnerScaleSet(t.Context(), &RunnerScaleSet{Name: "test"})
+			return err
+		}},
+		{"update scale set", func(c *Client, _ *MessageSessionClient) error {
+			_, err := c.UpdateRunnerScaleSet(t.Context(), 1, &RunnerScaleSet{Name: "test"})
+			return err
+		}},
+		{"jit config", func(c *Client, _ *MessageSessionClient) error {
+			_, err := c.GenerateJitRunnerConfig(t.Context(), &RunnerScaleSetJitRunnerSetting{}, 1)
+			return err
+		}},
+		{"create session", func(c *Client, _ *MessageSessionClient) error {
+			_, err := c.MessageSessionClient(t.Context(), 1, "test")
+			return err
+		}},
+		{"refresh session", func(_ *Client, s *MessageSessionClient) error {
+			return s.refreshMessageSession(t.Context(), s.Session())
+		}},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			client, session := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				return newStubResponse(req, http.StatusOK, "null"), nil
+			}))
+			original := session.Session()
+			assertResponseError(t, endpoint.call(client, session), http.StatusOK, "null")
+			assert.Equal(t, original, session.Session())
 		})
 	}
 }
