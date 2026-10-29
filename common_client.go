@@ -194,7 +194,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 			if !retry {
 				c.logger.Debug("not retrying: rate limit hook declined",
 					"method", req.Method,
-					"url", req.URL.Redacted(),
+					"url", redactedURL(req.URL),
 					"attempt", attempt+1,
 					"kind", rl.Kind,
 					"retry_after", rl.RetryAfter,
@@ -232,7 +232,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 		if reason, ok := waitOutlasts(req, cfg.MaxElapsed, start, wait); ok {
 			c.logger.Debug("not retrying: wait reaches or exceeds "+reason,
 				"method", req.Method,
-				"url", req.URL.Redacted(),
+				"url", redactedURL(req.URL),
 				"attempt", attempt+1,
 				"wait", wait,
 			)
@@ -246,7 +246,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 
 		c.logger.Debug("retrying request",
 			"method", req.Method,
-			"url", req.URL.Redacted(),
+			"url", redactedURL(req.URL),
 			"attempt", attempt+1,
 			"wait", wait,
 		)
@@ -334,7 +334,7 @@ func rateLimitFromAttempt(req *http.Request, resp *http.Response, body []byte, r
 	}
 
 	rl.Retries = retries
-	rl.err = fmt.Errorf("request %s %s failed (status=%q)", req.Method, req.URL.Redacted(), resp.Status)
+	rl.err = fmt.Errorf("request %s %s failed (status=%q)", req.Method, redactedURL(req.URL), resp.Status)
 
 	return rl, true
 }
