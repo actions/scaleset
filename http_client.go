@@ -85,9 +85,10 @@ const (
 // DefaultTransport returns the *http.Transport that the SDK uses when no HTTP
 // client is supplied. The result is owned by the caller and safe to modify.
 //
-// Its timeouts are the ones the SDK used before, via cleanhttp's pooled
-// transport. They are set explicitly so a replaced http.DefaultTransport, or
-// a future stdlib default, cannot change them.
+// Its connection and handshake settings preserve cleanhttp's pooled transport
+// defaults, with HTTP/2 health checks to evict unresponsive connections. They
+// are set explicitly so a replaced http.DefaultTransport, or a future stdlib
+// default, cannot change them.
 func DefaultTransport() *http.Transport {
 	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -100,6 +101,13 @@ func DefaultTransport() *http.Transport {
 		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 		ExpectContinueTimeout: defaultExpectContinueTimeout,
 		ForceAttemptHTTP2:     true,
+		// A canceled request can leave an unresponsive HTTP/2 connection pooled.
+		// Ping silent connections so retries can dial again, while healthy long
+		// polls continue to receive protocol-level ping acknowledgements.
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 30 * time.Second,
+			PingTimeout:     10 * time.Second,
+		},
 		// The listener holds a long poll open per scale set alongside regular
 		// API traffic, so the stdlib default of 2 idle connections per host
 		// is low. This is the value cleanhttp used.
