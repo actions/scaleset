@@ -143,6 +143,41 @@ func TestCreateMessageSession(t *testing.T) {
 	})
 }
 
+func TestDoSessionRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		err  bool
+	}{
+		{name: "valid session", body: `{"ownerName":"new owner"}`},
+		{name: "empty object", body: `{}`},
+		{name: "null", body: `null`, err: true},
+		{name: "empty body", err: true},
+		{name: "truncated JSON", body: `{"ownerName":"new owner",`, err: true},
+		{name: "multiple values", body: `{"ownerName":"new owner"} {}`, err: true},
+		{name: "trailing garbage", body: `{"ownerName":"new owner"} garbage`, err: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, client := newResponseTestClients(t, httpClientFunc(func(req *http.Request) (*http.Response, error) {
+				return newStubResponse(req, http.StatusOK, tc.body), nil
+			}))
+			original := client.Session()
+			target := original
+			err := client.doSessionRequest(t.Context(), http.MethodPatch, "/sessions/test", nil, http.StatusOK, &target)
+			if tc.err {
+				assertResponseError(t, err, http.StatusOK, tc.body)
+				assert.Equal(t, original, target)
+			} else {
+				require.NoError(t, err)
+				var want RunnerScaleSetSession
+				require.NoError(t, json.Unmarshal([]byte(tc.body), &want))
+				assert.Equal(t, want, target)
+			}
+			assert.Equal(t, original, client.Session())
+		})
+	}
+}
+
 func TestGetMessageBoundsTheLongPoll(t *testing.T) {
 	assert.GreaterOrEqual(t, MessagePollTimeout, time.Minute)
 	assert.Equal(t, 2*time.Minute, MessagePollTimeout)
