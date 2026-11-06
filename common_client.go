@@ -95,30 +95,53 @@ func (c *commonClient) doWith(client HTTPClient, req *http.Request, opts ...retr
 
 	resp, err := c.send(client, sendReq, cfg, start)
 	if err != nil {
-		if resp != nil && resp.Body != nil {
-			defer resp.Body.Close()
-		}
-		sendErr := fmt.Errorf("failed to send request: %w", budget(err))
-		responseErr := newRequestResponseError(req, resp, sendErr)
-		// Error-body parsing may replace the cause with a service or JSON error.
-		if !errors.Is(responseErr, sendErr) {
-			responseErr = fmt.Errorf("%w: %w", responseErr, sendErr)
-		}
-		return nil, responseErr
+		err = fmt.Errorf("failed to send request: %w", err)
 	}
-
-	body, err := io.ReadAll(resp.Body)
+	_, bodyErr := bufferResponseBody(resp)
+	err = errors.Join(err, bodyErr)
 	if err != nil {
-		defer resp.Body.Close()
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to read the response body: %w", budget(err)))
+		return nil, newRequestResponseError(req, resp, budget(err))
 	}
-	if err := resp.Body.Close(); err != nil {
-		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to close the response body: %w", err))
-	}
-
-	resp.Body = io.NopCloser(bytes.NewReader(trimByteOrderMark(body)))
 
 	return resp, nil
+}
+
+// bufferedResponseBody keeps the original bytes even after an endpoint's
+// decoder has consumed the BOM-trimmed reader.
+type bufferedResponseBody struct {
+	*bytes.Reader
+	raw        []byte
+	incomplete bool
+}
+
+func (*bufferedResponseBody) Close() error { return nil }
+
+func bufferResponseBody(resp *http.Response) ([]byte, error) {
+	if resp == nil {
+		return nil, nil
+	}
+	if body, ok := resp.Body.(*bufferedResponseBody); ok {
+		return body.raw, nil
+	}
+
+	var body []byte
+	var readErr, closeErr error
+	if resp.Body != nil {
+		body, readErr = io.ReadAll(resp.Body)
+		closeErr = resp.Body.Close()
+	}
+	resp.Body = &bufferedResponseBody{
+		Reader:     bytes.NewReader(trimByteOrderMark(body)),
+		raw:        body,
+		incomplete: readErr != nil,
+	}
+	if readErr != nil {
+		readErr = fmt.Errorf("failed to read the response body: %w", readErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("failed to close the response body: %w", closeErr)
+	}
+	return body, errors.Join(readErr, closeErr)
 }
 
 // requestRetryConfig resolves the retry policy for one request, as a copy
@@ -163,6 +186,10 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 
 		attemptReq, cancelAttempt := withAttemptDeadline(attemptReq, cfg.attemptTimeout)
 		resp, doErr := client.Do(attemptReq)
+		if resp == nil && doErr == nil {
+			cancelAttempt()
+			return nil, errMissingResponse
+		}
 		var body []byte
 		var bodyErr error
 		if doErr == nil && (cfg.attemptTimeout > 0 || resp != nil &&
@@ -176,9 +203,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 		if limited {
 			// Rate-limited responses are decided by OnRateLimit alone.
 			if ctxErr := req.Context().Err(); ctxErr != nil {
-				drainAndClose(resp)
-				cancelAttempt()
-				return nil, ctxErr
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), errors.Join(resultErr, ctxErr)
 			}
 			if attempt >= cfg.Max || !replayable(req) {
 				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
@@ -214,9 +239,7 @@ func (c *commonClient) send(client HTTPClient, req *http.Request, cfg RetryConfi
 			}
 			retry, policyErr := shouldRetry(req.Context(), resp, retryErr)
 			if policyErr != nil {
-				drainAndClose(resp)
-				cancelAttempt()
-				return nil, policyErr
+				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), errors.Join(resultErr, policyErr)
 			}
 			if !retry || attempt >= cfg.Max || !replayable(req) {
 				return withRateLimitRetries(req, cancelOnClose(resp, cancelAttempt), rateLimitRetries), resultErr
@@ -283,25 +306,16 @@ func withAttemptDeadline(req *http.Request, timeout time.Duration) (*http.Reques
 // attempt's context. Polls need this to retry stalled bodies; 403s and 429s
 // need the message to distinguish primary and secondary limits.
 func readForRetry(resp *http.Response) ([]byte, error) {
-	if resp == nil || resp.Body == nil {
-		return nil, nil
+	body, err := bufferResponseBody(resp)
+	if resp != nil {
+		if buffered, ok := resp.Body.(*bufferedResponseBody); ok && buffered.incomplete {
+			// Keep partial bytes for the final error, not for retry classification.
+			buffered.Reset(nil)
+			return nil, err
+		}
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	closeErr := resp.Body.Close()
-	if closeErr != nil {
-		closeErr = fmt.Errorf("failed to close the response body: %w", closeErr)
-	}
-	if err != nil {
-		// The status and headers, such as Retry-After, still inform the
-		// retry policy and the final error. The body is gone.
-		resp.Body = http.NoBody
-		return nil, errors.Join(fmt.Errorf("failed to read the response body: %w", err), closeErr)
-	}
-
-	body = trimByteOrderMark(body)
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	return body, closeErr
+	return trimByteOrderMark(body), err
 }
 
 // cancelOnClose defers cancel until resp's body is closed, since the body is
@@ -309,6 +323,10 @@ func readForRetry(resp *http.Response) ([]byte, error) {
 // to read, cancel runs at once.
 func cancelOnClose(resp *http.Response, cancel context.CancelFunc) *http.Response {
 	if resp == nil || resp.Body == nil || resp.Body == http.NoBody {
+		cancel()
+		return resp
+	}
+	if _, ok := resp.Body.(*bufferedResponseBody); ok {
 		cancel()
 		return resp
 	}
