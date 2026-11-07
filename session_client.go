@@ -88,12 +88,12 @@ func (c *MessageSessionClient) refreshMessageSession(ctx context.Context, expire
 	}
 
 	path := fmt.Sprintf("/%s/%d/sessions/%s", scaleSetEndpoint, c.scaleSetID, session.SessionID.String())
-	refreshedSession := &RunnerScaleSetSession{}
-	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, refreshedSession); err != nil {
+	var refreshedSession RunnerScaleSetSession
+	if err := c.doSessionRequest(ctx, http.MethodPatch, path, nil, http.StatusOK, &refreshedSession); err != nil {
 		return fmt.Errorf("failed to do the session request: %w", err)
 	}
 
-	c.session.Store(refreshedSession)
+	c.session.Store(&refreshedSession)
 	return nil
 }
 
@@ -305,14 +305,14 @@ func (c *MessageSessionClient) acquireJobs(ctx context.Context, session RunnerSc
 	}
 
 	var result acquireJobsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeJSONBody(resp.Body, &result); err != nil {
 		return nil, newRequestResponseError(req, resp, fmt.Errorf("failed to decode acquire jobs response: %w", err))
 	}
 
 	return result.Value, nil
 }
 
-func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget any) error {
+func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, path string, requestData io.Reader, expectedResponseStatusCode int, responseUnmarshalTarget *RunnerScaleSetSession) error {
 	req, err := c.innerClient.newActionsServiceRequest(ctx, method, path, requestData)
 	if err != nil {
 		return fmt.Errorf("failed to create new actions service request: %w", err)
@@ -333,9 +333,14 @@ func (c *MessageSessionClient) doSessionRequest(ctx context.Context, method, pat
 		return nil
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(responseUnmarshalTarget); err != nil {
+	var session *RunnerScaleSetSession
+	if err := decodeJSONBody(resp.Body, &session); err != nil {
 		return newRequestResponseError(req, resp, fmt.Errorf("failed to unmarshal response body: %w", err))
 	}
+	if session == nil {
+		return newRequestResponseError(req, resp, errors.New("message session is null"))
+	}
+	*responseUnmarshalTarget = *session
 
 	return nil
 }

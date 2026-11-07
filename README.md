@@ -324,9 +324,9 @@ if errors.As(err, &rl) {
 
 ### Inspecting HTTP failures
 
-Request failures, unexpected HTTP statuses, and response decoding errors return a
-`*scaleset.RequestResponseError`, including failures with a successful HTTP status.
-Use `errors.As` through any outer error wrapping:
+Request failures, unexpected HTTP statuses, and missing or malformed required
+response bodies return a `*scaleset.RequestResponseError`, including failures
+with a successful HTTP status. Use `errors.As` through any outer error wrapping:
 
 ```go
 _, err := client.GetRunner(ctx, runnerID)
@@ -374,6 +374,11 @@ Rate-limited failures support both `errors.As` to `*RateLimitError` and to
 decoding errors can also be inspected with `errors.As`. Expected bodyless 204
 deletes, 202 no-message polls, and documented not-found results remain successful.
 `GetRunnerScaleSetByID` and `GetRunner` keep returning `(nil, nil)` for JSON `null`.
+Required JSON responses must contain a single JSON value, without trailing
+garbage. `ListRunnerScaleSets` rejects a `null` response object; valid empty
+lists remain successful. Creating or refreshing a session rejects `null` without
+replacing the current session. Invalid token responses are rejected before using
+their credentials.
 
 ### Migrating from the transport options
 
