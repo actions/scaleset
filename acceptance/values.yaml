@@ -10,4 +10,4 @@
 # promote job after a green acceptance.
 image:
   tag: "0.1.3"
-  digest: "sha256:e64019860603a1168d71c6e12c51ced99dfebdc01ef3908067e05e24053bd43a"
+  digest: "sha256:4a525d8c8d09b68d65ce1bad0b5fb5d6b9e588c45b3236c3bb603b51c62ee660"
