@@ -5,8 +5,8 @@
 # An empty tag defaults to the chart appVersion; the digest wins when set.
 image:
   repository: ghcr.io/didlawowo/ci-dispatcher
-  tag: "0.1.3"
-  digest: "sha256:4a525d8c8d09b68d65ce1bad0b5fb5d6b9e588c45b3236c3bb603b51c62ee660"
+  tag: "0.1.4"
+  digest: "sha256:d5814c7799dbe1a9bb0d99063b609203aca6da58c597a87b7ece31004d7d0ec1"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
