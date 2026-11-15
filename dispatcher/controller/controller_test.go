@@ -212,17 +212,22 @@ func TestServedByAddsTheDispatcherImageWithoutMutatingTheClaim(t *testing.T) {
 	}
 }
 
-// After a restart, a busy pod survives until every queue has its scale set.
-func TestGCKeepsBusyPodsUntilEveryQueueIsResolved(t *testing.T) {
+// After a restart, a busy pod survives until every queue of its repository
+// has its scale set; another repository still unresolved does not block it.
+func TestGCKeepsBusyPodsUntilTheirRepositoryIsResolved(t *testing.T) {
 	labels := pods.Labels{Prefix: "example.com/ci"}
-	p := &testPods{pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "busy", Annotations: map[string]string{labels.ClaimedAnnotation(): "now"}, Labels: map[string]string{labels.ScaleSetID(): "7", labels.State(): pods.StateBusy}}}}
-	c := New(Config{Catalog: &catalog.Catalog{Profiles: map[string]*catalog.Profile{"light": {}}}, Queues: []catalog.Queue{{Name: "a", Profile: "light"}, {Name: "b", Profile: "light"}}, Pods: p, Mailbox: &testMailbox{}, Metrics: metrics.New(), Labels: labels})
-	c.OnScaleSet("a", 1)
-	if c.GC(context.Background(), false); len(p.deleted) != 0 {
-		t.Fatalf("pod of an unresolved queue deleted: %v", p.deleted)
+	p := &testPods{pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "busy", Annotations: map[string]string{labels.ClaimedAnnotation(): "now"}, Labels: map[string]string{labels.Repo(): "r2", labels.ScaleSetID(): "7", labels.State(): pods.StateBusy}}}}
+	c := New(Config{Catalog: &catalog.Catalog{Profiles: map[string]*catalog.Profile{"light": {}}}, Queues: []catalog.Queue{{Name: "a", Repo: "r1", Profile: "light"}, {Name: "b", Repo: "r2", Profile: "light"}, {Name: "c", Repo: "r2", Profile: "light"}}, Pods: p, Mailbox: &testMailbox{}, Metrics: metrics.New(), Labels: labels})
+	for _, q := range []string{"", "b"} {
+		if q != "" {
+			c.OnScaleSet(q, 2)
+		}
+		if c.GC(context.Background(), false); len(p.deleted) != 0 {
+			t.Fatalf("pod of an unresolved repository deleted (resolved: %q): %v", q, p.deleted)
+		}
 	}
-	c.OnScaleSet("b", 2)
+	c.OnScaleSet("c", 3)
 	if c.GC(context.Background(), false); len(p.deleted) != 1 {
-		t.Fatalf("pod of an unknown scale set kept once all queues resolved: %v", p.deleted)
+		t.Fatalf("pod of an unknown scale set kept once its repository resolved: %v", p.deleted)
 	}
 }

@@ -917,10 +917,15 @@ func (c *Controller) GC(ctx context.Context, startup bool) {
 	for id := range c.byID {
 		known[id] = true
 	}
-	// A queue's pods are only "unknown" once every catalog queue has its
-	// scale set: after a restart, sessions held by the previous instance
-	// resolve one by one, and their running pods must survive until then.
-	sessionsReady := countResolved(c.queues) == len(c.queues)
+	// The first GC runs before any queue has its scale set ID: a pod is only
+	// "unknown" once every queue of its repository has its ID, so a restart
+	// keeps the running pods, and one failing repository does not stop the
+	// cleanup of the others. A repository absent from the catalog is ready.
+	repoReady := map[string]bool{}
+	for _, qs := range c.queues {
+		ok, seen := repoReady[qs.q.Repo]
+		repoReady[qs.q.Repo] = qs.scaleSetID != 0 && (ok || !seen)
+	}
 	c.mu.Unlock()
 
 	for _, p := range c.cfg.Pods.Managed() {
@@ -932,9 +937,11 @@ func (c *Controller) GC(ctx context.Context, startup bool) {
 			continue
 		}
 		id, err := strconv.Atoi(p.Labels[c.cfg.Labels.ScaleSetID()])
-		if err == nil && sessionsReady && !known[id] {
-			c.gcDelete(ctx, p, "unknown_queue")
-			continue
+		if err == nil && !known[id] {
+			if ready, inCatalog := repoReady[p.Labels[c.cfg.Labels.Repo()]]; ready || !inCatalog {
+				c.gcDelete(ctx, p, "unknown_queue")
+				continue
+			}
 		}
 		if state != pods.StateAssigned {
 			continue
@@ -969,16 +976,6 @@ func (c *Controller) GC(ctx context.Context, startup bool) {
 	if startup {
 		c.GCRunners(ctx)
 	}
-}
-
-func countResolved(qs map[string]*queueState) int {
-	n := 0
-	for _, q := range qs {
-		if q.scaleSetID != 0 {
-			n++
-		}
-	}
-	return n
 }
 
 func (c *Controller) gcDelete(ctx context.Context, p *corev1.Pod, reason string) {
