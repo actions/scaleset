@@ -1,0 +1,457 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    ci.example.com/queue: runner-demo
+    example.com/skip-portal: "true"
+  labels:
+    actions.github.com/repository: demo
+    app.kubernetes.io/component: runner
+    app.kubernetes.io/managed-by: ci-dispatcher
+    ci.example.com/profile: docker
+    ci.example.com/repo: demo
+    ci.example.com/scale-set-id: "1"
+    ci.example.com/state: assigned
+    ci.example.com/trust: private
+  name: ci-docker-xxxxx
+  namespace: ci-runners
+spec:
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - preference:
+          matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - node-c
+        weight: 100
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - node-a
+            - node-b
+            - node-cp
+  automountServiceAccountToken: false
+  containers:
+  - args:
+    - run
+    command:
+    - /agent-bin/ci-runner-agent
+    env:
+    - name: POD_UID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.uid
+    - name: RUNNER_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: CACHE_SERVER_NODE
+      value: node-c
+    - name: WORKFLOW_CI_CACHE_PROFILE
+      value: nfs
+    - name: GOCACHE
+      value: /cache/go-build
+    - name: GOMODCACHE
+      value: /cache/go-mod
+    - name: UV_CACHE_DIR
+      value: /home/runner/.cache/uv
+    - name: UV_LINK_MODE
+      value: copy
+    - name: GOPROXY
+      value: http://go-proxy.ci-runners.svc.cluster.local:3000
+    - name: NPM_CONFIG_REGISTRY
+      value: http://npm-proxy.ci-runners.svc.cluster.local:4873
+    - name: PIP_INDEX_URL
+      value: http://pypi-proxy.ci-runners.svc.cluster.local:5000/index/
+    - name: PIP_TRUSTED_HOST
+      value: pypi-proxy.ci-runners.svc.cluster.local
+    - name: UV_DEFAULT_INDEX
+      value: http://pypi-proxy.ci-runners.svc.cluster.local:5000/index/
+    - name: UV_INSECURE_HOST
+      value: pypi-proxy.ci-runners.svc.cluster.local
+    - name: DOCKER_HOST
+      value: unix:///var/run/docker.sock
+    - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+      value: "120"
+    - name: CI_DISPATCHER_CLAIM_URL
+      value: http://ci-dispatcher-claim.ci-runners.svc.cluster.local:8081
+    - name: CI_DISPATCHER_TOKEN_FILE
+      value: /var/run/secrets/ci-dispatcher/token
+    - name: CI_DISPATCHER_STATE_DIR
+      value: /mnt/runner-state
+    image: registry.example.com/actions-runner:v2.330.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    name: runner
+    resources:
+      limits:
+        cpu: "2"
+        memory: 4Gi
+      requests:
+        cpu: 100m
+        ephemeral-storage: 26Gi
+        memory: 256Mi
+    volumeMounts:
+    - mountPath: /home/runner/externals
+      name: runner-externals
+      readOnly: true
+      subPath: actions-runner-v2.330.0/externals
+    - mountPath: /mnt/runner-state
+      name: language-cache
+      subPathExpr: language-caches/demo/pods/$(POD_UID)
+    - mountPath: /cache
+      name: language-cache
+      subPathExpr: language-caches/demo/pods/$(POD_UID)/cache
+    - mountPath: /home/runner/.cache/uv
+      name: language-cache
+      subPath: language-caches/demo/uv
+    - mountPath: /cache/go-build
+      name: language-cache
+      subPath: language-caches/demo/go-build
+    - mountPath: /cache/go-mod
+      name: language-cache
+      subPath: language-caches/demo/go-mod
+    - mountPath: /home/runner/.docker
+      name: docker-home
+    - mountPath: /local-cache
+      name: local-language-cache
+    - mountPath: /home/runner/_work
+      name: runner-work
+    - mountPath: /var/run
+      name: dind-sock
+    - mountPath: /etc/apt/apt.conf.d/99arc-apt-proxy
+      name: apt-proxy-config
+      readOnly: true
+      subPath: 99arc-apt-proxy
+    - mountPath: /usr/local/bin/arc-apt-proxy-detect
+      name: apt-proxy-config
+      readOnly: true
+      subPath: arc-apt-proxy-detect
+    - mountPath: /agent-bin
+      name: agent-bin
+      readOnly: true
+    - mountPath: /var/run/secrets/ci-dispatcher
+      name: ci-dispatcher-token
+      readOnly: true
+  dnsConfig:
+    options:
+    - name: ndots
+      value: "2"
+    - name: timeout
+      value: "3"
+    - name: attempts
+      value: "3"
+  dnsPolicy: ClusterFirst
+  imagePullSecrets:
+  - name: registry-credentials
+  initContainers:
+  - command:
+    - /ci-runner-agent
+    - install
+    - /agent-bin/ci-runner-agent
+    image: registry.example.com/ci-dispatcher@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    imagePullPolicy: IfNotPresent
+    name: ci-runner-agent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+      requests:
+        cpu: 5m
+        memory: 16Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+    volumeMounts:
+    - mountPath: /agent-bin
+      name: agent-bin
+  - command:
+    - sh
+    - -c
+    - mkdir -p /home/runner/.docker /local-cache && cp /tmp/oci-config/config.json
+      /home/runner/.docker/config.json && chown -R 1001:0 /home/runner/.docker &&
+      chown 1001:0 /local-cache
+    image: busybox:1.37.0
+    imagePullPolicy: IfNotPresent
+    name: setup-docker-config
+    resources: {}
+    volumeMounts:
+    - mountPath: /home/runner/.docker
+      name: docker-home
+    - mountPath: /local-cache
+      name: local-language-cache
+    - mountPath: /tmp/oci-config
+      name: docker-config-secret
+      readOnly: true
+  - command:
+    - python3
+    - /scripts/cache.py
+    - wait
+    env:
+    - name: EXTERNALS_CACHE_KEY
+      value: actions-runner-v2.330.0
+    image: registry.example.com/actions-runner:v2.330.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    name: prepare-externals
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+      requests:
+        cpu: 5m
+        memory: 16Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsGroup: 0
+      runAsUser: 1001
+    volumeMounts:
+    - mountPath: /cache
+      name: runner-externals
+      readOnly: true
+    - mountPath: /scripts
+      name: externals-cache-script
+      readOnly: true
+  - args:
+    - |
+      #!/bin/bash
+      # Prepares the per-repository language cache before a runner accepts a job:
+      # checks that the host path is the shared cache (filesystem type and marker
+      # file), creates <root>/language-caches/<scope>/{uv,go-build,go-mod} and the
+      # per-pod workspace, then proves that the runner user can write, rename and
+      # list in every directory.
+      #
+      # Environment: CACHE_ROOT (mount point of the host path), CACHE_SCOPE
+      # (repository), POD_UID, RUNNER_NODE_NAME, CACHE_SERVER_NODE (node that holds
+      # the cache locally; every other node mounts it over NFS), CACHE_MARKER
+      # (marker file name, default .arc-runner-cache).
+      set -euo pipefail
+      root="${CACHE_ROOT:-/mnt/nfs}"
+      marker="${CACHE_MARKER:-.arc-runner-cache}"
+      if [ -n "${CACHE_SERVER_NODE:-}" ] && [ "${RUNNER_NODE_NAME:-}" = "${CACHE_SERVER_NODE}" ]; then
+        backend=local
+      else
+        backend=nfs
+      fi
+      filesystem=$(timeout -k 2s 5s findmnt -n -o FSTYPE -T "$root")
+      case "$backend:$filesystem" in
+        nfs:nfs|nfs:nfs4|local:ext4|local:xfs) ;;
+        *) echo "Language cache filesystem ($filesystem) does not match the $backend backend of node ${RUNNER_NODE_NAME:-unknown}." >&2; exit 1 ;;
+      esac
+      if [ ! -f "$root/$marker" ]; then
+        echo "Shared runner cache is not mounted on node ${RUNNER_NODE_NAME:-unknown} (marker missing)." >&2
+        exit 1
+      fi
+      CACHE_ROOT="$root" timeout -k 2s 15s python3 - <<'PYCODE'
+      import os
+      import re
+      import tempfile
+      from pathlib import Path
+
+      root = os.environ["CACHE_ROOT"]
+      scope = os.environ["CACHE_SCOPE"]
+      if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", scope):
+          raise SystemExit("Invalid cache namespace")
+      pod_uid = os.environ["POD_UID"]
+      if not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", pod_uid):
+          raise SystemExit("Invalid pod UID")
+      flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+      def directory(parent, name, mode):
+          try:
+              fd = os.open(name, flags, dir_fd=parent)
+          except FileNotFoundError:
+              try:
+                  os.mkdir(name, mode=mode, dir_fd=parent)
+              except FileExistsError:
+                  pass
+              fd = os.open(name, flags, dir_fd=parent)
+          try:
+              # NFSv4 can display an unmapped owner as nobody;
+              # chmod and the I/O probe verify the actual AUTH_SYS identity.
+              os.fchmod(fd, mode)
+          except BaseException:
+              os.close(fd)
+              raise
+          return fd
+
+      mount = os.open(root, flags)
+      parent = directory(mount, "language-caches", 0o755)
+      repo = directory(parent, scope, 0o755)
+      for name in ("uv", "go-build", "go-mod"):
+          os.close(directory(repo, name, 0o770))
+      pods = directory(repo, "pods", 0o770)
+      workspace = directory(pods, pod_uid, 0o770)
+      for name in ("cache",):
+          os.close(directory(workspace, name, 0o770))
+      os.close(workspace)
+      os.close(pods)
+      for fd in (repo, parent, mount):
+          os.close(fd)
+      # Test actual runner permissions, not just root's ability to write.
+      base = Path(root) / "language-caches" / scope
+      probe_paths = [base / name for name in ("uv", "go-build", "go-mod")]
+      probe_paths += [base / "pods" / pod_uid / name for name in ("cache",)]
+      for cache in probe_paths:
+          with tempfile.TemporaryDirectory(prefix=".nfs-preflight-", dir=cache) as scratch:
+              probe = Path(scratch)
+              nested = probe / "nested"
+              nested.mkdir()
+              item = nested / "value"
+              item.write_text("preflight\n")
+              item.rename(nested / "renamed")
+              if (nested / "renamed").read_text() != "preflight\n":
+                  raise RuntimeError("NFS read mismatch")
+              if sorted(p.name for p in nested.iterdir()) != ["renamed"]:
+                  raise RuntimeError("NFS nested listing mismatch")
+              if sorted(p.name for p in probe.iterdir()) != ["nested"]:
+                  raise RuntimeError("NFS listing mismatch")
+          print(f"NFS cache ready for uid={os.getuid()}: {cache}")
+      PYCODE
+    command:
+    - /bin/bash
+    - -c
+    env:
+    - name: RUNNER_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: CACHE_SERVER_NODE
+      value: node-c
+    - name: CACHE_SCOPE
+      value: demo
+    - name: CACHE_ROOT
+      value: /mnt/nfs
+    - name: CACHE_MARKER
+      value: .runner-cache
+    - name: POD_UID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.uid
+    image: registry.example.com/actions-runner:v2.330.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    name: prepare-nfs-language-caches
+    resources:
+      limits:
+        cpu: 500m
+        memory: 128Mi
+      requests:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      runAsGroup: 0
+      runAsUser: 1001
+    volumeMounts:
+    - mountPath: /mnt/nfs
+      name: language-cache
+  - args:
+    - dockerd
+    - --host=unix:///var/run/docker.sock
+    - --group=$(DOCKER_GROUP_GID)
+    - --log-level=warn
+    - --insecure-registry=registry.registry.svc.cluster.local
+    env:
+    - name: POD_UID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.uid
+    - name: DOCKER_GROUP_GID
+      value: "123"
+    image: registry.example.com/dind:v1.0.0
+    name: dind
+    resources:
+      limits:
+        cpu: "1"
+      requests:
+        cpu: 200m
+        ephemeral-storage: 2Gi
+        memory: 256Mi
+    restartPolicy: Always
+    securityContext:
+      privileged: true
+    startupProbe:
+      exec:
+        command:
+        - docker
+        - info
+      failureThreshold: 24
+      periodSeconds: 5
+    volumeMounts:
+    - mountPath: /home/runner/_work
+      name: runner-work
+    - mountPath: /var/run
+      name: dind-sock
+    - mountPath: /var/lib/docker
+      name: docker-data
+    - mountPath: /home/runner/externals
+      name: runner-externals
+      readOnly: true
+      subPath: actions-runner-v2.330.0/externals
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 60
+  tolerations:
+  - effect: NoSchedule
+    key: dedicated
+    operator: Equal
+    value: ci
+  volumes:
+  - hostPath:
+      path: /var/lib/runner-cache
+      type: Directory
+    name: language-cache
+  - emptyDir:
+      sizeLimit: 10Gi
+    name: docker-data
+  - emptyDir:
+      sizeLimit: 4Gi
+    name: local-language-cache
+  - emptyDir:
+      sizeLimit: 20Gi
+    name: runner-work
+  - hostPath:
+      path: /var/lib/runner-externals
+      type: DirectoryOrCreate
+    name: runner-externals
+  - configMap:
+      name: runner-externals-cache
+    name: externals-cache-script
+  - emptyDir: {}
+    name: docker-home
+  - emptyDir: {}
+    name: dind-sock
+  - name: docker-config-secret
+    secret:
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+      secretName: registry-dockerconfig
+  - configMap:
+      defaultMode: 365
+      name: runner-apt-proxy
+    name: apt-proxy-config
+  - emptyDir:
+      sizeLimit: 64Mi
+    name: agent-bin
+  - name: ci-dispatcher-token
+    projected:
+      defaultMode: 292
+      sources:
+      - serviceAccountToken:
+          audience: ci-dispatcher
+          expirationSeconds: 600
+          path: token
+status: {}

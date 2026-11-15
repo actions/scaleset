@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    ci.example.com/queue: runner-demo-light
+  labels:
+    actions.github.com/repository: demo
+    app.kubernetes.io/component: runner
+    app.kubernetes.io/managed-by: ci-dispatcher
+    ci.example.com/profile: light
+    ci.example.com/repo: demo
+    ci.example.com/scale-set-id: "1"
+    ci.example.com/state: assigned
+    ci.example.com/trust: private
+  name: ci-light-xxxxx
+  namespace: ci-runners
+spec:
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - preference:
+          matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - node-a
+        weight: 100
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - node-a
+            - node-cp
+  automountServiceAccountToken: false
+  containers:
+  - args:
+    - run
+    command:
+    - /agent-bin/ci-runner-agent
+    env:
+    - name: POD_UID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.uid
+    - name: RUNNER_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: GOPROXY
+      value: http://go-proxy.ci-runners.svc.cluster.local:3000
+    - name: NPM_CONFIG_REGISTRY
+      value: http://npm-proxy.ci-runners.svc.cluster.local:4873
+    - name: PIP_INDEX_URL
+      value: http://pypi-proxy.ci-runners.svc.cluster.local:5000/index/
+    - name: PIP_TRUSTED_HOST
+      value: pypi-proxy.ci-runners.svc.cluster.local
+    - name: UV_DEFAULT_INDEX
+      value: http://pypi-proxy.ci-runners.svc.cluster.local:5000/index/
+    - name: UV_INSECURE_HOST
+      value: pypi-proxy.ci-runners.svc.cluster.local
+    - name: CI_DISPATCHER_CLAIM_URL
+      value: http://ci-dispatcher-claim.ci-runners.svc.cluster.local:8081
+    - name: CI_DISPATCHER_TOKEN_FILE
+      value: /var/run/secrets/ci-dispatcher/token
+    - name: CI_DISPATCHER_STATE_DIR
+    image: registry.example.com/actions-runner:v2.330.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    name: runner
+    resources:
+      limits:
+        cpu: "1"
+        ephemeral-storage: 2Gi
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        ephemeral-storage: 1Gi
+        memory: 256Mi
+    volumeMounts:
+    - mountPath: /home/runner/_work
+      name: work
+    - mountPath: /etc/apt/apt.conf.d/99arc-apt-proxy
+      name: apt-proxy-config
+      readOnly: true
+      subPath: 99arc-apt-proxy
+    - mountPath: /usr/local/bin/arc-apt-proxy-detect
+      name: apt-proxy-config
+      readOnly: true
+      subPath: arc-apt-proxy-detect
+    - mountPath: /agent-bin
+      name: agent-bin
+      readOnly: true
+    - mountPath: /var/run/secrets/ci-dispatcher
+      name: ci-dispatcher-token
+      readOnly: true
+  dnsConfig:
+    options:
+    - name: ndots
+      value: "2"
+    - name: timeout
+      value: "3"
+    - name: attempts
+      value: "3"
+  dnsPolicy: ClusterFirst
+  initContainers:
+  - command:
+    - /ci-runner-agent
+    - install
+    - /agent-bin/ci-runner-agent
+    image: registry.example.com/ci-dispatcher@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    imagePullPolicy: IfNotPresent
+    name: ci-runner-agent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+      requests:
+        cpu: 5m
+        memory: 16Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+    volumeMounts:
+    - mountPath: /agent-bin
+      name: agent-bin
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 30
+  volumes:
+  - emptyDir:
+      sizeLimit: 2Gi
+    name: work
+  - configMap:
+      defaultMode: 365
+      name: runner-apt-proxy
+    name: apt-proxy-config
+  - emptyDir:
+      sizeLimit: 64Mi
+    name: agent-bin
+  - name: ci-dispatcher-token
+    projected:
+      defaultMode: 292
+      sources:
+      - serviceAccountToken:
+          audience: ci-dispatcher
+          expirationSeconds: 600
+          path: token
+status: {}

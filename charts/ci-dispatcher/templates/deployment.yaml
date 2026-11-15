@@ -1,0 +1,92 @@
+{{- $auth := .Values.catalog.github.auth }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ci-dispatcher.name" . }}
+  labels: {{- include "ci-dispatcher.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {{- include "ci-dispatcher.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ci-dispatcher.selector" . | nindent 8 }}
+        # Same component label as the ARC listeners: existing pod scrapes and
+        # dashboards keep collecting the gha_* series.
+        app.kubernetes.io/component: runner-scale-set-listener
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        checksum/catalog: {{ toYaml .Values.catalog | sha256sum }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "ci-dispatcher.name" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Secret files are owned by root: the group lets uid 65532 read them.
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: ci-dispatcher
+          image: {{ include "ci-dispatcher.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - run
+            - --catalog=/etc/ci-dispatcher/catalog.yaml
+            - --log-level={{ .Values.logLevel }}
+            - --github-rest-rate={{ .Values.githubRestRate }}
+            {{- if eq $auth.type "app" }}
+            - --github-app-key-file=/var/run/secrets/ci-dispatcher/github/{{ $auth.privateKeyKey }}
+            {{- else }}
+            - --github-token-file=/var/run/secrets/ci-dispatcher/github/{{ $auth.secretRef.key }}
+            {{- end }}
+          env:
+            - {name: TZ, value: {{ .Values.timezone | quote }}}
+            - {name: CI_DISPATCHER_IMAGE, value: {{ include "ci-dispatcher.image" . | quote }}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {name: metrics, containerPort: 8080}
+            - {name: claim, containerPort: 8081}
+          readinessProbe:
+            httpGet: {path: /readyz, port: metrics}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 20
+            failureThreshold: 3
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: catalog, mountPath: /etc/ci-dispatcher, readOnly: true}
+            - {name: github, mountPath: /var/run/secrets/ci-dispatcher/github, readOnly: true}
+      volumes:
+        - name: catalog
+          configMap: {name: {{ include "ci-dispatcher.name" . }}-catalog}
+        - name: github
+          secret:
+            secretName: {{ $auth.secretRef.name }}
+            defaultMode: 0440
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

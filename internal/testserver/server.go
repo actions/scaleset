@@ -104,14 +104,14 @@ func (s *actionsServer) setDefaults(t testing.TB) {
 	if s.installationAccessTokenHandler == nil {
 		s.installationAccessTokenHandler = func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"token":"ghs_installation_token","expires_at":"2099-01-01T00:00:00Z"}`))
+			_, _ = w.Write([]byte(`{"token":"ghs_installation_token","expires_at":"2099-01-01T00:00:00Z"}`))
 		}
 	}
 
 	if s.runnerRegistrationTokenHandler == nil {
 		s.runnerRegistrationTokenHandler = func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"token":"token"}`))
+			_, _ = w.Write([]byte(`{"token":"token"}`))
 		}
 	}
 
@@ -122,7 +122,7 @@ func (s *actionsServer) setDefaults(t testing.TB) {
 			}
 
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"url":"` + s.URL + `/tenant/123/","token":"` + s.token + `"}`))
+			_, _ = w.Write([]byte(`{"url":"` + s.URL + `/tenant/123/","token":"` + s.token + `"}`))
 		}
 	}
 }

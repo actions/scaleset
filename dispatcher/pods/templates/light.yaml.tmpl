@@ -1,0 +1,88 @@
+{{- /*
+Light runner: the runner container alone, no Docker daemon and no shared
+cache, for short jobs (lint, checks, notifications). Package proxies are
+injected when the profile references them.
+*/ -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ quote .Name }}
+  namespace: {{ quote .Namespace }}
+  {{- with .Spec.Annotations }}
+  annotations: {{ toJSON . }}
+  {{- end }}
+spec:
+  {{- with .Spec.NodeSelector }}
+  nodeSelector: {{ toJSON . }}
+  {{- end }}
+  {{- with .Spec.ServiceAccountName }}
+  serviceAccountName: {{ quote . }}
+  {{- end }}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: {{ toJSON .Nodes }}
+      {{- with .Spec.PreferNodes }}
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: {{ toJSON . }}
+      {{- end }}
+  {{- with .Spec.Tolerations }}
+  tolerations: {{ toJSON . }}
+  {{- end }}
+  terminationGracePeriodSeconds: 30
+  dnsPolicy: ClusterFirst
+  dnsConfig:
+    options:
+      - {name: ndots, value: "2"}
+      - {name: timeout, value: "3"}
+      - {name: attempts, value: "3"}
+  {{- with .Spec.ImagePullSecrets }}
+  imagePullSecrets:
+    {{- range . }}
+    - name: {{ quote . }}
+    {{- end }}
+  {{- end }}
+  containers:
+    - name: runner
+      image: {{ quote .Spec.Image }}
+      env:
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: RUNNER_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        {{- range .ProxyEnv }}
+        - {name: {{ quote .Name }}, value: {{ quote .Value }}}
+        {{- end }}
+        {{- range .ExtraEnv }}
+        - {name: {{ quote .Name }}, value: {{ quote .Value }}}
+        {{- end }}
+      resources: {{ toJSON .Spec.Resources }}
+      volumeMounts:
+        - {name: work, mountPath: /home/runner/_work}
+        {{- with .AptConfigMap }}
+        - {name: apt-proxy-config, mountPath: /etc/apt/apt.conf.d/99arc-apt-proxy, subPath: 99arc-apt-proxy, readOnly: true}
+        - {name: apt-proxy-config, mountPath: /usr/local/bin/arc-apt-proxy-detect, subPath: arc-apt-proxy-detect, readOnly: true}
+        {{- end }}
+  volumes:
+    - name: work
+      emptyDir:
+        sizeLimit: {{ quote (default "2Gi" .Spec.WorkLimit) }}
+    {{- with .AptConfigMap }}
+    - name: apt-proxy-config
+      configMap:
+        name: {{ quote . }}
+        defaultMode: 0555
+    {{- end }}

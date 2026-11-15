@@ -4,3 +4,4 @@
 # Test and coverage output
 *.test
 *.out
+tmp/

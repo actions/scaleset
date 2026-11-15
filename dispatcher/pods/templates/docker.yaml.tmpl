@@ -1,0 +1,269 @@
+{{- /*
+Docker runner: runner container plus a privileged dind native sidecar, the
+shared runner externals, the per-repository language cache and the package
+proxies. Same structure as the gha-runner-scale-set pod it replaces.
+
+The dispatcher adds after rendering: labels, the agent init container and its
+volume, the projected service account token, restartPolicy and the runner
+command. A template cannot remove them.
+*/ -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ quote .Name }}
+  namespace: {{ quote .Namespace }}
+  {{- with .Spec.Annotations }}
+  annotations: {{ toJSON . }}
+  {{- end }}
+spec:
+  {{- with .Spec.NodeSelector }}
+  nodeSelector: {{ toJSON . }}
+  {{- end }}
+  {{- with .Spec.ServiceAccountName }}
+  serviceAccountName: {{ quote . }}
+  {{- end }}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: {{ toJSON .Nodes }}
+      {{- with .Spec.PreferNodes }}
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: {{ toJSON . }}
+      {{- end }}
+  {{- with .Spec.Tolerations }}
+  tolerations: {{ toJSON . }}
+  {{- end }}
+  terminationGracePeriodSeconds: 60
+  dnsPolicy: ClusterFirst
+  dnsConfig:
+    options:
+      - {name: ndots, value: "2"}
+      - {name: timeout, value: "3"}
+      - {name: attempts, value: "3"}
+  {{- with .Spec.ImagePullSecrets }}
+  imagePullSecrets:
+    {{- range . }}
+    - name: {{ quote . }}
+    {{- end }}
+  {{- end }}
+  initContainers:
+    {{- if .Spec.DockerConfigSecret }}
+    - name: setup-docker-config
+      image: {{ quote .InitImage }}
+      imagePullPolicy: IfNotPresent
+      command:
+        - sh
+        - -c
+        - mkdir -p /home/runner/.docker /local-cache && cp /tmp/oci-config/config.json /home/runner/.docker/config.json && chown -R 1001:0 /home/runner/.docker && chown 1001:0 /local-cache
+      volumeMounts:
+        - {name: docker-home, mountPath: /home/runner/.docker}
+        - {name: local-language-cache, mountPath: /local-cache}
+        - {name: docker-config-secret, mountPath: /tmp/oci-config, readOnly: true}
+    {{- end }}
+    {{- with .Spec.Externals }}
+    # Wait for the DaemonSet's atomic publication; runners never write the cache.
+    - name: prepare-externals
+      image: {{ quote $.Spec.Image }}
+      command: ["python3", "/scripts/cache.py", "wait"]
+      env:
+        - {name: EXTERNALS_CACHE_KEY, value: {{ quote .CacheKey }}}
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 0
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests: {cpu: 5m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 64Mi}
+      volumeMounts:
+        - {name: runner-externals, mountPath: /cache, readOnly: true}
+        - {name: externals-cache-script, mountPath: /scripts, readOnly: true}
+    {{- end }}
+    {{- if and .Language (not .Warm) }}
+    # Namespace setup + real listing probe, before accepting any job.
+    - name: prepare-nfs-language-caches
+      image: {{ quote .Spec.Image }}
+      command: ["/bin/bash", "-c"]
+      env:
+        - name: RUNNER_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - {name: CACHE_SERVER_NODE, value: {{ quote .Language.ServerNode }}}
+        - {name: CACHE_SCOPE, value: {{ quote .Repo }}}
+        - {name: CACHE_ROOT, value: /mnt/nfs}
+        {{- with .Language.Marker }}
+        - {name: CACHE_MARKER, value: {{ quote . }}}
+        {{- end }}
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+      args:
+        - {{ toJSON .PreflightScript }}
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 0
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests: {cpu: 100m, memory: 64Mi}
+        limits: {cpu: 500m, memory: 128Mi}
+      volumeMounts:
+        - {name: language-cache, mountPath: /mnt/nfs}
+    {{- end }}
+    # Native sidecar: dind daemon shared with the runner via /var/run.
+    - name: dind
+      image: {{ quote .Spec.DinD.Image }}
+      args:
+        - dockerd
+        - --host=unix:///var/run/docker.sock
+        - --group=$(DOCKER_GROUP_GID)
+        - --log-level=warn
+        {{- range .Spec.DinD.InsecureRegistries }}
+        - {{ quote (printf "--insecure-registry=%s" .) }}
+        {{- end }}
+      env:
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - {name: DOCKER_GROUP_GID, value: "123"}
+      securityContext:
+        privileged: true
+      restartPolicy: Always
+      resources:
+        limits:
+          cpu: {{ quote (default "1" .Spec.DinD.CPULimit) }}
+        requests:
+          cpu: {{ quote (default "200m" .Spec.DinD.CPU) }}
+          memory: {{ quote (default "256Mi" .Spec.DinD.Memory) }}
+          ephemeral-storage: 2Gi
+      startupProbe:
+        exec:
+          command: ["docker", "info"]
+        initialDelaySeconds: 0
+        failureThreshold: 24
+        periodSeconds: 5
+      volumeMounts:
+        - {name: runner-work, mountPath: /home/runner/_work}
+        - {name: dind-sock, mountPath: /var/run}
+        - {name: docker-data, mountPath: /var/lib/docker}
+        {{- with .Spec.Externals }}
+        - {name: runner-externals, mountPath: /home/runner/externals, subPath: {{ quote (printf "%s/externals" .CacheKey) }}, readOnly: true}
+        {{- end }}
+  containers:
+    - name: runner
+      image: {{ quote .Spec.Image }}
+      env:
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: RUNNER_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        {{- with .Language }}
+        - {name: CACHE_SERVER_NODE, value: {{ quote .ServerNode }}}
+        {{- end }}
+        - {name: WORKFLOW_CI_CACHE_PROFILE, value: {{ quote .Spec.CacheProfile }}}
+        {{- if .LocalCache }}
+        - {name: GOCACHE, value: /local-cache/go-build}
+        - {name: GOMODCACHE, value: /local-cache/go-mod}
+        - {name: UV_CACHE_DIR, value: /local-cache/uv}
+        {{- else if not .Warm }}
+        - {name: GOCACHE, value: /cache/go-build}
+        - {name: GOMODCACHE, value: /cache/go-mod}
+        - {name: UV_CACHE_DIR, value: /home/runner/.cache/uv}
+        {{- end }}
+        # Cache filesystem differs from install target (overlayfs) so hardlinks fail.
+        - {name: UV_LINK_MODE, value: copy}
+        {{- range .ProxyEnv }}
+        - {name: {{ quote .Name }}, value: {{ quote .Value }}}
+        {{- end }}
+        - {name: DOCKER_HOST, value: "unix:///var/run/docker.sock"}
+        - {name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS, value: "120"}
+        {{- range .ExtraEnv }}
+        - {name: {{ quote .Name }}, value: {{ quote .Value }}}
+        {{- end }}
+      resources: {{ toJSON .Spec.Resources }}
+      volumeMounts:
+        {{- with .Spec.Externals }}
+        - {name: runner-externals, mountPath: /home/runner/externals, subPath: {{ quote (printf "%s/externals" .CacheKey) }}, readOnly: true}
+        {{- end }}
+        {{- if .Language }}
+        {{- if .Warm }}
+        # Warm pod: the repository is chosen at claim time. The whole cache root
+        # is mounted and the agent prepares the repository directories.
+        - {name: language-cache, mountPath: /mnt/language-cache}
+        {{- else }}
+        - {name: language-cache, mountPath: /mnt/runner-state, subPathExpr: {{ quote (printf "language-caches/%s/pods/$(POD_UID)" .Repo) }}}
+        - {name: language-cache, mountPath: /cache, subPathExpr: {{ quote (printf "language-caches/%s/pods/$(POD_UID)/cache" .Repo) }}}
+        - {name: language-cache, mountPath: /home/runner/.cache/uv, subPath: {{ quote (printf "language-caches/%s/uv" .Repo) }}}
+        - {name: language-cache, mountPath: /cache/go-build, subPath: {{ quote (printf "language-caches/%s/go-build" .Repo) }}}
+        - {name: language-cache, mountPath: /cache/go-mod, subPath: {{ quote (printf "language-caches/%s/go-mod" .Repo) }}}
+        {{- end }}
+        {{- end }}
+        - {name: docker-home, mountPath: /home/runner/.docker}
+        - {name: local-language-cache, mountPath: /local-cache}
+        - {name: runner-work, mountPath: /home/runner/_work}
+        - {name: dind-sock, mountPath: /var/run}
+        {{- with .AptConfigMap }}
+        - {name: apt-proxy-config, mountPath: /etc/apt/apt.conf.d/99arc-apt-proxy, subPath: 99arc-apt-proxy, readOnly: true}
+        - {name: apt-proxy-config, mountPath: /usr/local/bin/arc-apt-proxy-detect, subPath: arc-apt-proxy-detect, readOnly: true}
+        {{- end }}
+  volumes:
+    {{- with .Language }}
+    - name: language-cache
+      hostPath:
+        path: {{ quote .HostPath }}
+        type: Directory
+    {{- end }}
+    - name: docker-data
+      emptyDir:
+        sizeLimit: {{ quote (default "10Gi" .Spec.DockerDataLimit) }}
+    - name: local-language-cache
+      emptyDir:
+        sizeLimit: 4Gi
+    - name: runner-work
+      emptyDir:
+        sizeLimit: {{ quote (default "20Gi" .Spec.WorkLimit) }}
+    {{- with .Spec.Externals }}
+    - name: runner-externals
+      hostPath:
+        path: {{ quote .HostPath }}
+        type: DirectoryOrCreate
+    - name: externals-cache-script
+      configMap:
+        name: {{ quote .ConfigMap }}
+    {{- end }}
+    - name: docker-home
+      emptyDir: {}
+    - name: dind-sock
+      emptyDir: {}
+    {{- with .Spec.DockerConfigSecret }}
+    - name: docker-config-secret
+      secret:
+        secretName: {{ quote . }}
+        items:
+          - {key: .dockerconfigjson, path: config.json}
+    {{- end }}
+    {{- with .AptConfigMap }}
+    - name: apt-proxy-config
+      configMap:
+        name: {{ quote . }}
+        defaultMode: 0555
+    {{- end }}

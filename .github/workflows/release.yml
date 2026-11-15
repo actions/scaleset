@@ -1,0 +1,88 @@
+name: release
+
+# A merge on main whose ci-dispatcher checks passed cuts a release: version
+# bump from the conventional commits (git-cliff, cliff.toml), CHANGELOG, tag
+# dispatcher-vX.Y.Z, GitHub Release, then cd.yml on that tag.
+#
+# The release does not deploy anything by itself: cd.yml publishes the image,
+# deploys it as a candidate, runs the acceptance and only then promotes it.
+#
+# charts/ci-dispatcher/values.yaml (image.digest) is deliberately NOT a
+# version file: it drives production and only the promote job of cd.yml
+# writes it, after a green acceptance.
+
+on:
+  workflow_run:
+    workflows: [ci-dispatcher]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Compute the bump without committing or tagging"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write # gh workflow run cd.yml on the new tag
+
+concurrency:
+  group: ci-dispatcher-release
+  cancel-in-progress: false
+
+jobs:
+  # The commit to release: the one whose checks passed, or the tip of main
+  # when only candidate and promotion commits of cd.yml landed on top of it
+  # meanwhile (otherwise the push of the release commit would be refused and
+  # the merge never released). Any other newer commit has its own run.
+  base:
+    # Only a successful push run of this repository's main: a fork pull
+    # request from its own "main" branch also reports head_branch=main.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: arc-runner-ci-dispatcher
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 40
+      - id: base
+        env:
+          VALIDATED: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          tip=$(git rev-parse HEAD)
+          if .github/scripts/delivery-ancestor.sh reaches "$tip" "$VALIDATED"; then
+            echo "sha=$tip" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$VALIDATED" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: base
+    uses: didlawowo/workflow-ci/.github/workflows/release.yml@v1.22.6
+    with:
+      workflow-ci-ref: v1.22.6
+      # A newer main than this commit makes the push fail safely instead of
+      # releasing untested code.
+      validated-sha: ${{ needs.base.outputs.sha }}
+      version-files: |
+        charts/ci-dispatcher/Chart.yaml:^version: (.+)$
+        charts/ci-dispatcher/Chart.yaml:^appVersion: "(.+)"$
+      tag-prefix: "dispatcher-v"
+      cliff-config: cliff.toml
+      runs-on: arc-runner-ci-dispatcher
+      dry-run: ${{ inputs.dry-run || false }}
+      # A tag pushed with GITHUB_TOKEN triggers no workflow: cd.yml is
+      # dispatched explicitly.
+      trigger-cd-workflow: cd.yml

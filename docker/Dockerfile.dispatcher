@@ -1,0 +1,21 @@
+# ci-dispatcher image: the dispatcher and the runner agent, static binaries on
+# a distroless non-root base (which ships tzdata).
+# Build: docker buildx build -f docker/Dockerfile.dispatcher --platform linux/amd64,linux/arm64 .
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=0
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/ci-dispatcher ./cmd/ci-dispatcher \
+ && GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/ci-runner-agent ./cmd/ci-runner-agent
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/ci-dispatcher /ci-dispatcher
+COPY --from=build /out/ci-runner-agent /ci-runner-agent
+USER 65532:65532
+EXPOSE 8080 8081
+ENTRYPOINT ["/ci-dispatcher"]
+CMD ["run"]

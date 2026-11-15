@@ -1,0 +1,17 @@
+name: Mutation testing policy
+
+on:
+  issues:
+    types: [labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: write
+
+jobs:
+  policy:
+    uses: didlawowo/workflow-ci/.github/workflows/mutation-issue-policy.yml@v1.22.5
+    with:
+      runner: arc-runner-ci-dispatcher

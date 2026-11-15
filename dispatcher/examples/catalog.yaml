@@ -1,0 +1,94 @@
+# Example catalog. Every value is generic: replace the registry, nodes, cache
+# paths and proxy URLs with those of your cluster.
+github:
+  owner: example-owner
+  auth:
+    type: pat
+    secretRef: {name: github-pat-runners, key: github_token}
+discovery: {enabled: false}
+runtime:
+  namespace: ci-runners
+  claimURL: http://ci-dispatcher-claim.ci-runners.svc.cluster.local:8081
+  labelPrefix: ci.example.com
+  # Never run public jobs on the etcd node.
+  forbiddenPublicNodes: [node-cp]
+caches:
+  language-nfs:
+    type: language
+    hostPath: /var/lib/runner-cache
+    serverNode: node-c
+    marker: .runner-cache
+  proxies:
+    type: proxies
+    env:
+      NPM_CONFIG_REGISTRY: http://npm-proxy.ci-runners.svc.cluster.local:4873
+      PIP_INDEX_URL: http://pypi-proxy.ci-runners.svc.cluster.local:5000/index/
+      PIP_TRUSTED_HOST: pypi-proxy.ci-runners.svc.cluster.local
+      UV_DEFAULT_INDEX: http://pypi-proxy.ci-runners.svc.cluster.local:5000/index/
+      UV_INSECURE_HOST: pypi-proxy.ci-runners.svc.cluster.local
+      GOPROXY: http://go-proxy.ci-runners.svc.cluster.local:3000
+    aptConfigMap: runner-apt-proxy
+profiles:
+  docker:
+    template: docker
+    image: registry.example.com/actions-runner:v2.330.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    resources:
+      requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 26Gi}
+      limits: {cpu: "2", memory: 4Gi}
+    dind:
+      image: registry.example.com/dind:v1.0.0
+      memory: 256Mi
+      insecureRegistries: [registry.registry.svc.cluster.local]
+    dockerDataLimit: 10Gi
+    caches: [language-nfs, proxies]
+    externals:
+      hostPath: /var/lib/runner-externals
+      cacheKey: actions-runner-v2.330.0
+      configMap: runner-externals-cache
+    dockerConfigSecret: registry-dockerconfig
+    imagePullSecrets: [registry-credentials]
+    nodeSelector: {kubernetes.io/arch: amd64}
+    tolerations:
+      - {key: dedicated, operator: Equal, value: ci, effect: NoSchedule}
+    nodes: [node-a, node-b, node-cp]
+    preferNodes: [node-c]
+    annotations: {example.com/skip-portal: "true"}
+    warm: 0
+  light:
+    template: light
+    image: registry.example.com/actions-runner:v2.330.0@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    resources:
+      requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 1Gi}
+      limits: {cpu: "1", memory: 1Gi, ephemeral-storage: 2Gi}
+    caches: [proxies]
+    nodeSelector: {kubernetes.io/arch: amd64}
+    nodes: [node-a, node-cp]
+    preferNodes: [node-a]
+    warm: 2
+  public:
+    template: light
+    image: ghcr.io/actions/actions-runner:2.330.0@sha256:2222222222222222222222222222222222222222222222222222222222222222
+    resources:
+      requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 1Gi}
+      limits: {cpu: "1", memory: 1Gi, ephemeral-storage: 2Gi}
+    caches: [proxies]
+    nodes: [node-a, node-b]
+    trust: public
+    warm: 0
+defaults: {profiles: [docker], maxRunners: 6}
+repos:
+  demo: {profiles: [docker, light]}
+  api-server:
+    priority: high
+    nodes: ["+node-c"]
+    resources: {limits: {memory: 8Gi}}
+  OpenTool:
+    fileNames: {docker: runner-OpenTool}
+    visibility: public
+capacity:
+  enforce: false
+  nodes: {node-a: 4, node-b: 6, node-c: 7, node-cp: auto}
+fileNames:
+  docker: "runner-{repo}"
+  light: "runner-{repo}-light"
+  "*": "runner-{repo}-{profile}"

@@ -1,0 +1,13 @@
+# Acceptance CANDIDATE of ci-dispatcher, written by cd.yml (job candidate).
+#
+# Read on main by the Application ci-dispatcher-acceptance (continuous-
+# delivery), which deploys it in its own namespace, with its own Lease and a
+# catalog limited to the acceptance queue of this repository. The catalog
+# lives in that Application, not here.
+#
+# Only image.tag and image.digest are written, by cd.yml. Production never
+# reads this file: it follows charts/ci-dispatcher/values.yaml, written by the
+# promote job after a green acceptance.
+image:
+  tag: "0.1.4"
+  digest: "sha256:d5814c7799dbe1a9bb0d99063b609203aca6da58c597a87b7ece31004d7d0ec1"

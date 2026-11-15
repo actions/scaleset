@@ -1,0 +1,72 @@
+# Tasks of the ci-dispatcher fork. The upstream library keeps its own
+# workflow (.github/workflows/go.yaml, upstream repository only).
+version: '3'
+
+vars:
+  IMAGE: ghcr.io/didlawowo/ci-dispatcher
+  CHART: charts/ci-dispatcher
+  GOVULNCHECK_VERSION: v1.1.4
+
+env:
+  CGO_ENABLED: "0"
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  fmt:
+    desc: Format the dispatcher code
+    cmds: [gofmt -w ./dispatcher ./cmd]
+
+  fmt:check:
+    desc: Fail when the dispatcher code is not formatted
+    cmds:
+      - test -z "$(gofmt -l ./dispatcher ./cmd)"
+
+  lint:
+    desc: go vet and golangci-lint on the dispatcher
+    cmds:
+      - go vet ./...
+      - go tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint run ./dispatcher/... ./cmd/...
+
+  test:
+    desc: Dispatcher tests with the race detector (the CI also runs the upstream suite)
+    cmds: [go test -race ./dispatcher/... ./cmd/...]
+
+  build:
+    desc: Build both binaries into tmp/
+    cmds:
+      - go build -o tmp/ci-dispatcher ./cmd/ci-dispatcher
+      - go build -o tmp/ci-runner-agent ./cmd/ci-runner-agent
+
+  helm:lint:
+    desc: Lint and render the chart
+    cmds:
+      - helm lint {{.CHART}} --namespace ci-runners
+      - helm template ci-dispatcher {{.CHART}} --namespace ci-runners > /dev/null
+
+  docker:build:
+    desc: Build the multi-arch image locally (no push)
+    cmds:
+      - docker buildx build -f docker/Dockerfile.dispatcher --platform linux/amd64,linux/arm64 -t {{.IMAGE}}:dev .
+
+  security:deps:
+    desc: Known vulnerabilities in the module dependencies
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@{{.GOVULNCHECK_VERSION}} . ./listener/... ./dispatcher/... ./cmd/...
+
+  validate:
+    desc: Validate a catalog and list its queues (CATALOG=path)
+    requires: {vars: [CATALOG]}
+    cmds:
+      - go run ./cmd/ci-dispatcher validate --catalog {{.CATALOG}}
+
+  ci:
+    desc: fmt:check, lint, test, helm:lint, build
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+      - task: helm:lint
+      - task: build

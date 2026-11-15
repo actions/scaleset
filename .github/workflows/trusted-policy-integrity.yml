@@ -1,0 +1,15 @@
+name: Trusted policy integrity
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    uses: didlawowo/workflow-ci/.github/workflows/policy-integrity.yml@v1.22.5
+    with:
+      runner: arc-runner-ci-dispatcher

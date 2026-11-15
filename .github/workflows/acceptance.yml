@@ -1,0 +1,152 @@
+name: acceptance
+
+# Acceptance of a ci-dispatcher candidate with real GitHub jobs, called
+# synchronously by cd.yml before any promotion.
+#
+# The candidate (namespace ci-dispatcher-acceptance) serves one queue of this
+# repository, ci-acceptance, and nothing else. The dispatcher hands every
+# runner it serves, cold or warm pod, DISPATCHER_IMAGE: its own image,
+# repository@digest. Every job below compares it with the published digest: a
+# job served by the previous candidate, still running while the new pod fails
+# to start, fails.
+# A warm pod created by the previous candidate and adopted by this one passes:
+# the check proves the dispatcher that served the job, not the agent binary.
+#
+# What it proves: the candidate starts, reads its GitHub secret, opens its
+# session, gets runners registered (cold pods and its warm pod) and serves
+# several jobs at once. What it does not prove: the docker profile (this
+# repository is public, so the public profile serves it), the recreation of a
+# deleted queue and the restart of the dispatcher (no cluster access from a
+# public repository's runner); those stay covered by the Go tests.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Candidate version (X.Y.Z)"
+        required: true
+        type: string
+      candidate:
+        description: "Expected DISPATCHER_IMAGE (repository@digest of the candidate)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # ArgoCD polls main every 3 minutes, then the candidate pod rolls out and
+  # opens its session. A job queued before that is served by the previous
+  # candidate and fails its image check.
+  settle:
+    runs-on: arc-runner-ci-dispatcher
+    timeout-minutes: 10
+    steps:
+      - name: wait for the candidate rollout
+        run: sleep 300
+
+  # timeout-minutes does not count the time a job waits for a runner: without
+  # a candidate (not deployed, secret missing, broken, night) the jobs below
+  # would wait 24 hours and hold every later delivery. A job still queued after
+  # 15 minutes cancels the run.
+  guard:
+    needs: settle
+    runs-on: arc-runner-ci-dispatcher
+    timeout-minutes: 60
+    permissions:
+      actions: write
+    steps:
+      - name: cancel the run when the candidate takes no job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          declare -A first_seen=()
+          for _ in $(seq 1 110); do
+            # "<id> <status> <conclusion>" of the single and parallel jobs.
+            jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
+              --jq '.jobs[] | select(.name | test("/ (single|parallel)")) | "\(.id) \(.status) \(.conclusion // "-")"')
+            now=$(date +%s)
+            done_jobs=0
+            single_failed=0
+            while read -r id status _; do
+              [ -n "${id:-}" ] || continue
+              if [ "$status" = completed ]; then
+                done_jobs=$((done_jobs + 1))
+                continue
+              fi
+              if [ "$status" != in_progress ]; then
+                first_seen[$id]=${first_seen[$id]:-$now}
+                if [ $((now - first_seen[$id])) -ge 900 ]; then
+                  echo "::error::job $id waited 15 minutes: the candidate serves no job"
+                  gh run cancel "$RUN_ID" -R "$GITHUB_REPOSITORY"
+                  exit 1
+                fi
+              fi
+            done <<< "$jobs"
+            if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
+                 --jq '.jobs[] | select(.name | test("/ single")) | .conclusion // ""' | grep -Eq '^(failure|cancelled|skipped)$'; then
+              single_failed=1
+            fi
+            # Finished: single failed (parallel never starts), or single + 3 parallel done.
+            if [ "$single_failed" -eq 1 ] || [ "$done_jobs" -ge 4 ]; then exit 0; fi
+            sleep 30
+          done
+          echo "::error::the acceptance jobs did not finish within 55 minutes"
+          gh run cancel "$RUN_ID" -R "$GITHUB_REPOSITORY"
+          exit 1
+
+  # One job, cold pod or warm pod.
+  single:
+    needs: settle
+    runs-on: ci-acceptance
+    timeout-minutes: 15
+    steps:
+      - name: job served by the candidate
+        env:
+          EXPECTED: ${{ inputs.candidate }}
+        run: |
+          echo "pod=$HOSTNAME dispatcher=${DISPATCHER_IMAGE:-none}"
+          if [ "${DISPATCHER_IMAGE:-}" != "$EXPECTED" ]; then
+            echo "::error::served by '${DISPATCHER_IMAGE:-none}', expected the candidate $EXPECTED"
+            exit 1
+          fi
+
+  # Three jobs at once: the candidate scales out and forgets none.
+  parallel:
+    needs: single
+    runs-on: ci-acceptance
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [1, 2, 3]
+    steps:
+      - name: job ${{ matrix.job }} served by the candidate
+        env:
+          EXPECTED: ${{ inputs.candidate }}
+        run: |
+          echo "pod=$HOSTNAME dispatcher=${DISPATCHER_IMAGE:-none}"
+          [ "${DISPATCHER_IMAGE:-}" = "$EXPECTED" ] || { echo "::error::served by '${DISPATCHER_IMAGE:-none}', expected $EXPECTED"; exit 1; }
+          sleep 20
+
+  report:
+    needs: [single, parallel]
+    if: always()
+    runs-on: arc-runner-ci-dispatcher
+    timeout-minutes: 5
+    steps:
+      - name: summary
+        env:
+          VERSION: ${{ inputs.version }}
+          SINGLE: ${{ needs.single.result }}
+          PARALLEL: ${{ needs.parallel.result }}
+        run: |
+          {
+            echo "## Acceptance of ci-dispatcher $VERSION"
+            echo "- one job served by the candidate: $SINGLE"
+            echo "- three simultaneous jobs: $PARALLEL"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$SINGLE" = success ] && [ "$PARALLEL" = success ]
