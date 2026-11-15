@@ -4,6 +4,13 @@ All notable changes to ci-dispatcher are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and follows the [Conventional Commits](https://www.conventionalcommits.org) spec.
 
+## [0.1.4] - 2026-11-15
+
+### Bug Fixes
+
+- *(agent)* Reap orphaned job processes as PID 1 of the runner container (#12)
+
+
 ## [0.1.3] - 2026-11-14
 
 ### CI
