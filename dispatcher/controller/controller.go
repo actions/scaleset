@@ -917,7 +917,10 @@ func (c *Controller) GC(ctx context.Context, startup bool) {
 	for id := range c.byID {
 		known[id] = true
 	}
-	sessionsReady := len(c.byID) == countResolved(c.queues)
+	// A queue's pods are only "unknown" once every catalog queue has its
+	// scale set: after a restart, sessions held by the previous instance
+	// resolve one by one, and their running pods must survive until then.
+	sessionsReady := countResolved(c.queues) == len(c.queues)
 	c.mu.Unlock()
 
 	for _, p := range c.cfg.Pods.Managed() {
