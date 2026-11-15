@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/actions/scaleset/cmd/ci-runner-agent/reap"
 	claim "github.com/actions/scaleset/dispatcher/claim/protocol"
 	"github.com/actions/scaleset/dispatcher/preflight"
 )
@@ -240,31 +241,7 @@ func runRunner(log *slog.Logger, p *claim.Payload, stateDir string) int {
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigs)
-	if err := cmd.Start(); err != nil {
-		log.Error("runner not started", "command", command, "error", err)
-		return 1
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	for {
-		select {
-		case s := <-sigs:
-			_ = cmd.Process.Signal(s)
-		case err := <-done:
-			var exit *exec.ExitError
-			if errors.As(err, &exit) {
-				if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-					return 128 + int(ws.Signal())
-				}
-				return exit.ExitCode()
-			}
-			if err != nil {
-				log.Error("runner failed", "error", err)
-				return 1
-			}
-			return 0
-		}
-	}
+	return reap.Run(log, cmd, sigs)
 }
 
 // cleanState empties the per-pod state directory, within 30 seconds.
