@@ -920,7 +920,9 @@ func (c *Controller) GC(ctx context.Context, startup bool) {
 	// The first GC runs before any queue has its scale set ID: a pod is only
 	// "unknown" once every queue of its repository has its ID, so a restart
 	// keeps the running pods, and one failing repository does not stop the
-	// cleanup of the others. A repository absent from the catalog is ready.
+	// cleanup of the others. A repository absent from the catalog (removed, or
+	// dropped when its visibility stays unknown) is ready, but its busy pods
+	// finish their job.
 	repoReady := map[string]bool{}
 	for _, qs := range c.queues {
 		ok, seen := repoReady[qs.q.Repo]
@@ -938,7 +940,7 @@ func (c *Controller) GC(ctx context.Context, startup bool) {
 		}
 		id, err := strconv.Atoi(p.Labels[c.cfg.Labels.ScaleSetID()])
 		if err == nil && !known[id] {
-			if ready, inCatalog := repoReady[p.Labels[c.cfg.Labels.Repo()]]; ready || !inCatalog {
+			if ready, inCatalog := repoReady[p.Labels[c.cfg.Labels.Repo()]]; ready || (!inCatalog && state != pods.StateBusy) {
 				c.gcDelete(ctx, p, "unknown_queue")
 				continue
 			}
