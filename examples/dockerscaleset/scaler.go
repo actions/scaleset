@@ -106,14 +106,24 @@ func (s *Scaler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStar
 		slog.Int64("runnerRequestId", jobInfo.RunnerRequestID),
 		slog.String("jobId", jobInfo.JobID),
 	)
-	s.runners.markBusy(jobInfo.RunnerName)
+	if !s.runners.markBusy(jobInfo.RunnerName) {
+		// The runner is not tracked by this process (for example, the message was
+		// redelivered or the runner was started before a restart). Nothing to update.
+		s.logger.Info("Job started on an untracked runner, skipping", slog.String("runnerName", jobInfo.RunnerName))
+	}
 	return nil
 }
 
 func (s *Scaler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error {
 	s.logger.Info("Job completed", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
 
-	containerID := s.runners.markDone(jobInfo.RunnerName)
+	containerID, ok := s.runners.markDone(jobInfo.RunnerName)
+	if !ok {
+		// Already removed (for example, a redelivered message), or a runner this
+		// process never started. There is no container to remove.
+		s.logger.Info("Job completed on an untracked runner, skipping", slog.String("runnerName", jobInfo.RunnerName))
+		return nil
+	}
 	if err := s.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("failed to remove runner container: %w", err)
 	}
@@ -198,35 +208,37 @@ func (r *runnerState) count() int {
 	return count
 }
 
-func (r *runnerState) markBusy(name string) {
+// markBusy moves an idle runner to busy. It reports whether the runner is tracked;
+// marking an already busy runner is a no-op that returns true.
+func (r *runnerState) markBusy(name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, ok := r.busy[name]; ok {
+		return true
+	}
 	state, ok := r.idle[name]
 	if !ok {
-		panic("marking non-existent runner busy")
+		return false
 	}
 	delete(r.idle, name)
 	r.busy[name] = state
+	return true
 }
 
-func (r *runnerState) markDone(name string) string {
+// markDone stops tracking a runner and returns its container ID. ok is false if
+// the runner is not tracked (already removed, or never started by this process).
+func (r *runnerState) markDone(name string) (containerID string, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.markDoneUnlocked(name)
-}
-
-func (r *runnerState) markDoneUnlocked(name string) string {
-	containerID, ok := r.busy[name]
-	if ok {
+	if containerID, ok = r.busy[name]; ok {
 		delete(r.busy, name)
-		return containerID
+		return containerID, true
 	}
-	containerID, ok = r.idle[name]
-	if ok {
+	if containerID, ok = r.idle[name]; ok {
 		delete(r.idle, name)
-		return containerID
+		return containerID, true
 	}
-	panic("marking non-existent runner done")
+	return "", false
 }
 
 func (r *runnerState) addIdle(name, containerID string) {
