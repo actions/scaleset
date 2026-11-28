@@ -70,7 +70,7 @@ type Listener struct {
 // SetMaxRunners sets the capacity of the scaleset. It is concurrently
 // safe to update the max runners during listener.Run.
 func (l *Listener) SetMaxRunners(count int) {
-	l.maxRunners.Store(uint32(count))
+	l.maxRunners.Store(uint32(count)) // #nosec G115 -- capacity comes from the catalog/queue config, bounded well below MaxUint32 by the dispatcher
 }
 
 // New creates a new Listener with the given configuration.

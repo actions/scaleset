@@ -372,7 +372,7 @@ func DefaultBackoff(waitMin, waitMax time.Duration, attempt int, resp *http.Resp
 
 	wait := time.Duration(backoff)
 	if spread := int64(wait / 2); spread > 0 {
-		wait += time.Duration(rand.Int64N(spread + 1))
+		wait += time.Duration(rand.Int64N(spread + 1)) // #nosec G404 -- retry backoff jitter, not security-sensitive
 	}
 
 	return min(wait, waitMax)

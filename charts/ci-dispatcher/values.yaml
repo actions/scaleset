@@ -1,0 +1,58 @@
+# -- Image of the dispatcher; it also carries ci-runner-agent, copied into
+# every runner pod by an init container. Pin a digest in production.
+# tag and digest are the PRODUCTION image: only the promote job of cd.yml
+# writes them, after a green acceptance of the candidate (acceptance/values.yaml).
+# An empty tag defaults to the chart appVersion; the digest wins when set.
+image:
+  repository: ghcr.io/didlawowo/ci-dispatcher
+  tag: "0.1.4"
+  digest: "sha256:d5814c7799dbe1a9bb0d99063b609203aca6da58c597a87b7ece31004d7d0ec1"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# -- 1 replica is enough; 2 keeps a standby holding no session (Lease).
+replicaCount: 1
+logLevel: info
+timezone: Europe/Paris
+# -- REST API requests per second shared by every queue.
+githubRestRate: 5
+
+resources:
+  requests: {cpu: 20m, memory: 64Mi}
+  limits: {memory: 256Mi}
+
+nodeSelector: {}
+tolerations: []
+# -- Placement of the dispatcher pod itself.
+affinity: {}
+
+podLabels: {}
+podAnnotations: {}
+
+service:
+  claimPort: 8081
+  metricsPort: 8080
+
+# -- Catalog (see docs/dispatcher.md). runtime.namespace must be the release
+# namespace; github.auth.secretRef names an existing Secret, never created
+# by this chart.
+catalog:
+  github:
+    owner: example-owner
+    auth:
+      type: pat
+      secretRef: {name: github-pat, key: github_token}
+  runtime:
+    namespace: ci-runners
+    claimURL: http://ci-dispatcher-claim.ci-runners.svc.cluster.local:8081
+  profiles:
+    light:
+      template: light
+      image: ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {cpu: "1", memory: 1Gi}
+      nodes: [node-a]
+      warm: 0
+  defaults: {profiles: [light]}
+  repos: {}

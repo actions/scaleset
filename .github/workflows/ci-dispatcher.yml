@@ -1,0 +1,132 @@
+name: ci-dispatcher
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only. Pull requests from outside forks get this token and no secret.
+# A green run on main triggers release.yml; the image is published by cd.yml.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/didlawowo/ci-dispatcher
+  CHART_REPO: oci://ghcr.io/didlawowo/charts
+  HELM_VERSION: v3.19.2
+  GOVULNCHECK_VERSION: v1.9.0
+  GITLEAKS_VERSION: 8.30.0
+
+jobs:
+  # Production follows charts/ci-dispatcher/values.yaml on main, and the
+  # candidate acceptance/values.yaml: only cd.yml writes their image (after a
+  # green acceptance for production). A pull request that changes it would
+  # deploy an image that never went through the acceptance.
+  image-pins:
+    if: github.event_name == 'pull_request'
+    runs-on: arc-runner-ci-dispatcher
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: image values unchanged
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # Image block, and for the candidate its catalog block (marker).
+          pins() {
+            keys=image; [ "$2" = acceptance/values.yaml ] && keys='image|catalog'
+            git show "$1:$2" 2>/dev/null | awk -v k="^($keys):" '$0 ~ k {f=1;print;next} f&&/^[^ #]/{f=0} f' || true
+          }
+          failed=0
+          for f in charts/ci-dispatcher/values.yaml acceptance/values.yaml; do
+            before=$(pins "$BASE" "$f")
+            # Not pinned yet on the base (bootstrap of the delivery): nothing to protect.
+            grep -q 'digest: "sha256:' <<< "$before" || continue
+            if [ "$before" != "$(pins HEAD "$f")" ]; then
+              echo "::error file=$f::the image of $f is written by cd.yml only"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+  go:
+    runs-on: arc-runner-ci-dispatcher
+    steps:
+      - uses: actions/checkout@v7
+      # The runner provides shared Go caches: no GitHub cache restore.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l ./dispatcher ./cmd)
+          if [ -n "$unformatted" ]; then echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        run: go tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint run ./dispatcher/... ./cmd/...
+      - name: tests (dispatcher and upstream library)
+        run: go test -race ./...
+      # Shipped packages only: the upstream example examples/dockerscaleset
+      # pulls github.com/docker/docker, whose advisories have no fix and do
+      # not reach the image.
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" . ./listener/... ./dispatcher/... ./cmd/...
+
+  chart:
+    runs-on: arc-runner-ci-dispatcher
+    steps:
+      - uses: actions/checkout@v7
+      - name: install helm
+        run: |
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" | tar -xz -C /tmp linux-amd64/helm
+          sudo install /tmp/linux-amd64/helm /usr/local/bin/helm 2>/dev/null || install -D /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: helm lint
+        run: |
+          helm lint charts/ci-dispatcher --namespace ci-runners
+          helm template ci-dispatcher charts/ci-dispatcher --namespace ci-runners > /dev/null
+
+  secrets:
+    runs-on: arc-runner-ci-dispatcher
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: |
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --no-banner --config .gitleaks.toml --exit-code 1 .
+
+  image:
+    needs: [go, chart]
+    runs-on: arc-runner-ci-dispatcher
+    steps:
+      - uses: actions/checkout@v7
+      # Local buildx builder (docker-container driver on the runner's dind):
+      # public runners cannot reach the in-cluster BuildKit.
+      - uses: docker/setup-buildx-action@v4
+      - name: build both architectures
+        run: |
+          docker buildx build -f docker/Dockerfile.dispatcher \
+            --platform linux/amd64,linux/arm64 \
+            -t "${IMAGE}:ci-${GITHUB_SHA::12}" .
+      - name: load amd64 for the scan
+        run: |
+          docker buildx build -f docker/Dockerfile.dispatcher \
+            --platform linux/amd64 --load \
+            -t "${IMAGE}:scan" .
+      - name: trivy image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:scan
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

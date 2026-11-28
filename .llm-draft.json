@@ -1,0 +1,5 @@
+{
+  "draft_checks": [
+    {"paths": ["dispatcher/", "cmd/"], "commands": [["go", "build", "./..."], ["go", "vet", "./dispatcher/...", "./cmd/..."], ["go", "test", "-race", "-count=1", "./dispatcher/...", "./cmd/..."]]}
+  ]
+}

@@ -1,0 +1,58 @@
+# git-cliff configuration of the ci-dispatcher fork (release.yml).
+#
+# Same rules as the workflow-ci default, with one difference: only the
+# dispatcher-vX.Y.Z tags count. The upstream actions/scaleset tags (v0.x)
+# share this history and would otherwise drive the version.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to ci-dispatcher are documented here.
+This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+and follows the [Conventional Commits](https://www.conventionalcommits.org) spec.
+
+"""
+body = """
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="dispatcher-v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | upper_first }}
+    {% for commit in commits %}
+        - {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+            {{ commit.message | upper_first }}\
+            {% if commit.breaking %} [**BREAKING**]{% endif %}
+    {% endfor %}
+{% endfor %}\n
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = true
+tag_pattern = "^dispatcher-v[0-9]+\\.[0-9]+\\.[0-9]+$"
+topo_order = false
+sort_commits = "oldest"
+filter_commits = false
+
+commit_parsers = [
+  { message = "^feat",          group = "Features" },
+  { message = "^fix",           group = "Bug Fixes" },
+  { message = "^perf",          group = "Performance" },
+  { message = "^refactor",      group = "Refactor" },
+  { message = "^docs",          group = "Documentation" },
+  { message = "^test",          group = "Tests" },
+  { message = "^build",         group = "Build" },
+  { message = "^ci",            group = "CI" },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore",         skip = true },
+  { message = "^style",         skip = true },
+  { body = ".*security",        group = "Security" },
+  { message = ".*",             group = "Other" },
+]

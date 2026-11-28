@@ -1,0 +1,198 @@
+name: cd
+
+# Delivery of a release tag (dispatcher-vX.Y.Z), dispatched by release.yml:
+#
+#   1. publish    image (amd64, arm64) and chart on ghcr.io, digest recorded;
+#   2. candidate  version and digest written in acceptance/values.yaml on main: ArgoCD
+#                 (Application ci-dispatcher-acceptance, continuous-delivery)
+#                 deploys it in its own namespace, serving only the acceptance
+#                 queue of this repository;
+#   3. acceptance real GitHub jobs on that queue (acceptance.yml, synchronous);
+#   4. promote    green only: digest written in charts/ci-dispatcher/values.yaml
+#                 on main; the production Application follows the chart on main.
+#
+# A failed acceptance stops here: production keeps the last validated digest.
+# Rollback: revert the promote commit on main. A delivery that failed for an
+# external reason (candidate not deployed, night) is replayed by running this
+# workflow again with the same tag.
+
+on:
+  push:
+    tags: ["dispatcher-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to deliver (dispatcher-vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One delivery at a time: two candidates would overwrite each other.
+concurrency:
+  group: ci-dispatcher-cd
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/didlawowo/ci-dispatcher
+  CHART_REPO: oci://ghcr.io/didlawowo/charts
+  HELM_VERSION: v3.19.2
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  publish:
+    runs-on: arc-runner-ci-dispatcher
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 40
+
+      - name: version from the tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^dispatcher-v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "::error::$TAG is not dispatcher-vX.Y.Z"; exit 1; }
+          version="${BASH_REMATCH[1]}"
+          declared=$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' charts/ci-dispatcher/Chart.yaml)
+          [ "$declared" = "$version" ] || { echo "::error::tag $version but Chart.yaml appVersion $declared"; exit 1; }
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      # The checks are not rerun on a tag: the tagged commit, or the commit
+      # below the release, candidate and promotion commits written by the
+      # delivery itself, must have a successful push run of ci-dispatcher.yml.
+      - name: tagged commit validated on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/delivery-ancestor.sh validated HEAD
+
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: push the image
+        id: push
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          docker buildx build -f docker/Dockerfile.dispatcher \
+            --platform linux/amd64,linux/arm64 \
+            --metadata-file /tmp/build-metadata.json \
+            -t "${IMAGE}:${VERSION}" --push .
+          digest=$(python3 -c 'import json; print(json.load(open("/tmp/build-metadata.json"))["containerimage.digest"])')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest in the build metadata"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Image ${IMAGE}:${VERSION} = $digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: install helm
+        run: |
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" | tar -xz -C /tmp linux-amd64/helm
+          install -D /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: push the chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm package charts/ci-dispatcher --version "$VERSION" --app-version "$VERSION" -d /tmp/chart
+          helm push "/tmp/chart/ci-dispatcher-${VERSION}.tgz" "$CHART_REPO"
+
+  candidate:
+    needs: publish
+    runs-on: arc-runner-ci-dispatcher
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: write and push the candidate
+        shell: bash
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            python3 .github/scripts/set-image.py acceptance/values.yaml "$VERSION" "$DIGEST"
+            git add acceptance/values.yaml
+            if git diff --cached --quiet; then
+              echo "Candidate already $VERSION ($DIGEST)."
+              exit 0
+            fi
+            git commit -qm "chore(acceptance): candidate $VERSION [skip ci]"
+            if git push -q origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::main moved at every attempt; candidate not written"
+          exit 1
+
+  acceptance:
+    needs: [publish, candidate]
+    permissions:
+      contents: read
+      actions: write # the guard cancels a run whose jobs find no candidate
+    uses: ./.github/workflows/acceptance.yml
+    with:
+      version: ${{ needs.publish.outputs.version }}
+      candidate: ghcr.io/didlawowo/ci-dispatcher@${{ needs.publish.outputs.digest }}
+
+  promote:
+    needs: [publish, acceptance]
+    runs-on: arc-runner-ci-dispatcher
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: write and push the validated digest
+        shell: bash
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            # --no-downgrade: an older delivery finishing late never replaces a newer production.
+            python3 .github/scripts/set-image.py --no-downgrade charts/ci-dispatcher/values.yaml "$VERSION" "$DIGEST"
+            git add charts/ci-dispatcher/values.yaml
+            if git diff --cached --quiet; then
+              echo "Production already on $VERSION or newer."
+              exit 0
+            fi
+            git commit -qm "chore(promote): production $VERSION [skip ci]"
+            if git push -q origin HEAD:main; then
+              echo "Candidate $VERSION validated and promoted: ArgoCD deploys production." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::main moved at every attempt; $VERSION not promoted"
+          exit 1

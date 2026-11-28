@@ -1,0 +1,86 @@
+name: Trusted quality evidence
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+
+concurrency:
+  group: trusted-quality-${{ github.repository }}-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  workflow-ci-ref-policy:
+    name: Workflow CI semantic ref policy
+    runs-on: arc-runner-ci-dispatcher
+    permissions:
+      contents: read
+    steps:
+      - uses: didlawowo/workflow-ci/.github/actions/checkout-source@v1.22.5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Reject mutable or commit-pinned workflow-ci refs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          allowed = re.compile(r"^v\d+\.\d+\.\d+$")
+          action_ref = re.compile(
+              r"(?m)^\s*(?:-\s*)?uses:\s*[\"']?"
+              r"didlawowo/workflow-ci/[^@\s\"']+@([^\s#\"']+)"
+          )
+          workflow_ref = re.compile(
+              r"(?m)^\s*workflow-ci-ref:\s*[\"']?([^\s#\"']+)"
+          )
+
+          violations = []
+          # Fichiers gérés centralement par GitHub Manager : leurs refs sont
+          # contrôlées par WORKFLOW_CI_VERSION, pas par le consommateur. Le
+          # wrapper trusted-quality-evidence.yml embarque cette regex elle-même
+          # : le scanner auto-matcherait son propre texte et bloquerait toutes
+          # les PR du repo (faux positif).
+          managed = {
+              ".github/workflows/trusted-quality-evidence.yml",
+              ".github/workflows/mutation-policy.yml",
+              ".github/workflows/trusted-policy-integrity.yml",
+          }
+          root = pathlib.Path(".github")
+          if root.exists():
+              for path in sorted(root.rglob("*")):
+                  if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
+                      continue
+                  if path.as_posix() in managed:
+                      continue
+                  text = path.read_text(encoding="utf-8", errors="replace")
+                  refs = action_ref.findall(text) + workflow_ref.findall(text)
+                  for ref in refs:
+                      if not allowed.fullmatch(ref):
+                          violations.append(f"{path}: {ref}")
+
+          if violations:
+              print("::error::workflow-ci refs must use immutable semantic release tags (vX.Y.Z); SHA, main and broad tags are forbidden")
+              for violation in violations:
+                  print(f"::error::{violation}")
+              sys.exit(1)
+          PY
+
+  evidence:
+    needs: [workflow-ci-ref-policy]
+    uses: didlawowo/workflow-ci/.github/workflows/quality-evidence.yml@v1.22.5
+    with:
+      repo-type: go
+      runner: arc-runner-ci-dispatcher
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_ROOT_CERT: ${{ secrets.SONAR_ROOT_CERT }}

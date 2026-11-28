@@ -1,0 +1,19 @@
+# gitleaks configuration of the ci-dispatcher fork.
+#
+# Allowlisted: test fixtures of the upstream actions/scaleset library (self-
+# signed TLS keys and fake tokens used by its unit tests), present in the
+# upstream history. They are not credentials. Review: each upstream sync, and
+# quarterly (next: 2027-02-10). The dispatcher code is not allowlisted.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "upstream actions/scaleset test fixtures"
+paths = [
+  '''^(internal/)?testdata/(leaf|server)\.key$''',
+  '''^(internal/)?testserver/server\.go$''',
+  '''^actions_server_test\.go$''',
+  '''^client_runner_scale_set_message_test\.go$''',
+  '''^client_test\.go$''',
+  '''^response_error_test\.go$''',
+]

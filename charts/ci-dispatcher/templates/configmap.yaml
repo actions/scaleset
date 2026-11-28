@@ -1,0 +1,11 @@
+{{- if ne .Values.catalog.runtime.namespace .Release.Namespace }}
+{{- fail (printf "catalog.runtime.namespace (%s) must be the release namespace (%s)" .Values.catalog.runtime.namespace .Release.Namespace) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ci-dispatcher.name" . }}-catalog
+  labels: {{- include "ci-dispatcher.labels" . | nindent 4 }}
+data:
+  catalog.yaml: |
+    {{- toYaml .Values.catalog | nindent 4 }}
